@@ -1,4 +1,4 @@
-# GeminiRobotics-SO101
+# ![GeminiRobotics-SO101 Banner](banner.png)
 
 Welcome to **GeminiRobotics-SO101** 🤖
 
@@ -27,24 +27,24 @@ To keep code modular and hardware/simulation concerns cleanly isolated, the repo
 
 ### Requirements
 
-* Python 3.13.7
-* `uv` package manager ([Instructions here](https://docs.astral.sh/uv/getting-started/installation/))
-* Clone this repository:
+- Python 3.13.7
+- `uv` package manager ([Instructions here](https://docs.astral.sh/uv/getting-started/installation/))
+- Clone this repository:
 
 ```bash
 git clone https://github.com/johannstark/GeminiRobotics-SO101.git
 cd GeminiRobotics-SO101
 ```
 
-* Setup the repository environment and install dependencies:
+- Setup the repository environment and install dependencies:
 
 ```bash
 uv sync
 source .venv/bin/activate
 ```
 
-* Use the LeRobot package to find the serial port of your physical SO-101 robotic arm and calibrate it, using [this guide](https://huggingface.co/docs/lerobot/so101).
-* You are now ready to execute simulations and physical robot controls!
+- Use the LeRobot package to find the serial port of your physical SO-101 robotic arm and calibrate it, using [this guide](https://huggingface.co/docs/lerobot/so101).
+- You are now ready to execute simulations and physical robot controls!
 
 ## Running the Robot (`main.py`)
 
@@ -88,8 +88,9 @@ uv run python main.py --task check_environment
 ## Kinematics & Mathematics Reference
 
 For a complete explanation of Denavit-Hartenberg (DH) parameters, transformation matrices, spatial Jacobians, and under-actuated 5-DOF damped least-squares Inverse Kinematics, consult our documentation:
+
 * [SO-101 Robot Arm Kinematics Theory (`robot/theory.md`)](robot/theory.md)
 
 ---
 
-Made with ❤️ for Robotics and AI
+Made with ❤️ in Colombia 🇨🇴
