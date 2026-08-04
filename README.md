@@ -89,7 +89,7 @@ uv run python main.py --task check_environment
 
 For a complete explanation of Denavit-Hartenberg (DH) parameters, transformation matrices, spatial Jacobians, and under-actuated 5-DOF damped least-squares Inverse Kinematics, consult our documentation:
 
-* [SO-101 Robot Arm Kinematics Theory (`robot/theory.md`)](robot/theory.md)
+- [SO-101 Robot Arm Kinematics Theory (`robot/theory.md`)](robot/theory.md)
 
 ---
 

@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
@@ -25,6 +26,7 @@ class SO101Robot:
         xml_path: str | Path | None = None,
         model: mujoco.MjModel | None = None,
         data: mujoco.MjData | None = None,
+        render_viewer: bool = True,
     ):
         """Initialize the SO-101 robot controller wrapper.
 
@@ -32,6 +34,7 @@ class SO101Robot:
             xml_path: Optional file path to the MJCF XML model. Used if model is None.
             model: Optional existing preloaded MuJoCo model instance.
             data: Optional existing MuJoCo data instance corresponding to the model.
+            render_viewer: Whether to launch a passive 3D MuJoCo viewer window by default.
         """
         if model is not None and data is not None:
             self.model = model
@@ -49,6 +52,19 @@ class SO101Robot:
             self.site_id = self.model.site("gripperframe").id
         except KeyError:
             self.site_id = self.model.site("end_effector").id
+
+        self.viewer = None
+        if render_viewer:
+            try:
+                from simulation.simulate import ensure_mjpython
+
+                ensure_mjpython()
+
+                self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+                self.viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+            except Exception as err:
+                print(f"Notice: Could not launch MuJoCo viewer ({err}). Running in headless mode.")
+                self.viewer = None
 
     def reset(self, pose: str = "HOME") -> None:
         """Reset the robot to a specified preset pose.
@@ -118,6 +134,8 @@ class SO101Robot:
         """
         for _ in range(num_steps):
             mujoco.mj_step(self.model, self.data)
+        if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+            self.viewer.sync()
 
     def move_to_pose(
         self,
@@ -134,27 +152,35 @@ class SO101Robot:
         """
         start_qpos = self.get_joint_positions()
         num_steps = int(duration_sec / dt)
+        sim_steps = max(1, int(round(dt / self.model.opt.timestep)))
 
         for step_idx in range(1, num_steps + 1):
-            if hasattr(self, "viewer") and self.viewer is not None and not self.viewer.is_running():
-                t = step_idx / num_steps
-                alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-                interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-                self.set_joint_positions(interp_qpos)
-                self.step(1)
-                time.sleep(dt)
-                continue
-
             t = step_idx / num_steps
             alpha = 0.5 * (1.0 - np.cos(np.pi * t))
             interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
             self.set_joint_positions(interp_qpos)
-            self.step(1)
-            if hasattr(self, "viewer") and self.viewer is not None:
+            self.step(sim_steps)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                 self.viewer.sync()
             time.sleep(dt)
 
-        # Allow position actuators to settle
-        self.step(100)
+        # Allow position actuators a short smooth settling phase
+        for _ in range(10):
+            self.step(sim_steps)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                self.viewer.sync()
+            time.sleep(dt)
+
+    def close(self) -> None:
+        """Close the MuJoCo simulation viewer if currently open."""
         if hasattr(self, "viewer") and self.viewer is not None:
-            self.viewer.sync()
+            if self.viewer.is_running():
+                self.viewer.close()
+            self.viewer = None
+
+    def __del__(self) -> None:
+        """Cleanup resources on object deletion."""
+        try:
+            self.close()
+        except Exception:
+            pass

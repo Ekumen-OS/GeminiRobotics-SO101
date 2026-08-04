@@ -19,21 +19,23 @@ class TwinSO101Robot:
         self,
         port: str = "/dev/tty.usbmodem1201",
         xml_path=None,
+        render_viewer: bool = True,
     ):
         """Initialize digital twin simulation + real robot controller.
 
         Args:
             port: Serial port device path for physical SO-101 arm.
             xml_path: Optional path to MuJoCo scene XML file.
+            render_viewer: Whether to launch a passive 3D MuJoCo viewer by default.
         """
         print("Initializing Digital Twin Mode (MuJoCo Simulation + Real Hardware Mirror)...")
-        self.sim = SO101Robot(xml_path=xml_path)
+        self.sim = SO101Robot(xml_path=xml_path, render_viewer=render_viewer)
         self.real = RealSO101Robot(port=port)
 
         # Expose MuJoCo model & data for viewer compatibility
         self.model = self.sim.model
         self.data = self.sim.data
-        self.viewer = None
+        self.viewer = self.sim.viewer
 
     def reset(self, pose: str = "HOME") -> None:
         """Reset both simulation and real robot to a specified pose.
@@ -81,34 +83,41 @@ class TwinSO101Robot:
         """Smoothly interpolate joint positions in simulation while mirroring live to real robot."""
         start_qpos = self.sim.get_joint_positions()
         num_steps = int(duration_sec / dt)
+        sim_steps = max(1, int(round(dt / self.sim.model.opt.timestep)))
 
         for step_idx in range(1, num_steps + 1):
-            if hasattr(self, "viewer") and self.viewer is not None and not self.viewer.is_running():
-                t = step_idx / num_steps
-                alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-                interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-                self.set_joint_positions(interp_qpos)
-                self.sim.step(1)
-                time.sleep(dt)
-                continue
-
             t = step_idx / num_steps
             alpha = 0.5 * (1.0 - np.cos(np.pi * t))
             interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
             self.set_joint_positions(interp_qpos)
-            self.sim.step(1)
-
-            if hasattr(self, "viewer") and self.viewer is not None:
+            self.sim.step(sim_steps)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                 self.viewer.sync()
-
             time.sleep(dt)
 
-        self.sim.step(50)
-        qpos = self.sim.get_joint_positions()
-        self.real.set_joint_positions(qpos)
-        if hasattr(self, "viewer") and self.viewer is not None:
-            self.viewer.sync()
+        # Allow position actuators a short smooth settling phase while updating physical hardware
+        for _ in range(10):
+            self.sim.step(sim_steps)
+            qpos = self.sim.get_joint_positions()
+            self.real.set_joint_positions(qpos)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                self.viewer.sync()
+            time.sleep(dt)
 
     def disconnect(self) -> None:
-        """Disconnect physical serial bus."""
-        self.real.disconnect()
+        """Disconnect physical serial bus and close simulation viewer."""
+        if hasattr(self, "real") and self.real is not None:
+            self.real.disconnect()
+        if hasattr(self, "sim") and self.sim is not None:
+            self.sim.close()
+
+    def close(self) -> None:
+        """Alias for disconnect to close simulation viewer and physical connection."""
+        self.disconnect()
+
+    def __del__(self) -> None:
+        """Cleanup resources on object deletion."""
+        try:
+            self.close()
+        except Exception:
+            pass

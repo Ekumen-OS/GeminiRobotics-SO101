@@ -51,13 +51,20 @@ def main(robot: SO101Robot | None = None) -> None:
     print("Close the viewer window or press Ctrl+C in terminal to finish.")
     print("=" * 60)
 
-    with mujoco.viewer.launch_passive(robot.model, robot.data) as viewer:
-        robot.viewer = viewer
-        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-        while viewer.is_running():
+    if not hasattr(robot, "viewer") or robot.viewer is None:
+        robot.viewer = mujoco.viewer.launch_passive(robot.model, robot.data)
+        robot.viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+
+    try:
+        while robot.viewer.is_running():
             if hasattr(robot, "step"):
                 robot.step(1)
-            viewer.sync()
+            robot.viewer.sync()
+    finally:
+        if hasattr(robot, "close"):
+            robot.close()
+        elif hasattr(robot.viewer, "close"):
+            robot.viewer.close()
 
 
 if __name__ == "__main__":

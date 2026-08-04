@@ -44,6 +44,14 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # On macOS, switch to mjpython before printing headers for simulation routines
+    if args.task == "test_simulation" or (
+        args.mode in ["sim", "twin"] and args.task != "check_environment"
+    ):
+        from simulation.simulate import ensure_mjpython
+
+        ensure_mjpython()
+
     print("=" * 60)
     print(
         f"GeminiRobotics-SO101 Execution — "

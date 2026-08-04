@@ -21,7 +21,7 @@ def check_environment() -> None:
 
         from simulation.sim_robot import SO101Robot
 
-        robot = SO101Robot()
+        robot = SO101Robot(render_viewer=False)
         print(f"[OK] MuJoCo library version {mujoco.__version__} loaded.")
         msg = f"[OK] SO-101 MJCF parsed ({robot.model.nq} DOFs, {len(robot.actuator_ids)} acts)."
         print(msg)
@@ -34,6 +34,8 @@ def check_environment() -> None:
         elapsed = time.perf_counter() - start_time
         fps = steps / elapsed
         print(f"[OK] MuJoCo Physics Step FPS: {fps:.1f} steps/sec")
+        robot.close()
+
     except Exception as e:
         print(f"[FAIL] MuJoCo environment check failed: {e}")
 

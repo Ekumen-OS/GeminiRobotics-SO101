@@ -33,7 +33,7 @@ class SO101ReachEnv(gym.Env):
         if xml_path is None:
             xml_path = str(Path(__file__).parent / "assets" / "scene.xml")
 
-        self.robot = SO101Robot(xml_path=xml_path)
+        self.robot = SO101Robot(xml_path=xml_path, render_viewer=(render_mode == "human"))
         self.render_mode = render_mode
         self.max_episode_steps = max_episode_steps
         self.current_step = 0
@@ -114,3 +114,9 @@ class SO101ReachEnv(gym.Env):
 
         info = {"distance": dist, "success": success}
         return obs, reward, terminated, truncated, info
+
+    def close(self) -> None:
+        """Close environment and termination simulation viewer resources."""
+        if hasattr(self, "robot") and self.robot is not None:
+            self.robot.close()
+        super().close()
