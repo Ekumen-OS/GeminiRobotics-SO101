@@ -7,11 +7,11 @@ This repository combines Google's Gemini Robotics AI models and capabilities wit
 We use Python version **3.13.7** and the extremely fast and deterministic package manager `uv` for managing all environments and dependencies.
 
 > [!IMPORTANT]
-> This repo is actively under development as we integrate intelligent robotics behaviors driven by Gemini Robotics!
+> This repo is actively under development as we integrate intelligent robotics behaviors and VLA trajectory inference driven by Gemini Robotics!
 
 ## Architecture & Modules
 
-To keep code modular and hardware/simulation concerns cleanly isolated, the repository is structured into two main packages:
+To keep code modular and hardware, simulation, and user interfaces cleanly isolated, the repository is structured into three primary packages:
 
 1. **[`/robot`](robot/) (Core Robot Definition)**
    - **Constants & Poses**: Definitional parameters, joint names, actuator names, and standard target postures ([`constants.py`](robot/constants.py)).
@@ -22,6 +22,10 @@ To keep code modular and hardware/simulation concerns cleanly isolated, the repo
    - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)) and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
    - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`warp_env.py`](simulation/warp_env.py)).
    - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`test_movement.py`](simulation/test_movement.py)) and system health checks ([`check_env.py`](simulation/check_env.py)).
+
+3. **[`/ui`](ui/) (Unified Gradio VLA Web UI & Vision Streaming)**
+   - **Web UI & Chat Interface**: State-of-the-art dark-mode (`TehnoX`) Gradio 6.0 web application featuring interactive multimodal chat for Gemini Robotics (`gemini-robotics-er`), compact typography, real-time actuator bus feedback, and degree-converted servo control sliders with physical safety bounds ([`app.py`](ui/app.py)).
+   - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV, low-latency Server-Sent Events (SSE) stream source switching, and native macOS hardware camera enumeration via AVFoundation ([`stream.py`](ui/stream.py)).
 
 ## Getting Started
 
@@ -44,34 +48,27 @@ source .venv/bin/activate
 ```
 
 - Use the LeRobot package to find the serial port of your physical SO-101 robotic arm and calibrate it, using [this guide](https://huggingface.co/docs/lerobot/so101).
-- You are now ready to execute simulations and physical robot controls!
+- You are now ready to launch the Web UI and control your physical robot!
 
 ## Running the Robot (`main.py`)
 
-The [`main.py`](main.py) script is the unified entry point for running the SO-101 robotic arm in MuJoCo simulation, digital twin mode, real-world control, or system verification. By default, launching in `sim` mode instantly boots an interactive 3D scene where you can control the arm freely using the MuJoCo UI Actuator sliders!
+The [`main.py`](main.py) script is the unified entry point for running the SO-101 robotic arm in physical control, MuJoCo simulation, digital twin mode, or automated verification. By default, running `main.py` instantly launches the modern **Gradio VLA Web UI Server** on port `7860`, connecting directly to your hardware arm in `real` mode without requiring desktop display windows!
 
 ```bash
-# Instantly boot the interactive MuJoCo 3D simulation scene (default mode & task)
+# Instantly launch the Unified Gradio VLA Web UI server (default mode is 'real')
+# Open your browser at http://localhost:7860/
+uv run python main.py
+
+# Launch Web UI specifying an explicit physical serial port
+uv run python main.py --mode real --port /dev/tty.usbmodem5B415332861
+
+# Launch Web UI with simulated arm placeholders (sim or twin modes)
 uv run python main.py --mode sim
-
-# Run automated linear Cartesian motion sweeps to test movement & kinematics
-uv run python main.py --task test_simulation
-
-# Run comprehensive system health diagnostics and simulation speed benchmarks
-uv run python main.py --task check_environment
+uv run python main.py --mode twin --port /dev/tty.usbmodem5B415332861
 ```
 
 > [!NOTE]
-> The `--port` argument is required for ***twin*** and ***real*** modes. Replace `<serial_port>` with the actual USB device path of your SO-101 arm (e.g., `/dev/tty.usbmodem1201`).
-> Find your serial port using the `lerobot-find-port` command.
-
-```bash
-# Connect to physical arm for interactive real-world control
-uv run python main.py --mode real --port /dev/tty.usbmodem1201
-
-# Run Digital Twin mode (simulated joint commands mirrored directly to real servos)
-uv run python main.py --mode twin --port /dev/tty.usbmodem1201
-```
+> The `--port` argument defaults to `/dev/tty.usbmodem5B415332861`. If your serial adapter differs, replace it with the actual device path of your SO-101 arm. You can find your hardware port using the `lerobot-find-port` utility.
 
 ## Testing & Movement Validation
 
