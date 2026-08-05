@@ -27,6 +27,12 @@ class TwinSO101Robot:
             port: Serial port device path for physical SO-101 arm.
             xml_path: Optional path to MuJoCo scene XML file.
             render_viewer: Whether to launch a passive 3D MuJoCo viewer by default.
+
+        Raises:
+            ImportError: If the `lerobot` package is not available.
+            FileNotFoundError: If the physical robot's calibration file is missing.
+            RuntimeError: If loading the robot calibration profile fails.
+            ConnectionError: If connection to the physical robot hardware fails.
         """
         print("Initializing Digital Twin Mode (MuJoCo Simulation + Real Hardware Mirror)...")
         self.sim = SO101Robot(xml_path=xml_path, render_viewer=render_viewer)

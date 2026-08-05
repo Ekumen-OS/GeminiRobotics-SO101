@@ -36,6 +36,12 @@ class RealSO101Robot:
             port: Serial port device path (e.g., /dev/tty.usbmodem1201 or /dev/ttyUSB0).
             baudrate: Motors bus communication baudrate (default: 1,000,000).
             calibration_path: Path to `follower_droid.json` calibration file.
+
+        Raises:
+            ImportError: If the `lerobot` package is not available.
+            FileNotFoundError: If the specified LeRobot calibration file does not exist.
+            RuntimeError: If loading the calibration file fails.
+            ConnectionError: If connection to the real robot hardware cannot be established.
         """
         self.port = port
         self.baudrate = baudrate
@@ -46,9 +52,10 @@ class RealSO101Robot:
         self.calibration_path = Path(calibration_path)
 
         if not LEROBOT_AVAILABLE:
-            print("Notice: 'lerobot' package is not installed or available.")
-            self.bus = None
-            return
+            raise ImportError(
+                "The 'lerobot' package is not installed or available, "
+                "but is required for physical robot hardware control."
+            )
 
         # Define Motor objects with MotorNormMode.DEGREES so LeRobot normalizes to degrees
         self.motors = {
@@ -70,11 +77,13 @@ class RealSO101Robot:
                 }
                 print(f"Loaded LeRobot calibration profile from {self.calibration_path}")
             except Exception as e:
-                print(f"Warning: Could not load calibration file {self.calibration_path}: {e}")
+                raise RuntimeError(
+                    f"Could not load calibration file {self.calibration_path}: {e}"
+                ) from e
         else:
-            print(
-                f"Notice: Calibration file {self.calibration_path.name} not found. "
-                "Running without calibration."
+            raise FileNotFoundError(
+                f"Calibration file not found at {self.calibration_path}. "
+                "Robot calibration is required to launch tasks on real hardware."
             )
 
         try:
@@ -87,12 +96,11 @@ class RealSO101Robot:
             self.connected = True
             print(f"Successfully connected to real SO-101 arm on port {self.port}.")
         except Exception as e:
-            print(f"Warning: Could not connect to physical robot on port {self.port}: {e}")
-            print("Running in mock hardware mode.")
-            self.bus = None
-            self.connected = False
+            raise ConnectionError(
+                f"Could not connect to physical robot on port {self.port}: {e}"
+            ) from e
 
-        self._mock_qpos = np.zeros(6, dtype=np.float32)
+        self._last_qpos = np.zeros(6, dtype=np.float32)
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Command target joint positions (in radians) to physical motors using calibration.
@@ -101,7 +109,7 @@ class RealSO101Robot:
             qpos: Target joint angles in radians for 6 joints.
         """
         qpos = np.asarray(qpos, dtype=np.float32)
-        self._mock_qpos = qpos.copy()
+        self._last_qpos = qpos.copy()
 
         if not self.connected or self.bus is None:
             return
@@ -139,7 +147,7 @@ class RealSO101Robot:
             A numpy array of 6 joint positions in radians.
         """
         if not self.connected or self.bus is None:
-            return self._mock_qpos.copy()
+            return self._last_qpos.copy()
 
         try:
             if self.calibration is not None:
@@ -149,7 +157,7 @@ class RealSO101Robot:
                     if joint_name in deg_dict:
                         qpos[i] = np.radians(deg_dict[joint_name])
                     else:
-                        qpos[i] = self._mock_qpos[i]
+                        qpos[i] = self._last_qpos[i]
                 return qpos
             else:
                 TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
@@ -160,11 +168,11 @@ class RealSO101Robot:
                     if joint_name in tick_dict:
                         qpos[i] = (tick_dict[joint_name] - CENTER_TICK) / TICKS_PER_RAD
                     else:
-                        qpos[i] = self._mock_qpos[i]
+                        qpos[i] = self._last_qpos[i]
                 return qpos
         except Exception as e:
             print(f"Error reading present positions from bus: {e}")
-            return self._mock_qpos.copy()
+            return self._last_qpos.copy()
 
     def disconnect(self) -> None:
         """Disconnect and release the serial bus."""

@@ -57,7 +57,9 @@ def check_environment() -> None:
         if LEROBOT_AVAILABLE:
             print("[OK] LeRobot package and FeetechMotorsBus import verified.")
         else:
-            print("[INFO] LeRobot package not detected. Real robot will operate in mock mode.")
+            print(
+                "[INFO] LeRobot package not detected. Physical robot control will be unavailable."
+            )
     except Exception as e:
         print(f"[INFO] Real robot hardware driver check: {e}")
 
