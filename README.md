@@ -1,8 +1,12 @@
 # ![GeminiRobotics-SO101 Banner](banner.png)
 
-Welcome to **GeminiRobotics-SO101** 🤖
+## Welcome to **GeminiRobotics-SO101** 🤖
 
-This repository combines Google's Gemini Robotics AI models and capabilities with the **SO-101 Robotic Arm** setup (building upon the simplified physical assembly, calibration, kinematics, and simulation tools from LeDroid-101 and HuggingFace LeRobot).
+This repository combines Google's Gemini Robotics AI models (`gemini-robotics-er`) and capabilities with the **SO-101 Robotic Arm** setup (building upon the simplified physical assembly, calibration, kinematics, and simulation tools from LeDroid-101 and HuggingFace LeRobot).
+
+At the core of our user experience is a state-of-the-art **Gradio 6.0 Web VLA Interface** powered by OpenCV. This interactive web application serves as the unified dashboard for physical hardware manipulation, real-time video observation streaming, degree-tuned actuator adjustments, and multimodal action execution!
+
+![GeminiRobotics-SO101 Gradio Web UI](ui.png)
 
 We use Python version **3.13.7** and the extremely fast and deterministic package manager `uv` for managing all environments and dependencies.
 
