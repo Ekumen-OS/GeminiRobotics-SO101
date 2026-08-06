@@ -11,52 +11,44 @@ from simulation.sim_robot import SO101Robot
 def main() -> None:
     """Execute main CLI for GeminiRobotics-SO101 (Simulation & Physical Hardware)."""
     parser = argparse.ArgumentParser(
-        description=(
-            "GeminiRobotics-SO101 Main CLI — Run MuJoCo simulation or physical SO-101 commands."
-        )
+        description="GeminiRobotics-SO101 Main CLI — Run VLA Web UI or verification routines."
     )
     parser.add_argument(
         "--mode",
         choices=["sim", "real", "twin"],
-        default="sim",
+        default="real",
         help=(
-            "Execution target mode: 'sim' (MuJoCo simulation), "
-            "'real' (Physical SO-101 arm), or "
-            "'twin' (Sim + Real Digital Twin Mirror)."
+            "Execution target mode: 'real' (Physical SO-101 arm & UVC camera stream), "
+            "'sim' (MuJoCo simulation), or 'twin' (Sim + Real Digital Twin Mirror)."
         ),
     )
     parser.add_argument(
         "--task",
-        choices=["interactive", "check_environment", "test_simulation"],
-        default="interactive",
+        choices=["check_environment", "test_simulation"],
+        default=None,
         help=(
-            "Task routine to execute: 'interactive' (3D MuJoCo viewer with "
-            "UI actuator slider controls), 'check_environment' (System & "
-            "hardware diagnostics), or 'test_simulation' (Kinematics validation "
-            "via Cartesian line sweeps)."
+            "Optional verification task: 'check_environment' (System & hardware "
+            "diagnostics) or 'test_simulation' (Kinematics validation via line sweeps). "
+            "If omitted, defaults to launching the Gradio VLA Web UI."
         ),
     )
     parser.add_argument(
         "--port",
-        default="/dev/tty.usbmodem1201",
-        help="Serial port for real physical arm (e.g., /dev/tty.usbmodem1201 or /dev/ttyUSB0).",
+        default="/dev/tty.usbmodem5B415332861",
+        help="Serial port for physical arm (e.g., /dev/tty.usbmodem5B415332861).",
     )
 
     args = parser.parse_args()
 
-    # On macOS, switch to mjpython before printing headers for simulation routines
-    if args.task == "test_simulation" or (
-        args.mode in ["sim", "twin"] and args.task != "check_environment"
-    ):
+    # On macOS, switch to mjpython before headers only if opening GLFW window in test_simulation
+    if args.task == "test_simulation":
         from simulation.simulate import ensure_mjpython
 
         ensure_mjpython()
 
+    task_display = args.task.upper() if args.task is not None else "WEB_UI"
     print("=" * 60)
-    print(
-        f"GeminiRobotics-SO101 Execution — "
-        f"Mode: [{args.mode.upper()}] | Task: [{args.task.upper()}]"
-    )
+    print(f"GeminiRobotics-SO101 Execution — Mode: [{args.mode.upper()}] | Task: [{task_display}]")
     print("=" * 60)
 
     # 1. Check for standalone diagnostic / verification tasks first
@@ -74,38 +66,27 @@ def main() -> None:
         test_robot_movement()
         return
 
-    # 2. Initialize Robot based on execution mode for interactive operation
+    # 2. Initialize Robot based on mode for Web UI operation without native window popups
     robot = None
     if args.mode == "sim":
-        print("Initializing MuJoCo simulation robot arm...")
-        robot = SO101Robot()
+        print("Initializing MuJoCo simulation robot arm in headless UI mode...")
+        robot = SO101Robot(render_viewer=False)
         robot.reset("HOME")
     elif args.mode == "twin":
-        print(f"Initializing Digital Twin (Sim + Real on port {args.port})...")
-        robot = TwinSO101Robot(port=args.port)
+        print(f"Initializing Twin (Sim + Real on port {args.port}) without viewer...")
+        robot = TwinSO101Robot(port=args.port, render_viewer=False)
         robot.reset("HOME")
     else:
-        print(f"Connecting to real SO-101 robot arm on port {args.port}...")
+        print(f"Connecting real SO-101 arm on port {args.port} for Real Mode VLA UI...")
         robot = RealSO101Robot(port=args.port)
 
-    # 3. Execute interactive control loop
+    # 3. Execute Unified Gradio VLA Web UI server
     try:
-        if args.mode in ["sim", "twin"]:
-            from simulation.simulate import main as launch_simulate
+        from ui.app import launch_web_ui
 
-            launch_simulate(robot=robot)
-
-        else:
-            print("=" * 60)
-            print("Physical Arm Interactive Control Session Connected.")
-            print("Press Ctrl+C in terminal to disconnect and park robot.")
-            print("=" * 60)
-            while True:
-                time.sleep(1.0)
-
+        launch_web_ui(robot=robot, mode=args.mode, server_name="0.0.0.0", server_port=7860)
     except KeyboardInterrupt:
         print("\nExecution interrupted by user.")
-
     finally:
         # Always park robot safely to HOME pose on completion/exit
         print("\nSafely parking robot to HOME pose...")
