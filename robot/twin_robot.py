@@ -74,6 +74,18 @@ class TwinSO101Robot:
         """Get end-effector position and orientation from MuJoCo physics engine."""
         return self.sim.get_end_effector_pose()
 
+    def render_rgb_frame(self, width: int = 640, height: int = 480) -> np.ndarray:
+        """Render MuJoCo twin simulation state as an RGB frame.
+
+        Args:
+            width: Frame width in pixels.
+            height: Frame height in pixels.
+
+        Returns:
+            RGB image with shape (height, width, 3) and dtype uint8.
+        """
+        return self.sim.render_rgb_frame(width=width, height=height)
+
     def step(self, num_steps: int = 1) -> None:
         """Advance physics in MuJoCo simulation and mirror joint state to physical arm."""
         self.sim.step(num_steps)
