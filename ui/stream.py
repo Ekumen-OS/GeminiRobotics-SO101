@@ -3,7 +3,9 @@
 import sys
 import threading
 import time
+import atexit
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -12,6 +14,107 @@ import numpy as np
 _stream_lock = threading.Lock()
 _current_stream_id = 0
 _device_names: dict[int, str] = {}
+_sim_frame_lock = threading.Lock()
+STREAM_TARGET_FPS = 30
+STREAM_FRAME_WIDTH = 640
+STREAM_FRAME_HEIGHT = 480
+
+
+class _SingletonSimRuntime:
+    """Singleton worker that owns sim stepping + rendering for UI streaming.
+
+    This avoids concurrent MuJoCo access across multiple Gradio callback threads.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._frame_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._robot: Any | None = None
+        self._latest_frame: np.ndarray | None = None
+
+    def _loop(self) -> None:
+        frame_interval = 1.0 / STREAM_TARGET_FPS
+
+        while not self._stop_event.is_set():
+            start = time.time()
+
+            with self._lock:
+                robot = self._robot
+
+            if robot is None:
+                frame = cv2.resize(
+                    generate_sim_placeholder_pattern(),
+                    (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            else:
+                with _sim_frame_lock:
+                    sim_steps = _estimate_sim_steps_per_frame(
+                        robot=robot,
+                        frame_interval=frame_interval,
+                    )
+                    if hasattr(robot, "step"):
+                        robot.step(sim_steps)
+
+                    frame = _sim_frame_with_fallback(
+                        robot=robot,
+                        width=STREAM_FRAME_WIDTH,
+                        height=STREAM_FRAME_HEIGHT,
+                    )
+
+            with self._frame_lock:
+                self._latest_frame = frame
+
+            elapsed = time.time() - start
+            if elapsed < frame_interval:
+                time.sleep(frame_interval - elapsed)
+
+    def ensure_started(self, robot: Any | None) -> None:
+        """Start worker once and update active robot reference."""
+        with self._lock:
+            self._robot = robot
+            if self._thread is not None and self._thread.is_alive():
+                return
+
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._loop,
+                name="sim-runtime",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def get_latest_frame(self, robot: Any | None) -> np.ndarray:
+        """Return most recent frame, bootstrapping runtime if needed."""
+        self.ensure_started(robot)
+
+        with self._frame_lock:
+            if self._latest_frame is not None:
+                return self._latest_frame.copy()
+
+        # First frame race: return deterministic fallback until worker publishes one.
+        return cv2.resize(
+            generate_sim_placeholder_pattern(),
+            (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+    def stop(self) -> None:
+        """Stop worker thread cleanly."""
+        with self._lock:
+            thread = self._thread
+            self._thread = None
+            self._robot = None
+
+        self._stop_event.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+
+
+_SIM_RUNTIME = _SingletonSimRuntime()
+atexit.register(_SIM_RUNTIME.stop)
 
 
 def _enumerate_cameras_macos() -> list[tuple[str, int]]:
@@ -445,19 +548,97 @@ def prepare_stream_switch() -> None:
     _current_stream_id = time.time_ns()
 
 
+def _estimate_sim_steps_per_frame(robot: Any | None, frame_interval: float) -> int:
+    """Estimate MuJoCo physics steps needed per rendered frame.
+
+    Args:
+        robot: Active simulation robot object.
+        frame_interval: Frame period in seconds.
+
+    Returns:
+        Number of simulation steps to execute for near-real-time playback.
+    """
+    if robot is None:
+        return 1
+
+    model = getattr(robot, "model", None)
+    timestep = getattr(getattr(model, "opt", None), "timestep", None)
+    if timestep is None:
+        return 1
+
+    return max(1, int(round(frame_interval / float(timestep))))
+
+
+def _sim_frame_with_fallback(
+    robot: Any | None,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Render simulation frame if available, else return a placeholder.
+
+    Args:
+        robot: Active robot object for current mode.
+        width: Frame width.
+        height: Frame height.
+
+    Returns:
+        RGB frame as uint8 numpy array.
+    """
+    if robot is not None and hasattr(robot, "render_rgb_frame"):
+        try:
+            return robot.render_rgb_frame(width=width, height=height)
+        except Exception as err:
+            print(f"[WARN] Sim render failed. Falling back to placeholder. Cause: {err}")
+
+    fallback = generate_sim_placeholder_pattern()
+    return cv2.resize(fallback, (width, height), interpolation=cv2.INTER_LINEAR)
+
+
+def _compose_twin_frame(top_rgb: np.ndarray, bottom_rgb: np.ndarray) -> np.ndarray:
+    """Compose a twin frame from top simulation and bottom camera streams.
+
+    Args:
+        top_rgb: Simulation RGB frame.
+        bottom_rgb: Camera RGB frame.
+
+    Returns:
+        Combined RGB frame with a thin separator line between views.
+    """
+    target_width = max(top_rgb.shape[1], bottom_rgb.shape[1])
+    half_height = max(top_rgb.shape[0], bottom_rgb.shape[0])
+
+    top_resized = cv2.resize(top_rgb, (target_width, half_height), interpolation=cv2.INTER_LINEAR)
+    bottom_resized = cv2.resize(
+        bottom_rgb, (target_width, half_height), interpolation=cv2.INTER_LINEAR
+    )
+
+    divider = np.full((2, target_width, 3), 255, dtype=np.uint8)
+    return np.vstack([top_resized, divider, bottom_resized])
+
+
+def get_sim_video_frame(robot: Any | None = None) -> np.ndarray:
+    """Return a single live simulation frame for timer-driven UI updates.
+
+    Args:
+        robot: Active simulation robot object.
+
+    Returns:
+        RGB frame as uint8 numpy array.
+    """
+    return _SIM_RUNTIME.get_latest_frame(robot=robot)
+
+
 def stream_video(
     camera_index: int = 0,
-    fps_target: int = 30,
-    resolution_str: str = "1600x1200 (4:3 HD - Uncropped)",
     mode: str = "real",
+    robot: Any | None = None,
 ):
     """Capture real-time video frames and yield them to Gradio over Server-Sent Events.
 
     Args:
         camera_index: Integer index of target hardware capture device.
-        fps_target: Target frame rate cap for live streaming loop.
-        resolution_str: Capture aspect ratio options string.
         mode: Operation mode ('real', 'sim', or 'twin').
+        robot: Active robot controller object used for MuJoCo rendering in sim/twin modes.
 
     Yields:
         NumPy array of shape (H, W, 3) containing RGB video frames.
@@ -466,25 +647,95 @@ def stream_video(
     my_stream_id = time.time_ns()
     _current_stream_id = my_stream_id
 
-    frame_interval = 1.0 / max(1, int(fps_target))
+    frame_interval = 1.0 / STREAM_TARGET_FPS
+    target_width = STREAM_FRAME_WIDTH
+    target_height = STREAM_FRAME_HEIGHT
 
-    # Handle Sim and Twin operational mode placeholders
+    # Mode SIM: live MuJoCo render without hardware camera dependencies
     if mode == "sim":
         while _current_stream_id == my_stream_id:
             start = time.time()
-            yield generate_sim_placeholder_pattern()
+            yield get_sim_video_frame(robot=robot)
             elapsed = time.time() - start
             if elapsed < frame_interval:
                 time.sleep(frame_interval - elapsed)
         return
 
+    # Mode TWIN: top half MuJoCo sim + bottom half real/mock camera feed
     if mode == "twin":
-        while _current_stream_id == my_stream_id:
-            start = time.time()
-            yield generate_twin_placeholder_pattern()
-            elapsed = time.time() - start
-            if elapsed < frame_interval:
-                time.sleep(frame_interval - elapsed)
+        if camera_index == -2:
+            while _current_stream_id == my_stream_id:
+                start = time.time()
+                top_frame = _sim_frame_with_fallback(
+                    robot=robot,
+                    width=target_width,
+                    height=target_height,
+                )
+                bottom_frame = cv2.resize(
+                    generate_no_camera_pattern(),
+                    (target_width, target_height),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                yield _compose_twin_frame(top_frame, bottom_frame)
+                elapsed = time.time() - start
+                if elapsed < frame_interval:
+                    time.sleep(frame_interval - elapsed)
+            return
+
+        cap = None
+        camera_active = False
+        with _stream_lock:
+            if _current_stream_id != my_stream_id:
+                return
+
+            cam_name = get_camera_name(camera_index)
+            if camera_index >= 0:
+                print(
+                    f"[INFO] Initializing twin bottom camera {cam_name} (Index {camera_index})..."
+                )
+                cap = cv2.VideoCapture(camera_index)
+                camera_active = cap.isOpened()
+                if camera_active:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
+                    cap.set(cv2.CAP_PROP_FPS, STREAM_TARGET_FPS)
+                else:
+                    print("[WARN] Twin bottom camera unavailable. Using mock fallback.")
+
+        try:
+            while _current_stream_id == my_stream_id:
+                start = time.time()
+                top_frame = _sim_frame_with_fallback(
+                    robot=robot,
+                    width=target_width,
+                    height=target_height,
+                )
+
+                if camera_active and cap is not None:
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        bottom_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    else:
+                        camera_active = False
+                        print("[WARN] Twin bottom camera read failed. Switching to mock fallback.")
+                        bottom_frame = generate_mock_test_pattern(camera_index)
+                else:
+                    bottom_frame = generate_mock_test_pattern(camera_index)
+
+                bottom_frame = cv2.resize(
+                    bottom_frame,
+                    (target_width, target_height),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                yield _compose_twin_frame(top_frame, bottom_frame)
+
+                elapsed = time.time() - start
+                if elapsed < frame_interval:
+                    time.sleep(frame_interval - elapsed)
+        finally:
+            if cap is not None and cap.isOpened():
+                cap.release()
         return
 
     # Mode REAL: Live UVC hardware streaming with OpenCV & MJPG codec
@@ -515,15 +766,10 @@ def stream_video(
             else:
                 # Enable MJPG hardware video codec to prevent USB firmware FPS throttling
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
-                try:
-                    width_str, height_str = resolution_str.split(" ")[0].split("x")
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width_str))
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height_str))
-                except (ValueError, IndexError, AttributeError):
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1600)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
 
-                cap.set(cv2.CAP_PROP_FPS, int(fps_target))
+                cap.set(cv2.CAP_PROP_FPS, STREAM_TARGET_FPS)
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 real_fps = cap.get(cv2.CAP_PROP_FPS)

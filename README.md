@@ -71,9 +71,12 @@ uv run python main.py
 # Launch Web UI specifying an explicit physical serial port
 uv run python main.py --mode real --port /dev/tty.usbmodem5B415332861
 
-# Launch Web UI with simulated arm placeholders (sim or twin modes)
+# Launch Web UI with live MuJoCo rendering (sim) or digital twin split view (twin)
 uv run python main.py --mode sim
 uv run python main.py --mode twin --port /dev/tty.usbmodem5B415332861
+
+# Development auto-reload (restarts server when Python files change)
+uv run python main.py --mode sim --reload
 ```
 
 > [!NOTE]
