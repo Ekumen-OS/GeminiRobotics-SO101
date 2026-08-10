@@ -1,5 +1,6 @@
 """SO101Robot helper controller class for MuJoCo simulation."""
 
+import threading
 import time
 from pathlib import Path
 
@@ -54,6 +55,13 @@ class SO101Robot:
             self.site_id = self.model.site("end_effector").id
 
         self.viewer = None
+        self._renderer = None
+        self._renderer_size: tuple[int, int] | None = None
+        # MuJoCo Python bindings are not safe for concurrent model/data access.
+        # Serialize all sim state read/write + rendering through one lock.
+        self._sim_lock = threading.RLock()
+        self._renderer_lock = threading.Lock()
+        self._offscreen_warned = False
         if render_viewer:
             try:
                 from simulation.simulate import ensure_mjpython
@@ -72,14 +80,15 @@ class SO101Robot:
         Args:
             pose: Name of the target preset pose (e.g., 'HOME', 'REACH', 'PICK', 'STOW').
         """
-        mujoco.mj_resetData(self.model, self.data)
-        target_qpos = PRESET_POSES.get(pose.upper(), PRESET_POSES["HOME"])
-        for i, j_id in enumerate(self.joint_ids):
-            qpos_adr = self.model.jnt_qposadr[j_id]
-            self.data.qpos[qpos_adr] = target_qpos[i]
-        self.set_joint_positions(target_qpos)
-        mujoco.mj_forward(self.model, self.data)
-        self.step(50)
+        with self._sim_lock:
+            mujoco.mj_resetData(self.model, self.data)
+            target_qpos = PRESET_POSES.get(pose.upper(), PRESET_POSES["HOME"])
+            for i, j_id in enumerate(self.joint_ids):
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                self.data.qpos[qpos_adr] = target_qpos[i]
+            self.set_joint_positions(target_qpos)
+            mujoco.mj_forward(self.model, self.data)
+            self.step(50)
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Set target joint position control targets.
@@ -87,9 +96,10 @@ class SO101Robot:
         Args:
             qpos: Target joint angles as a numpy array of shape (6,).
         """
-        assert len(qpos) == len(self.actuator_ids), f"Expected {len(self.actuator_ids)} values"
-        for i, act_id in enumerate(self.actuator_ids):
-            self.data.ctrl[act_id] = qpos[i]
+        with self._sim_lock:
+            assert len(qpos) == len(self.actuator_ids), f"Expected {len(self.actuator_ids)} values"
+            for i, act_id in enumerate(self.actuator_ids):
+                self.data.ctrl[act_id] = qpos[i]
 
     def get_joint_positions(self) -> np.ndarray:
         """Get current joint position angles.
@@ -97,11 +107,12 @@ class SO101Robot:
         Returns:
             A numpy array of current joint positions in radians.
         """
-        pos_list = []
-        for j_id in self.joint_ids:
-            qpos_adr = self.model.jnt_qposadr[j_id]
-            pos_list.append(self.data.qpos[qpos_adr])
-        return np.array(pos_list)
+        with self._sim_lock:
+            pos_list = []
+            for j_id in self.joint_ids:
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                pos_list.append(self.data.qpos[qpos_adr])
+            return np.array(pos_list)
 
     def get_joint_velocities(self) -> np.ndarray:
         """Get current joint velocities.
@@ -109,11 +120,12 @@ class SO101Robot:
         Returns:
             A numpy array of current joint velocities in radians per second.
         """
-        vel_list = []
-        for j_id in self.joint_ids:
-            dof_adr = self.model.jnt_dofadr[j_id]
-            vel_list.append(self.data.qvel[dof_adr])
-        return np.array(vel_list)
+        with self._sim_lock:
+            vel_list = []
+            for j_id in self.joint_ids:
+                dof_adr = self.model.jnt_dofadr[j_id]
+                vel_list.append(self.data.qvel[dof_adr])
+            return np.array(vel_list)
 
     def get_end_effector_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """Return end-effector position and orientation rotation matrix.
@@ -122,9 +134,10 @@ class SO101Robot:
             A tuple containing the end-effector 3D position array (x, y, z) and
             the 3x3 rotation matrix.
         """
-        pos = self.data.site_xpos[self.site_id].copy()
-        mat = self.data.site_xmat[self.site_id].reshape(3, 3).copy()
-        return pos, mat
+        with self._sim_lock:
+            pos = self.data.site_xpos[self.site_id].copy()
+            mat = self.data.site_xmat[self.site_id].reshape(3, 3).copy()
+            return pos, mat
 
     def step(self, num_steps: int = 1) -> None:
         """Advance physics simulation by N steps.
@@ -132,10 +145,11 @@ class SO101Robot:
         Args:
             num_steps: Number of simulation sub-steps to execute.
         """
-        for _ in range(num_steps):
-            mujoco.mj_step(self.model, self.data)
-        if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-            self.viewer.sync()
+        with self._sim_lock:
+            for _ in range(num_steps):
+                mujoco.mj_step(self.model, self.data)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                self.viewer.sync()
 
     def move_to_pose(
         self,
@@ -171,12 +185,70 @@ class SO101Robot:
                 self.viewer.sync()
             time.sleep(dt)
 
+    def render_rgb_frame(self, width: int = 640, height: int = 480) -> np.ndarray:
+        """Render the current MuJoCo simulation state as an RGB image.
+
+        Args:
+            width: Frame width in pixels.
+            height: Frame height in pixels.
+
+        Returns:
+            RGB image with shape (height, width, 3) and dtype uint8.
+
+        Raises:
+            RuntimeError: If MuJoCo offscreen rendering fails.
+        """
+        req_width = max(1, int(width))
+        req_height = max(1, int(height))
+
+        max_width = int(self.model.vis.global_.offwidth)
+        max_height = int(self.model.vis.global_.offheight)
+        width = min(req_width, max_width)
+        height = min(req_height, max_height)
+
+        if (width != req_width or height != req_height) and not self._offscreen_warned:
+            print(
+                "[WARN] Requested sim render resolution "
+                f"{req_width}x{req_height} exceeds MuJoCo offscreen limit "
+                f"{max_width}x{max_height}. Clamping to supported size."
+            )
+            self._offscreen_warned = True
+
+        with self._sim_lock:
+            with self._renderer_lock:
+                target_size = (width, height)
+                if self._renderer is None or self._renderer_size != target_size:
+                    if self._renderer is not None:
+                        self._renderer.close()
+                    self._renderer = mujoco.Renderer(self.model, height=height, width=width)
+                    self._renderer_size = target_size
+
+                try:
+                    self._renderer.update_scene(self.data)
+                    frame = self._renderer.render()
+                except Exception as err:
+                    raise RuntimeError(f"MuJoCo offscreen render failed: {err}") from err
+
+        return np.asarray(frame, dtype=np.uint8)
+
+    def _close_renderer(self) -> None:
+        """Release MuJoCo renderer resources if currently allocated."""
+        with self._sim_lock:
+            with self._renderer_lock:
+                if self._renderer is not None:
+                    self._renderer.close()
+                    self._renderer = None
+                    self._renderer_size = None
+                    self._offscreen_warned = False
+
     def close(self) -> None:
         """Close the MuJoCo simulation viewer if currently open."""
-        if hasattr(self, "viewer") and self.viewer is not None:
-            if self.viewer.is_running():
-                self.viewer.close()
-            self.viewer = None
+        with self._sim_lock:
+            self._close_renderer()
+            if hasattr(self, "viewer") and self.viewer is not None:
+                if self.viewer.is_running():
+                    self.viewer.close()
+                self.viewer = None
 
     def __del__(self) -> None:
         """Cleanup resources on object deletion."""
