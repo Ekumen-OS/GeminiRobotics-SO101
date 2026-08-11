@@ -5,6 +5,7 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
+from agent.vla_controller import VLAController
 from robot.constants import JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
 from ui.components.chat import build_chat_interface
@@ -91,12 +92,14 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
             f"**Operational Mode: `{mode.upper()}`**"
         )
 
+        vla_controller = VLAController(mode=mode)
+
         with gr.Row():
             with gr.Column(scale=7):
                 build_vision_interface(robot, mode, demo)
 
             with gr.Column(scale=5):
-                build_chat_interface(mode)
+                build_chat_interface(vla_controller)
 
         with gr.Group():
             build_controls_interface(robot, mode, init_deg)
