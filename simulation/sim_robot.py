@@ -9,9 +9,10 @@ import mujoco.viewer
 import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
+from robot.interface import RobotInterface
 
 
-class SO101Robot:
+class SO101Robot(RobotInterface):
     """High-level Python wrapper for controlling the SO-101 robot arm in MuJoCo.
 
     Attributes:
