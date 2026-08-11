@@ -1,9 +1,9 @@
 """Unified Vision Streamer handling OpenCV hardware cameras and multi-mode placeholders."""
 
+import atexit
 import sys
 import threading
 import time
-import atexit
 from pathlib import Path
 from typing import Any
 
