@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from robot.constants import JOINT_NAMES
+from robot.constants import DEFAULT_SERIAL_PORT, JOINT_NAMES
+from robot.interface import RobotInterface
 
 try:
     from lerobot.motors.feetech import FeetechMotorsBus
@@ -21,12 +22,12 @@ DEFAULT_CALIB_PATH = (
 )
 
 
-class RealSO101Robot:
+class RealSO101Robot(RobotInterface):
     """Wrapper class for physical SO-101 robot arm using Feetech STS3215 servos."""
 
     def __init__(
         self,
-        port: str = "/dev/tty.usbmodem1201",
+        port: str = DEFAULT_SERIAL_PORT,
         baudrate: int = 1_000_000,
         calibration_path: str | Path | None = None,
     ):

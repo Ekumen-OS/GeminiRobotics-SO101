@@ -4,11 +4,13 @@ import time
 
 import numpy as np
 
+from robot.constants import DEFAULT_SERIAL_PORT
+from robot.interface import RobotInterface
 from robot.real_robot import RealSO101Robot
 from simulation.sim_robot import SO101Robot
 
 
-class TwinSO101Robot:
+class TwinSO101Robot(RobotInterface):
     """Wrapper that synchronizes a MuJoCo simulation instance with a physical SO-101 robot arm.
 
     Every joint position command or simulation step automatically streams the resulting
@@ -17,7 +19,7 @@ class TwinSO101Robot:
 
     def __init__(
         self,
-        port: str = "/dev/tty.usbmodem1201",
+        port: str = DEFAULT_SERIAL_PORT,
         xml_path=None,
         render_viewer: bool = True,
     ):
