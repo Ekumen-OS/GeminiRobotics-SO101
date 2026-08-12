@@ -94,6 +94,10 @@ class RealSO101Robot(RobotInterface):
                 calibration=self.calibration,
             )
             self.bus.connect()
+
+            # Ensure torque is enabled so motors actually move
+            self.bus.enable_torque()
+
             self.connected = True
             print(f"Successfully connected to real SO-101 arm on port {self.port}.")
         except Exception as e:
@@ -102,6 +106,10 @@ class RealSO101Robot(RobotInterface):
             ) from e
 
         self._last_qpos = np.zeros(6, dtype=np.float32)
+        # Initialize _last_qpos with actual current positions if possible
+        if self.connected:
+            self._last_qpos = self.get_joint_positions()
+        self._stop_requested = False
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Command target joint positions (in radians) to physical motors using calibration.
@@ -184,3 +192,38 @@ class RealSO101Robot(RobotInterface):
                 print("Disconnected from physical SO-101 robot arm.")
             except Exception as e:
                 print(f"Error disconnecting: {e}")
+
+    def interrupt(self) -> None:
+        """Interrupt any ongoing physical movement."""
+        self._stop_requested = True
+
+    def move_to_pose(
+        self,
+        target_qpos: np.ndarray,
+        duration_sec: float = 1.0,
+        dt: float = 0.02,
+    ) -> None:
+        """Smoothly interpolate from current joint positions to target joint positions.
+
+        Args:
+            target_qpos: Target joint angles in radians.
+            duration_sec: Duration of the interpolation trajectory in seconds.
+            dt: Timestep duration in seconds.
+        """
+        import time
+
+        target_qpos = np.asarray(target_qpos, dtype=np.float32)
+        start_qpos = self.get_joint_positions()
+        num_steps = max(1, int(duration_sec / dt))
+
+        for step_idx in range(1, num_steps + 1):
+            if self._stop_requested:
+                break
+            t = step_idx / num_steps
+            # Cosine interpolation for smooth acceleration/deceleration
+            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+            interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
+            self.set_joint_positions(interp_qpos)
+            time.sleep(dt)
+
+        self._stop_requested = False

@@ -64,3 +64,7 @@ class RobotInterface(ABC):
     def disconnect(self) -> None:
         """Release hardware or simulation resources."""
         pass
+
+    def interrupt(self) -> None:
+        """Interrupt any ongoing physical movement or blocking operations."""
+        pass
