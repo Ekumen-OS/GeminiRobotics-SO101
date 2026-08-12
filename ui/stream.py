@@ -19,6 +19,22 @@ STREAM_TARGET_FPS = 30
 STREAM_FRAME_WIDTH = 640
 STREAM_FRAME_HEIGHT = 480
 
+_global_latest_frame: np.ndarray | None = None
+_global_frame_lock = threading.Lock()
+
+
+def get_latest_jpeg() -> bytes | None:
+    """Get the most recent camera frame from any active stream as a JPEG."""
+    with _global_frame_lock:
+        frame = _global_latest_frame
+    if frame is None:
+        return None
+    bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    success, encoded = cv2.imencode(".jpg", bgr_frame)
+    if success:
+        return encoded.tobytes()
+    return None
+
 
 class _SingletonSimRuntime:
     """Singleton worker that owns sim stepping + rendering for UI streaming.
@@ -35,6 +51,7 @@ class _SingletonSimRuntime:
         self._latest_frame: np.ndarray | None = None
 
     def _loop(self) -> None:
+        global _global_latest_frame
         frame_interval = 1.0 / STREAM_TARGET_FPS
 
         while not self._stop_event.is_set():
@@ -66,6 +83,9 @@ class _SingletonSimRuntime:
 
             with self._frame_lock:
                 self._latest_frame = frame
+
+            with _global_frame_lock:
+                _global_latest_frame = frame.copy() if frame is not None else None
 
             elapsed = time.time() - start
             if elapsed < frame_interval:
@@ -100,6 +120,18 @@ class _SingletonSimRuntime:
             (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
             interpolation=cv2.INTER_LINEAR,
         )
+
+    def get_latest_jpeg(self, robot: Any | None = None) -> bytes | None:
+        """Return the most recent frame as JPEG encoded bytes."""
+        frame = self.get_latest_frame(robot)
+        if frame is None:
+            return None
+        # Convert RGB to BGR for cv2.imencode to produce correct JPEG colors.
+        bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        success, encoded = cv2.imencode(".jpg", bgr_frame)
+        if success:
+            return encoded.tobytes()
+        return None
 
     def stop(self) -> None:
         """Stop worker thread cleanly."""
@@ -230,6 +262,28 @@ def get_available_camera_choices() -> list[tuple[str, int]]:
 
     choices.append(("Synthetic Mock Test Feed", -1))
     return choices
+
+
+def get_default_camera_index(choices: list[tuple[str, int]] | None = None) -> int:
+    """Select the preferred default camera index (priority: 2 -> 1 -> 0).
+
+    Args:
+        choices: Optional list of available camera tuples (label, index).
+
+    Returns:
+        The selected integer camera index.
+    """
+    if choices is None:
+        choices = get_available_camera_choices()
+
+    valid_indices = {c[1] for c in choices if c[1] >= 0}
+    for preferred in [2, 1, 0]:
+        if preferred in valid_indices:
+            return preferred
+
+    if choices:
+        return choices[0][1]
+    return 2
 
 
 def get_camera_name(index: int) -> str:
@@ -643,6 +697,7 @@ def stream_video(
     Yields:
         NumPy array of shape (H, W, 3) containing RGB video frames.
     """
+    global _global_latest_frame
     global _current_stream_id
     my_stream_id = time.time_ns()
     _current_stream_id = my_stream_id
@@ -728,7 +783,10 @@ def stream_video(
                     (target_width, target_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
-                yield _compose_twin_frame(top_frame, bottom_frame)
+                final_frame = _compose_twin_frame(top_frame, bottom_frame)
+                with _global_frame_lock:
+                    _global_latest_frame = final_frame.copy()
+                yield final_frame
 
                 elapsed = time.time() - start
                 if elapsed < frame_interval:
@@ -795,6 +853,9 @@ def stream_video(
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             else:
                 frame_rgb = generate_mock_test_pattern(camera_index)
+
+            with _global_frame_lock:
+                _global_latest_frame = frame_rgb.copy()
 
             yield frame_rgb
 
