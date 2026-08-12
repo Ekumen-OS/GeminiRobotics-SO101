@@ -8,7 +8,7 @@ import numpy as np
 from agent.vla_controller import VLAController
 from robot.constants import JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
-from ui.components.chat import build_chat_interface
+from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.vision import build_vision_interface
 
@@ -92,17 +92,24 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
             f"**Operational Mode: `{mode.upper()}`**"
         )
 
-        vla_controller = VLAController(mode=mode)
+        vla_controller = VLAController(mode=mode, robot=robot)
 
         with gr.Row():
             with gr.Column(scale=7):
                 build_vision_interface(robot, mode, demo)
 
             with gr.Column(scale=5):
-                build_chat_interface(vla_controller)
+                prompt_input, chatbot, exec_btn, stop_btn, clear_btn = build_chat_interface(
+                    vla_controller, api_available=vla_controller.is_api_available
+                )
 
         with gr.Group():
-            build_controls_interface(robot, mode, init_deg)
+            sliders, joint_state_panel = build_controls_interface(robot, mode, init_deg)
+
+        # Wire up chat events now that sliders exist in the layout
+        wire_chat_events(
+            vla_controller, prompt_input, chatbot, exec_btn, stop_btn, clear_btn, sliders
+        )
 
     return demo
 
