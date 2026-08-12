@@ -62,6 +62,7 @@ class SO101Robot(RobotInterface):
         # Serialize all sim state read/write + rendering through one lock.
         self._sim_lock = threading.RLock()
         self._renderer_lock = threading.Lock()
+        self._stop_requested = False
         self._offscreen_warned = False
         if render_viewer:
             try:
@@ -165,11 +166,14 @@ class SO101Robot(RobotInterface):
             duration_sec: Duration of the interpolation trajectory in seconds.
             dt: Physics timestep duration in seconds.
         """
+        target_qpos = np.asarray(target_qpos, dtype=np.float32)
         start_qpos = self.get_joint_positions()
         num_steps = int(duration_sec / dt)
         sim_steps = max(1, int(round(dt / self.model.opt.timestep)))
 
         for step_idx in range(1, num_steps + 1):
+            if self._stop_requested:
+                break
             t = step_idx / num_steps
             alpha = 0.5 * (1.0 - np.cos(np.pi * t))
             interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
@@ -179,12 +183,14 @@ class SO101Robot(RobotInterface):
                 self.viewer.sync()
             time.sleep(dt)
 
-        # Allow position actuators a short smooth settling phase
-        for _ in range(10):
-            self.step(sim_steps)
-            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                self.viewer.sync()
-            time.sleep(dt)
+        if not self._stop_requested:
+            # Allow position actuators a short smooth settling phase
+            for _ in range(10):
+                self.step(sim_steps)
+                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                    self.viewer.sync()
+                time.sleep(dt)
+        self._stop_requested = False
 
     def render_rgb_frame(self, width: int = 640, height: int = 480) -> np.ndarray:
         """Render the current MuJoCo simulation state as an RGB image.
@@ -250,6 +256,10 @@ class SO101Robot(RobotInterface):
                 if self.viewer.is_running():
                     self.viewer.close()
                 self.viewer = None
+
+    def interrupt(self) -> None:
+        """Interrupt any ongoing physical movement."""
+        self._stop_requested = True
 
     def __del__(self) -> None:
         """Cleanup resources on object deletion."""
