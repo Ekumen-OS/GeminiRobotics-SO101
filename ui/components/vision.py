@@ -5,6 +5,7 @@ import gradio as gr
 from robot.interface import RobotInterface
 from ui.stream import (
     get_available_camera_choices,
+    get_default_camera_index,
     prepare_stream_switch,
     stream_video,
 )
@@ -25,7 +26,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
     )
 
     initial_choices = get_available_camera_choices()
-    initial_value = initial_choices[0][1] if initial_choices else 0
+    initial_value = get_default_camera_index(initial_choices)
     show_camera_source_controls = mode != "sim"
 
     def stream_video_with_robot(
