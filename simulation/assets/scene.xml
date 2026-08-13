@@ -21,7 +21,7 @@
         <!-- Target manipulation object to pick -->
         <body name="target" pos="0.18 0.0 0.015">
             <freejoint name="target_joint"/>
-            <geom type="box" size="0.015 0.015 0.015" rgba="0.9 0.2 0.25 1" density="500" contype="1" conaffinity="1"/>
+            <geom name="target_geom" type="box" size="0.015 0.015 0.015" rgba="0.9 0.2 0.25 1" density="250" friction="1.8 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" contype="1" conaffinity="1"/>
         </body>
     </worldbody>
 </mujoco>
