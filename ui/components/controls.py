@@ -6,6 +6,7 @@ import numpy as np
 from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.interface import RobotInterface
 from ui.components.telemetry import read_measured_joint_degrees, render_joint_state_panel
+from ui.state import set_target_joints_deg
 
 
 def build_controls_interface(
@@ -82,6 +83,7 @@ def build_controls_interface(
 
     def apply_joint_angles(j1: float, j2: float, j3: float, j4: float, j5: float, j6: float):
         target_deg = [j1, j2, j3, j4, j5, j6]
+        set_target_joints_deg(target_deg)
         target_qpos = np.radians(target_deg, dtype=np.float32)
         if robot is not None:
             robot.set_joint_positions(target_qpos)
@@ -122,11 +124,12 @@ def build_controls_interface(
 
     def reset_to_home():
         home_q = PRESET_POSES["HOME"]
+        home_deg = [round(float(np.degrees(x)), 1) for x in home_q]
+        set_target_joints_deg(home_deg)
         if robot is not None:
             robot.move_to_pose(home_q, duration_sec=1.0)
             if mode != "sim":
                 robot.step(1)
-        home_deg = [round(float(np.degrees(x)), 1) for x in home_q]
         msg = f"🏠 Moving arm back to HOME pose: {home_deg}°"
         measured_deg = read_measured_joint_degrees(robot, home_deg)
         panel_html = render_joint_state_panel(home_deg, measured_deg)
