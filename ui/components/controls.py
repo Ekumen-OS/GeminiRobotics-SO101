@@ -10,7 +10,7 @@ from ui.components.telemetry import read_measured_joint_degrees, render_joint_st
 
 def build_controls_interface(
     robot: RobotInterface | None, mode: str, init_deg: list[float]
-) -> None:
+) -> tuple[list[gr.Slider], gr.HTML]:
     """Build the robot movement control sliders.
 
     Args:
@@ -93,12 +93,32 @@ def build_controls_interface(
         return msg, panel_html
 
     for s in sliders:
-        s.change(
+        s.release(
             fn=apply_joint_angles,
             inputs=sliders,
             outputs=[status_display, joint_state_panel],
             queue=False if mode == "sim" else True,
         )
+
+    # Sync ONLY the HTML panel continuously with actual robot state using Gradio Timer
+    sync_timer = gr.Timer(value=0.2, active=True)
+
+    def sync_robot_state_html():
+        if robot is None or not hasattr(robot, "get_joint_positions"):
+            return gr.skip()
+
+        try:
+            curr_rad = robot.get_joint_positions()
+            curr_deg = [round(float(v), 1) for v in np.degrees(curr_rad)]
+            return render_joint_state_panel(curr_deg, curr_deg)
+        except Exception:
+            return gr.skip()
+
+    sync_timer.tick(
+        fn=sync_robot_state_html,
+        inputs=None,
+        outputs=[joint_state_panel],
+    )
 
     def reset_to_home():
         home_q = PRESET_POSES["HOME"]
@@ -118,3 +138,5 @@ def build_controls_interface(
         outputs=[*sliders, status_display, joint_state_panel],
         queue=False if mode == "sim" else True,
     )
+
+    return sliders, joint_state_panel
