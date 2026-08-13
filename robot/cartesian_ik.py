@@ -57,7 +57,7 @@ class CartesianIK:
         max_iters: int = 200,
         tol: float = 1e-4,
         damping: float = 1e-3,
-        null_weight: float = 5e-2,
+        null_weight: float = 1e-3,
     ) -> np.ndarray:
         """Solve numerical inverse kinematics for target 3D end-effector pose.
 
@@ -162,5 +162,23 @@ class CartesianIK:
         for j_id in self.all_joint_ids:
             qpos_adr = self.model.jnt_qposadr[j_id]
             qpos_res.append(self.data.qpos[qpos_adr])
+
+        achieved_pos = self.data.site_xpos[self.site_id].copy()
+        err_dist = np.linalg.norm(target_pos - achieved_pos)
+
+        # If IK got stuck (e.g., trapped against limits), retry from neutral seed
+        if err_dist > 0.01 and initial_qpos is not None:
+            neutral_seed = np.array([0.0, -0.5, 0.5, 0.5, 0.0, 0.0])
+            return self.solve_ik(
+                target_pos=target_pos,
+                target_mat=target_mat,
+                initial_qpos=neutral_seed,
+                nominal_qpos=nominal_qpos,
+                preserve_orientation=preserve_orientation,
+                max_iters=max_iters,
+                tol=tol,
+                damping=damping,
+                null_weight=null_weight,
+            )
 
         return np.array(qpos_res, dtype=np.float32)
