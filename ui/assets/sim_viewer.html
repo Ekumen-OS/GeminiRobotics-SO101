@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeminiRobotics SO-101 3D Simulation Viewport</title>
+  <!-- Three.js and OrbitControls / STLLoader -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0f19;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: #e2e8f0;
+    }
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    /* Floating Header Overlay */
+    .top-bar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(51, 65, 85, 0.6);
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      color: #38bdf8;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      pointer-events: auto;
+    }
+    .badge-dot {
+      width: 7px;
+      height: 7px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #10b981;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    /* Reset Camera Button in Corner */
+    .reset-cam-btn {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(51, 65, 85, 0.7);
+      border-radius: 10px;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      transition: all 0.15s ease;
+      z-index: 10;
+    }
+    .reset-cam-btn:hover {
+      background: rgba(30, 41, 59, 0.95);
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.6);
+      transform: translateY(-1px);
+    }
+    /* Interaction Hint */
+    .hint-bar {
+      position: absolute;
+      bottom: 14px;
+      left: 14px;
+      font-size: 10px;
+      color: #64748b;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 6px 8px;
+      border-radius: 6px;
+      backdrop-filter: blur(4px);
+    }
+    /* Loading Spinner */
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #0b0f19;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      z-index: 20;
+      transition: opacity 0.4s ease;
+    }
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(56, 189, 248, 0.2);
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div style="font-size: 12px; color: #94a3b8; font-weight: 500;">Loading 3D Simulation Environment...</div>
+  </div>
+
+  <div class="top-bar">
+    <div class="badge">
+      <span class="badge-dot"></span>
+      <span>MuJoCo Simulation Feed</span>
+    </div>
+    <div id="fps-badge" class="badge" style="color: #94a3b8; font-family: monospace;">
+      60 FPS
+    </div>
+  </div>
+
+  <div class="hint-bar">
+    <span>🖱️ <b>Left Drag</b>: Orbit / Rotate</span>
+    <span>🖱️ <b>Right Drag</b>: Pan Camera</span>
+    <span>📜 <b>Wheel / Pinch</b>: Zoom In/Out</span>
+  </div>
+
+  <button class="reset-cam-btn" id="btn-reset-cam" title="Reset camera to default view">
+    <span>🏠</span>
+    <span>Reset View</span>
+  </button>
+
+  <div id="canvas-container"></div>
+
+  <script>
+    // -------------------------------------------------------------
+    // THREE.JS 3D SCENE SETUP
+    // -------------------------------------------------------------
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0f19);
+    scene.fog = new THREE.FogExp2(0x0b0f19, 0.6);
+
+    // Camera setup (Z-up convention aligned to MuJoCo)
+    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 20);
+    const defaultCamPos = new THREE.Vector3(0.48, -0.48, 0.38);
+    const defaultCamTarget = new THREE.Vector3(0.12, 0.0, 0.14);
+    camera.position.copy(defaultCamPos);
+    camera.up.set(0, 0, 1); // Z is up
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(renderer.domElement);
+
+    // OrbitControls
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.copy(defaultCamTarget);
+    controls.minDistance = 0.12;
+    controls.maxDistance = 2.5;
+    controls.maxPolarAngle = Math.PI / 2 + 0.05; // Don't go below ground
+
+    // Lighting (Studio Dark Lighting)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(0.8, -0.8, 1.5);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 0.1;
+    dirLight.shadow.camera.far = 3.5;
+    dirLight.shadow.camera.left = -0.6;
+    dirLight.shadow.camera.right = 0.6;
+    dirLight.shadow.camera.top = 0.6;
+    dirLight.shadow.camera.bottom = -0.6;
+    dirLight.shadow.bias = -0.0005;
+    scene.add(dirLight);
+
+    const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.5);
+    fillLight.position.set(-0.8, 0.8, 1.0);
+    scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0x818cf8, 0.4);
+    rimLight.position.set(0, 1.0, 0.5);
+    scene.add(rimLight);
+
+    // Ground Plane & Grid
+    const groundGeo = new THREE.PlaneGeometry(3, 3);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0x111827,
+      roughness: 0.85,
+      metalness: 0.2
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.receiveShadow = true;
+    ground.position.z = -0.001;
+    scene.add(ground);
+
+    const gridHelper = new THREE.GridHelper(1.4, 28, 0x38bdf8, 0x1e293b);
+    gridHelper.rotation.x = Math.PI / 2; // Align to Z-up
+    gridHelper.position.z = 0.001;
+    scene.add(gridHelper);
+
+    // Manipulation Target Cube (from scene.xml: pos="0.18 0.0 0.015" size="0.015 0.015 0.015")
+    const targetGeo = new THREE.BoxGeometry(0.03, 0.03, 0.03);
+    const targetMat = new THREE.MeshStandardMaterial({
+      color: 0xef4444,
+      roughness: 0.3,
+      metalness: 0.1,
+      emissive: 0x450a0a
+    });
+    const targetCube = new THREE.Mesh(targetGeo, targetMat);
+    targetCube.castShadow = true;
+    targetCube.receiveShadow = true;
+    targetCube.position.set(0.18, 0.0, 0.015);
+    scene.add(targetCube);
+
+    // -------------------------------------------------------------
+    // 17 EXACT MUJOCO VISUAL GEOMS SETUP
+    // -------------------------------------------------------------
+    const matPrinted = new THREE.MeshStandardMaterial({
+      color: 0xf8fafc,
+      roughness: 0.35,
+      metalness: 0.1
+    });
+    const matServo = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.5,
+      metalness: 0.4
+    });
+    const matMovingJaw = new THREE.MeshStandardMaterial({
+      color: 0x0ea5e9,
+      roughness: 0.35,
+      metalness: 0.15
+    });
+
+    // Exact list of 17 visual geom meshes in scene.xml order
+    const geomList = [
+      { id: 0, mesh: "base_motor_holder_so101_v1.stl", is_servo: false },
+      { id: 1, mesh: "base_so101_v2.stl", is_servo: false },
+      { id: 2, mesh: "sts3215_03a_v1.stl", is_servo: true },
+      { id: 3, mesh: "waveshare_mounting_plate_so101_v2.stl", is_servo: false },
+      { id: 4, mesh: "sts3215_03a_v1.stl", is_servo: true },
+      { id: 5, mesh: "motor_holder_so101_base_v1.stl", is_servo: false },
+      { id: 6, mesh: "rotation_pitch_so101_v1.stl", is_servo: false },
+      { id: 7, mesh: "sts3215_03a_v1.stl", is_servo: true },
+      { id: 8, mesh: "upper_arm_so101_v1.stl", is_servo: false },
+      { id: 9, mesh: "under_arm_so101_v1.stl", is_servo: false },
+      { id: 10, mesh: "motor_holder_so101_wrist_v1.stl", is_servo: false },
+      { id: 11, mesh: "sts3215_03a_v1.stl", is_servo: true },
+      { id: 12, mesh: "sts3215_03a_no_horn_v1.stl", is_servo: true },
+      { id: 13, mesh: "wrist_roll_pitch_so101_v2.stl", is_servo: false },
+      { id: 14, mesh: "sts3215_03a_v1.stl", is_servo: true },
+      { id: 15, mesh: "wrist_roll_follower_so101_v1.stl", is_servo: false },
+      { id: 16, mesh: "moving_jaw_so101_v1.stl", is_servo: false, is_jaw: true }
+    ];
+
+    // Initial HOME Pose World Transforms
+    const initialHomeGeoms = [
+      { pos: [0.0062, -0.0, 0.0488], quat: [0.7404, 0.0027, 0.6721, -0.003] },
+      { pos: [0.0128, -0.0, 0.0167], quat: [-0.64, -0.3011, -0.3014, 0.6395] },
+      { pos: [0.0274, -0.0, 0.0438], quat: [0.4936, 0.4936, 0.5063, 0.5063] },
+      { pos: [-0.0286, -0.0002, 0.0474], quat: [-0.7071, 0.0, 0.0, 0.7071] },
+      { pos: [0.0692, 0.0003, 0.1052], quat: [0.0, -0.0127, 0.9999, -0.0] },
+      { pos: [0.0717, -0.0003, 0.0863], quat: [0.4947, 0.5011, -0.5015, 0.5026] },
+      { pos: [0.0657, -0.0, 0.0557], quat: [0.695, 0.6966, -0.1236, -0.1283] },
+      { pos: [-0.0437, 0.0003, 0.1026], quat: [-0.1342, -0.0126, 0.9909, -0.0017] },
+      { pos: [0.0107, 0.0, 0.0998], quat: [0.5997, -0.0008, 0.8002, 0.0015] },
+      { pos: [0.0041, -0.0009, 0.1264], quat: [0.7846, 0.0126, -0.6197, 0.0155] },
+      { pos: [0.0537, -0.0002, 0.1432], quat: [0.0918, 0.7029, -0.6987, 0.0969] },
+      { pos: [0.0713, 0.0003, 0.1504], quat: [0.6094, -0.0101, 0.7927, 0.0077] },
+      { pos: [0.1054, 0.0121, 0.1164], quat: [0.1762, 0.7387, -0.6153, 0.2115] },
+      { pos: [0.0978, 0.0042, 0.1288], quat: [-0.2648, -0.3237, 0.9027, -0.1014] },
+      { pos: [0.1345, -0.0004, 0.0863], quat: [0.0102, 0.4851, -0.0056, 0.8744] },
+      { pos: [0.1212, 0.0005, 0.0724], quat: [0.7376, -0.6681, 0.0666, -0.0722] },
+      { pos: [0.1456, -0.0007, 0.0676], quat: [0.9995, -0.0208, 0.0211, -0.0117] }
+    ];
+
+    const geomObjects = [];
+    const stlLoader = new THREE.STLLoader();
+    const meshBaseUrl = '/sim_assets/centered_meshes/';
+
+    geomList.forEach((spec, idx) => {
+      const meshGroup = new THREE.Group();
+      scene.add(meshGroup);
+
+      const init = initialHomeGeoms[idx];
+      const targetPos = new THREE.Vector3(init.pos[0], init.pos[1], init.pos[2]);
+      const targetQuat = new THREE.Quaternion(init.quat[0], init.quat[1], init.quat[2], init.quat[3]);
+      const currentPos = targetPos.clone();
+      const currentQuat = targetQuat.clone();
+
+      meshGroup.position.copy(currentPos);
+      meshGroup.quaternion.copy(currentQuat);
+
+      const material = spec.is_jaw ? matMovingJaw : (spec.is_servo ? matServo : matPrinted);
+
+      // Load STL file
+      stlLoader.load(
+        meshBaseUrl + spec.mesh,
+        (geometry) => {
+          geometry.computeVertexNormals();
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          meshGroup.add(mesh);
+        },
+        undefined,
+        (err) => {
+          console.warn('Could not load STL mesh:', spec.mesh, err);
+        }
+      );
+
+      geomObjects.push({
+        id: idx,
+        meshGroup,
+        targetPos,
+        targetQuat,
+        currentPos,
+        currentQuat
+      });
+    });
+
+    const targetCubeTargetPos = new THREE.Vector3(0.18, 0.0, 0.015);
+    const targetCubeTargetQuat = new THREE.Quaternion(0, 0, 0, 1);
+    const targetCubeCurrentPos = targetCubeTargetPos.clone();
+    const targetCubeCurrentQuat = targetCubeTargetQuat.clone();
+
+    // -------------------------------------------------------------
+    // REAL-TIME POLLING & STATE SYNCHRONIZATION
+    // -------------------------------------------------------------
+    let isPolling = true;
+    async function fetchSimState() {
+      if (!isPolling) return;
+      try {
+        const res = await fetch('/api/sim_state');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.geoms && Array.isArray(data.geoms)) {
+            data.geoms.forEach((g, idx) => {
+              if (geomObjects[idx]) {
+                geomObjects[idx].targetPos.set(g.pos[0], g.pos[1], g.pos[2]);
+                geomObjects[idx].targetQuat.set(g.quat[0], g.quat[1], g.quat[2], g.quat[3]);
+              }
+            });
+          }
+          if (data && data.target_pos && Array.isArray(data.target_pos)) {
+            targetCubeTargetPos.set(data.target_pos[0], data.target_pos[1], data.target_pos[2]);
+          }
+          if (data && data.target_quat && Array.isArray(data.target_quat)) {
+            targetCubeTargetQuat.set(data.target_quat[0], data.target_quat[1], data.target_quat[2], data.target_quat[3]);
+          }
+        }
+      } catch (err) {
+        // Backend offline or starting up
+      }
+    }
+
+    setInterval(fetchSimState, 33); // 30Hz polling
+
+    // -------------------------------------------------------------
+    // CAMERA RESET ACTION
+    // -------------------------------------------------------------
+    const resetBtn = document.getElementById('btn-reset-cam');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        animateCamera(defaultCamPos, defaultCamTarget);
+      });
+    }
+
+    function animateCamera(newPos, newTarget, duration = 600) {
+      const startPos = camera.position.clone();
+      const startTarget = controls.target.clone();
+      const startTime = performance.now();
+
+      function updateAnim(now) {
+        const elapsed = now - startTime;
+        const t = Math.min(elapsed / duration, 1.0);
+        const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+        camera.position.lerpVectors(startPos, newPos, ease);
+        controls.target.lerpVectors(startTarget, newTarget, ease);
+        controls.update();
+
+        if (t < 1.0) {
+          requestAnimationFrame(updateAnim);
+        }
+      }
+      requestAnimationFrame(updateAnim);
+    }
+
+    // -------------------------------------------------------------
+    // RENDER & SMOOTH MOTION LOOP
+    // -------------------------------------------------------------
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fpsTime = lastTime;
+    const fpsBadge = document.getElementById('fps-badge');
+
+    // Dismiss loading spinner
+    setTimeout(() => {
+      const loader = document.getElementById('loading-overlay');
+      if (loader) {
+        loader.style.opacity = '0';
+        setTimeout(() => loader.remove(), 400);
+      }
+    }, 400);
+
+    function animate(time) {
+      requestAnimationFrame(animate);
+
+      // Smooth interpolation for all 17 visual geoms
+      const lerpFactor = 0.25;
+      geomObjects.forEach(obj => {
+        obj.currentPos.lerp(obj.targetPos, lerpFactor);
+        obj.currentQuat.slerp(obj.targetQuat, lerpFactor);
+        obj.meshGroup.position.copy(obj.currentPos);
+        obj.meshGroup.quaternion.copy(obj.currentQuat);
+      });
+
+      // Smooth interpolation for target manipulation cube
+      targetCubeCurrentPos.lerp(targetCubeTargetPos, lerpFactor);
+      targetCubeCurrentQuat.slerp(targetCubeTargetQuat, lerpFactor);
+      targetCube.position.copy(targetCubeCurrentPos);
+      targetCube.quaternion.copy(targetCubeCurrentQuat);
+
+      controls.update();
+      renderer.render(scene, camera);
+
+      // FPS calculation
+      frameCount++;
+      if (time - fpsTime >= 1000) {
+        const fps = Math.round((frameCount * 1000) / (time - fpsTime));
+        fpsBadge.textContent = fps + ' FPS';
+        frameCount = 0;
+        fpsTime = time;
+      }
+    }
+
+    requestAnimationFrame(animate);
+
+    // Responsive Resizing
+    window.addEventListener('resize', onWindowResize, false);
+    function onWindowResize() {
+      const width = container.clientWidth || window.innerWidth;
+      const height = container.clientHeight || window.innerHeight;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+    }
+  </script>
+</body>
+</html>

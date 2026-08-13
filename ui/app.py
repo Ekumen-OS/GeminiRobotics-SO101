@@ -4,6 +4,10 @@ from pathlib import Path
 
 import gradio as gr
 import numpy as np
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from agent.vla_controller import VLAController
 from robot.constants import JOINT_NAMES, PRESET_POSES
@@ -11,6 +15,7 @@ from robot.interface import RobotInterface
 from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.vision import build_vision_interface
+from ui.state import get_robot_state_dict, set_active_robot
 
 CUSTOM_CSS = """
 #vla-chatbot {
@@ -114,6 +119,46 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
     return demo
 
 
+def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastAPI:
+    """Create FastAPI application with mounted Gradio UI, 3D assets, and simulation endpoints.
+
+    Args:
+        robot: Initialized robot controller instance.
+        mode: Target execution operational mode ('real', 'sim', 'twin').
+
+    Returns:
+        Configured FastAPI application instance.
+    """
+    set_active_robot(robot)
+    app = FastAPI(title="GeminiRobotics-SO101", docs_url=None, redoc_url=None)
+
+    project_root = Path(__file__).resolve().parent.parent
+    sim_assets_dir = project_root / "simulation" / "assets"
+    ui_assets_dir = Path(__file__).resolve().parent / "assets"
+
+    if sim_assets_dir.exists():
+        app.mount("/sim_assets", StaticFiles(directory=str(sim_assets_dir)), name="sim_assets")
+
+    if ui_assets_dir.exists():
+        app.mount("/ui_assets", StaticFiles(directory=str(ui_assets_dir)), name="ui_assets")
+
+    @app.get("/viewer")
+    async def get_viewer():
+        viewer_path = ui_assets_dir / "sim_viewer.html"
+        if viewer_path.exists():
+            return FileResponse(str(viewer_path), media_type="text/html")
+        return JSONResponse({"error": "sim_viewer.html not found"}, status_code=404)
+
+    @app.get("/api/sim_state")
+    async def get_sim_state():
+        return JSONResponse(get_robot_state_dict())
+
+    theme = get_cached_or_hub_theme("YTheme/TehnoX")
+    demo = build_vla_interface(robot=robot, mode=mode)
+    app = gr.mount_gradio_app(app, demo, path="/", theme=theme, css=CUSTOM_CSS)
+    return app
+
+
 def launch_web_ui(
     robot: RobotInterface | None = None,
     mode: str = "real",
@@ -128,10 +173,17 @@ def launch_web_ui(
         server_name: Host binding address (default: 0.0.0.0).
         server_port: Port number for web application (default: 7860).
     """
-    theme = get_cached_or_hub_theme("YTheme/TehnoX")
-    demo = build_vla_interface(robot=robot, mode=mode)
+    app = create_app(robot=robot, mode=mode)
     print("=" * 60)
     print(f"Starting GeminiRobotics SO-101 Unified Gradio Web UI [{mode.upper()} MODE]...")
     print(f"Open browser at http://localhost:{server_port}/")
     print("=" * 60)
-    demo.launch(server_name=server_name, server_port=server_port, theme=theme, css=CUSTOM_CSS)
+    config = uvicorn.Config(
+        app,
+        host=server_name,
+        port=server_port,
+        log_level="warning",
+        timeout_graceful_shutdown=1,
+    )
+    server = uvicorn.Server(config)
+    server.run()
