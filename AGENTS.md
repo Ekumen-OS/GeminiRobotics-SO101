@@ -10,7 +10,7 @@
 - **Activate Virtualenv**: `source .venv/bin/activate`
 - **Run Commands**: Prefer executing application servers, tests, scripts, and linters via `uv run` (e.g., `uv run python main.py` to start the Gradio Web UI server at `http://localhost:7860/`, `uv run ruff check .`, `uv run python main.py --task check_environment`, `uv run python main.py --task test_simulation`).
 - **Sync Dependencies**: `uv sync`
-- If you run the Gradio server, make sure to kill it everytime you summon it. If you leave it running, future testing and development may be blocked.
+- **Server Lifecycle and Port Management**: Before launching the Web UI server (default port `7860`), ALWAYS verify that the port is free (`lsof -ti :7860`). If it is not available, kill the occupying process (`lsof -ti :7860 | xargs kill -9`) to avoid binding collisions or stale code caching. Start the server, test/inspect changes, and **ALWAYS terminate/kill the server process immediately when done** so the port is free for the user to run and use the application.
 
 ## 3. Formatting, Linting (`ruff`) and testing
 
