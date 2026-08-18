@@ -126,17 +126,6 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
     )
     initial_choices = get_available_camera_choices()
     initial_value = get_default_camera_index(initial_choices)
-    show_camera_source_controls = mode != "sim"
-
-    def stream_video_with_robot(
-        camera_index: int,
-        mode_value: str,
-    ):
-        yield from stream_video(
-            camera_index=camera_index,
-            mode=mode_value,
-            robot=robot,
-        )
 
     with gr.Row():
         camera_dropdown = gr.Dropdown(
