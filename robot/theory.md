@@ -84,10 +84,22 @@ While the SO-101 command vector contains 6 motor inputs, anatomical analysis rev
 
 The 6th actuator drives a single-hinge opening jaw on the gripper assembly and does not shift the coordinate frame triad (`gripperframe`). Consequently, enforcing full 6-DOF tracking ($\mathbb{R}^6$) on a 5-DOF arm introduces over-determined numerical deadlocks during linear Cartesian moves. 
 
-In our practical implementation, we decouple the spatial IK solver to optimize primary **3D Position Tracking** ($3 \times 5$ full-rank Jacobian) while utilizing the remaining 2D internal null-space to pull joint postures smoothly toward an ergonomic workspace anchor (`SWEEP_HOME`).
+In our practical implementation, we decouple the spatial IK solver to optimize primary **3D Position Tracking** ($3 \times 5$ full-rank Jacobian) while utilizing the remaining 2D internal null-space to pull joint postures smoothly toward an ergonomic workspace anchor (`SWEEP_HOME`). Furthermore, if the solver encounters local minima near joint bounds ($\text{error} > 1\,\text{cm}$), it automatically recovers by retrying from a neutral workspace seed.
+
+## 5. Visual Grounding & Spatial Point Mapping
+
+To enable Gemini VLA models to interact with real-world objects seen via the camera feed, the system maps 2D visual detections into physical 3D end-effector targets via the `move_to_spatial_point` tool adapter:
+
+1. **Normalized Image Coordinate Frame**: The model identifies target objects using normalized coordinates $[y, x] \in [0, 1000]$, where $(0, 0)$ is the top-left corner and $(1000, 1000)$ is the bottom-right corner.
+2. **Workspace Affine Mapping**: Normalized 2D coordinates are mapped linearly to physical 3D coordinates in the robot's base frame:
+   - $X_{\text{robot}} = X_{\text{max}} + \frac{y}{1000} \cdot (X_{\text{min}} - X_{\text{max}})$ (depth from base, $[0.38\,\text{m} \to 0.12\,\text{m}]$)
+   - $Y_{\text{robot}} = Y_{\text{max}} + \frac{x}{1000} \cdot (Y_{\text{min}} - Y_{\text{max}})$ (lateral span, $[+0.28\,\text{m} \to -0.20\,\text{m}]$)
+   - $Z_{\text{robot}} = Z_{\text{hover}} = 0.03\,\text{m}$ (safe table clearance)
+3. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth trajectory interpolation via `move_to_pose()`.
 
 > 💡 **Verifying Kinematics & Motion**: 
 > You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing the dedicated test command:
 > ```bash
 > uv run python main.py --task test_simulation
 > ```
+
