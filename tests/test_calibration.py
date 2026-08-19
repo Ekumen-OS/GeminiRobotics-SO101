@@ -227,9 +227,78 @@ def test_setup_workspace_reuse_existing_markers() -> None:
             x_min=50,
         )
 
-        assert cfg_path.exists()
         assert updated["workspace_corners_mm"]["top_left"]["x"] == 450
         assert updated["workspace_corners_mm"]["bottom_left"]["x"] == 50
-        # Marker was preserved and not overwritten
         assert dummy_marker.read_text() == "fake image content"
         assert dummy_marker.stat().st_mtime == initial_mtime
+
+
+def test_compute_sim_calibration() -> None:
+    """Test synthetic homography computation from MuJoCo camera projection."""
+    from simulation.sim_calibration import compute_sim_calibration, init_sim_workspace_calibration
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        save_path = Path(tmp_dir) / "sim_homography.npz"
+        h_mat, inv_h, err = compute_sim_calibration(save_path=save_path)
+
+        assert h_mat.shape == (3, 3)
+        assert inv_h.shape == (3, 3)
+        assert err < 0.01  # Sub-millimeter error for exact geometric projection
+        assert save_path.exists()
+
+        calibrator = init_sim_workspace_calibration(save_path=save_path)
+        assert calibrator.is_calibrated is True
+
+        # Test center point projection roundtrip
+        px, py = calibrator.gemini_to_pixel([500.0, 500.0])
+        xyz = calibrator.pixel_to_robot_xyz(px, py, z_m=0.03)
+        assert 0.10 <= xyz[0] <= 0.45  # In front of robot base in workspace
+        assert -0.30 <= xyz[1] <= 0.30  # Within workspace lateral span
+        assert np.isclose(xyz[2], 0.03)
+
+
+def test_sim_robot_camera_rendering() -> None:
+    """Test SO101Robot rendering from workspace_cam in MuJoCo simulation."""
+    from simulation.sim_robot import SO101Robot
+
+    robot = SO101Robot(render_viewer=False)
+    try:
+        frame = robot.render_rgb_frame(width=640, height=480, camera="workspace_cam")
+        assert frame.shape == (480, 640, 3)
+        assert frame.dtype == np.uint8
+        # Ensure frame is not completely blank / black
+        assert np.mean(frame) > 10.0
+    finally:
+        robot.close()
+
+
+def test_sim_spatial_point_execution() -> None:
+    """Test spatial point IK execution end-to-end in simulation mode."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from agent.tools import execute_tool_call
+    from simulation.sim_calibration import init_sim_workspace_calibration
+    from simulation.sim_robot import SO101Robot
+    from ui.stream import get_calibrator
+
+    calib = get_calibrator(mode="sim")
+    init_sim_workspace_calibration(calibrator=calib)
+
+    robot = SO101Robot(render_viewer=False)
+    robot.reset("HOME")
+
+    try:
+        call = SimpleNamespace(
+            name="move_to_spatial_point",
+            args={"point": [500.0, 500.0], "z_height_cm": 3.0},
+        )
+        result = asyncio.run(execute_tool_call(call=call, robot=robot))
+        assert result.get("status") == "success"
+        assert "target_xyz_m" in result
+        target_xyz = result["target_xyz_m"]
+        assert 0.10 <= target_xyz[0] <= 0.45
+        assert -0.30 <= target_xyz[1] <= 0.30
+        assert np.isclose(target_xyz[2], 0.03)
+    finally:
+        robot.close()

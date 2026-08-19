@@ -50,19 +50,29 @@ def test_stream_overlay_flags() -> None:
 
 
 def test_build_chat_interface_structure() -> None:
-    """Verify chat component creation and 600px height configuration."""
-    controller = VLAController(mode="sim", robot=None)
+    """Verify chat component creation and button layout configuration."""
+    controller_sim = VLAController(mode="sim", robot=None)
     with gr.Blocks():
-        prompt_input, chatbot, exec_btn, stop_btn, clear_btn = build_chat_interface(
-            controller=controller, api_available=False
+        prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn = build_chat_interface(
+            controller=controller_sim, api_available=False
         )
 
     assert chatbot.elem_id == "vla-chatbot"
     assert chatbot.height == 600
     assert prompt_input.elem_id == "vla-prompt"
+    assert prompt_input.lines == 1
     assert exec_btn is not None
-    assert stop_btn is not None
+    assert home_btn is not None
     assert clear_btn is not None
+    assert rand_btn is not None
+
+    # In real mode, rand_btn is None
+    controller_real = VLAController(mode="real", robot=None)
+    with gr.Blocks():
+        _, _, _, _, _, rand_btn_real = build_chat_interface(
+            controller=controller_real, api_available=False
+        )
+    assert rand_btn_real is None
 
 
 def test_build_controls_interface_structure() -> None:
@@ -135,3 +145,16 @@ def test_create_app_fastapi() -> None:
     route_paths = [route.path for route in app.routes]
     assert "/viewer" in route_paths
     assert "/api/sim_state" in route_paths
+
+
+def test_sim_robot_randomize_target() -> None:
+    """Verify target manipulation object randomization in simulation."""
+    from simulation.sim_robot import SO101Robot
+
+    sim_robot = SO101Robot(render_viewer=False)
+    new_pos = sim_robot.randomize_target(
+        x_range=(0.15, 0.22), y_range=(-0.10, 0.10), z_height=0.015
+    )
+    assert 0.15 <= new_pos[0] <= 0.22
+    assert -0.10 <= new_pos[1] <= 0.10
+    assert new_pos[2] == 0.015
