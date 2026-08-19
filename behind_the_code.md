@@ -117,6 +117,57 @@ We created a centralized `RobotStateManager` singleton (`ui/state.py`) protected
 - **Concurrency Safety**: Eliminates race conditions across web requests, serial communication, and background streaming threads.
 - **Consistency**: Real-time slider states, 3D digital twin meshes, and physical servos remain in lockstep.
 
+## 7. Perspective Homography & ArUco Workspace Calibration
+
+**The Problem:**
+Camera perspective distortion and arbitrary mounting angles mean pixel coordinates $[u, v]$ do not linearly map to robot base coordinates $[X, Y, Z]$. Hardcoded linear interpolation yields significant reach errors (2-5 cm) at the perimeter of the tabletop.
+
+**The Solution:**
+We introduced `ArucoWorkspaceCalibrator` (`robot/calibration.py`):
+- Uses 4-corner fiducial markers (`DICT_4X4_50`, IDs 0..3) with known millimeter coordinates relative to the robot base.
+- Solves for the 3x3 projective homography matrix $H \in \mathbb{R}^{3 \times 3}$ using RANSAC:
+  $$\begin{bmatrix} X_{mm} \\ Y_{mm} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
+- Normalizes coordinates $[y, x] \in [0, 1000]$ from Gemini and projects them with millimeter accuracy into the robot task space.
+
+**Why it matters:**
+- **Physical Accuracy**: Transforms VLM 2D bounding boxes/points into millimeter-accurate pick coordinates regardless of camera tilt or focal length.
+- **User Customizability**: Calibration profiles (`config/workspace_calibration.json`) allow users to define arbitrary mat dimensions and marker placements.
+
+## 8. $C^2$-Continuous Quintic Minimum-Jerk Motion Planning
+
+**The Problem:**
+Low-cost serial bus servos (such as Feetech STS3215) experience high gear wear, violent shaking, and torque-off fault triggers when subjected to step-position commands or velocity discontinuities ($C^0$ or $C^1$).
+
+**The Solution:**
+We implemented `TrajectoryPlanner` (`robot/trajectory.py`) using the 5th-order minimum-jerk polynomial:
+$$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5, \quad \tau = \frac{t}{T} \in [0, 1]$$
+With analytical boundary conditions:
+$$s(0) = 0, \quad s(1) = 1, \quad \dot{s}(0) = \dot{s}(1) = 0, \quad \ddot{s}(0) = \ddot{s}(1) = 0$$
+Both initial and final velocity and acceleration are strictly zero ($C^2$ continuous), minimizing the integral of squared jerk:
+$$\min \int_0^T \left( \frac{d^3 q}{dt^3} \right)^2 dt$$
+
+**Why it matters:**
+- **Mechanical Longevity**: Completely eliminates torque spikes and motor chatter on 3D-printed joints and servo gearboxes.
+- **Predictable Phasing**: Deconstructs complex pick-and-place into discrete, verifiable motion phases (Hover $\rightarrow$ Linear Descent $\rightarrow$ Actuate $\rightarrow$ Retract).
+
+## 9. Closed-Loop SPAV State Machine & Dual-Model Architecture
+
+**The Problem:**
+Open-loop execution fails whenever an object slips, rolls, or experiences slight mechanical misalignment during grasping. Traditional single-model setups cannot simultaneously stream low-latency audio/video and return strongly-typed structured JSON schemas.
+
+**The Solution:**
+We designed a hybrid multi-model pipeline:
+- **Interactive Streaming**: Uses `gemini-robotics-er-2-streaming-preview` via the Live API WebSocket session for conversational interaction and reactive tool dispatch.
+- **SPAV Evaluative Engine (`agent/spav.py`)**: Uses `gemini-robotics-er-2-preview` (standard endpoint supporting structured JSON schemas + thinking) for:
+  - **State 1 (Sense & Plan)**: Target detection and spatial bounding.
+  - **State 2 (Act)**: Calibrated trajectory execution.
+  - **State 3 (Visual Verification)**: Post-grasp hover snapshot evaluation with boolean success and confidence scores.
+  - **State 4 (Self-Correction Decision)**: Visual offset delta $[\Delta y, \Delta x]$ correction on retry (up to 3 attempts).
+
+**Why it matters:**
+- **Self-Healing Autonomy**: If an object shifts or slips, the robot self-corrects without human intervention.
+- **Best-of-Both Models**: Combines real-time streaming responsiveness with rigorous structured spatial reasoning.
+
 ---
 
 By adhering to these software engineering principles, GeminiRobotics-SO101 remains a robust, enterprise-grade foundation for cutting-edge VLA (Vision-Language-Action) robotics research.
