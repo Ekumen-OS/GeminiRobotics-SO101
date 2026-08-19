@@ -1,4 +1,4 @@
-"""Robot tool declarations and execution adapters for Gemini Live API and SPAV pipeline."""
+"""Robot tool declarations and execution adapters for Gemini Live API."""
 
 import asyncio
 from collections.abc import Callable
@@ -103,8 +103,10 @@ ROBOT_TOOL_DECLARATIONS = [
         "description": (
             "Move the robot end-effector to a 2D point visible in the camera feed. "
             "Provide a normalized [y, x] coordinate (0-1000) from the camera image. "
-            "The system will map this to 3D workspace coordinates using ArUco calibration "
-            "or geometric bounds and use inverse kinematics to reach the target."
+            "The system maps this to 3D workspace coordinates using ArUco workspace calibration "
+            "and solves inverse kinematics to reach the target. "
+            "Specify z_height_cm to control vertical offset above table (0 for table contact, "
+            "3-5 for hover/transit)."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -114,28 +116,15 @@ ROBOT_TOOL_DECLARATIONS = [
                     "description": "Normalized [y, x] image coordinate (0-1000) of the target.",
                     "items": {"type": "NUMBER"},
                 },
-            },
-            "required": ["point"],
-        },
-    },
-    {
-        "name": "execute_spav_pick_and_place",
-        "description": (
-            "Execute a closed-loop pick-and-place operation using the SPAV "
-            "(Sense-Plan-Act-Verify) state machine pipeline with Gemini ER 2. "
-            "Captures workspace snapshot, detects target object, generates calibrated "
-            "minimum-jerk trajectory, executes grasp, and verifies success with "
-            "automatic self-correction retry."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "instruction": {
-                    "type": "STRING",
-                    "description": "Natural language pick-and-place instruction.",
+                "z_height_cm": {
+                    "type": "NUMBER",
+                    "description": (
+                        "Height above the table surface in centimeters (default: 3.0). "
+                        "Use 0 for grasping contact at table level, 3-5 for safe hover."
+                    ),
                 },
             },
-            "required": ["instruction"],
+            "required": ["point"],
         },
     },
 ]
@@ -148,7 +137,6 @@ _BLOCKING_TOOLS = {
     "close_gripper",
     "move_to_preset",
     "move_to_spatial_point",
-    "execute_spav_pick_and_place",
 }
 for decl in ROBOT_TOOL_DECLARATIONS:
     if decl["name"] in _BLOCKING_TOOLS:
@@ -193,9 +181,13 @@ def image_point_to_xyz(
     Raises:
         RuntimeError: If the workspace is not calibrated.
     """
+    from robot.calibration import DEFAULT_SIM_SAVE_PATH
     from ui.stream import get_calibrator
 
     calib = get_calibrator()
+    if calib is not None and not calib.is_calibrated and DEFAULT_SIM_SAVE_PATH.exists():
+        calib.load_calibration(DEFAULT_SIM_SAVE_PATH)
+
     if calib is None or not calib.is_calibrated:
         raise RuntimeError(
             "Workspace is not calibrated. Please ensure 4 ArUco markers are in view and "
@@ -246,7 +238,7 @@ async def execute_tool_call(
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> dict:
-    """Dispatch tool call to the RobotInterface and SPAV state machine asynchronously.
+    """Dispatch tool call to the RobotInterface asynchronously.
 
     Args:
         call: The tool call object with name and args.
@@ -341,11 +333,15 @@ async def execute_tool_call(
                 return {
                     "error": f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
                 }
-            hover_z = DEFAULT_HOVER_Z
+            z_height_cm = float(args.get("z_height_cm", 3.0))
+            # Clamp height to reasonable safety bounds [0.0cm, 20.0cm]
+            z_height_cm = max(0.0, min(20.0, z_height_cm))
+            hover_z = z_height_cm / 100.0
             target_xyz = image_point_to_xyz(point, hover_z=hover_z)
             print(
                 f"[Tools] move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
-                f"→ XYZ [{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]"
+                f"(z={z_height_cm:.1f}cm) → XYZ "
+                f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]"
             )
 
             # Use current joints as IK seed for smooth continuation
@@ -372,31 +368,6 @@ async def execute_tool_call(
             if warnings:
                 response["warnings"] = warnings
             return response
-
-        elif name == "execute_spav_pick_and_place":
-            instruction = args.get("instruction", "")
-            if not instruction:
-                return {"error": "execute_spav_pick_and_place requires an 'instruction' string."}
-
-            from agent.spav import SPAVStateMachine
-            from ui.stream import get_calibrator, get_latest_jpeg
-
-            jpeg_fn = get_latest_jpeg_fn if get_latest_jpeg_fn is not None else get_latest_jpeg
-            spav = SPAVStateMachine(robot=robot, calibrator=get_calibrator())
-
-            res = await spav.execute_spav(
-                instruction=instruction,
-                get_latest_jpeg_fn=jpeg_fn,
-                status_callback=status_callback,
-            )
-
-            return {
-                "status": "success" if res.success else "failed",
-                "message": res.final_message,
-                "pick_label": res.pick_label,
-                "place_label": res.place_label,
-                "attempts": res.attempts,
-            }
 
         else:
             return {"error": f"Unknown tool called: {name}"}
