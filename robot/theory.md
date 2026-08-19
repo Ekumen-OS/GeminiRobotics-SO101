@@ -86,20 +86,37 @@ The 6th actuator drives a single-hinge opening jaw on the gripper assembly and d
 
 In our practical implementation, we decouple the spatial IK solver to optimize primary **3D Position Tracking** ($3 \times 5$ full-rank Jacobian) while utilizing the remaining 2D internal null-space to pull joint postures smoothly toward an ergonomic workspace anchor (`SWEEP_HOME`). Furthermore, if the solver encounters local minima near joint bounds ($\text{error} > 1\,\text{cm}$), it automatically recovers by retrying from a neutral workspace seed.
 
-## 5. Visual Grounding & Spatial Point Mapping
+## 5. Visual Grounding & Perspective Homography Calibration
 
-To enable Gemini VLA models to interact with real-world objects seen via the camera feed, the system maps 2D visual detections into physical 3D end-effector targets via the `move_to_spatial_point` tool adapter:
+To enable Gemini VLA models to interact with real-world objects seen via the camera feed, the system maps 2D visual detections into physical 3D end-effector targets via the `move_to_spatial_point` and `execute_spav_pick_and_place` tool adapters:
 
 1. **Normalized Image Coordinate Frame**: The model identifies target objects using normalized coordinates $[y, x] \in [0, 1000]$, where $(0, 0)$ is the top-left corner and $(1000, 1000)$ is the bottom-right corner.
-2. **Workspace Affine Mapping**: Normalized 2D coordinates are mapped linearly to physical 3D coordinates in the robot's base frame:
+2. **Perspective Homography Transformation**: When ArUco workspace markers (`DICT_4X4_50`, IDs 0..3) are detected in view, the calibrator uses a 3x3 projective homography matrix $H \in \mathbb{R}^{3 \times 3}$:
+   $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
+   This accounts for camera tilt, focal distance, and perspective skew, converting pixel coordinates directly into millimeter coordinates in the robot base frame.
+3. **Linear Fallback Mapping**: When uncalibrated, normalized 2D coordinates map linearly across predefined workspace bounding boxes:
    - $X_{\text{robot}} = X_{\text{max}} + \frac{y}{1000} \cdot (X_{\text{min}} - X_{\text{max}})$ (depth from base, $[0.38\,\text{m} \to 0.12\,\text{m}]$)
    - $Y_{\text{robot}} = Y_{\text{max}} + \frac{x}{1000} \cdot (Y_{\text{min}} - Y_{\text{max}})$ (lateral span, $[+0.28\,\text{m} \to -0.20\,\text{m}]$)
    - $Z_{\text{robot}} = Z_{\text{hover}} = 0.03\,\text{m}$ (safe table clearance)
-3. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth trajectory interpolation via `move_to_pose()`.
+4. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth trajectory interpolation via `TrajectoryPlanner`.
+
+## 6. Quintic Minimum-Jerk Motion Interpolation
+
+To prevent torque-off faults and eliminate mechanical chattering on 3D-printed joints and Feetech STS3215 servos, trajectories are interpolated using the 5th-order minimum-jerk polynomial:
+
+$$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5, \quad \tau = \frac{t}{T} \in [0, 1]$$
+
+This polynomial satisfies analytical zero-boundary conditions for position, velocity, and acceleration:
+- $s(0) = 0, \quad s(1) = 1$
+- $\dot{s}(0) = 0, \quad \dot{s}(1) = 0$
+- $\ddot{s}(0) = 0, \quad \ddot{s}(1) = 0$
+
+Guaranteeing $C^2$ continuity and minimizing total mechanical jerk: $\min \int_0^T \left( \frac{d^3 q}{dt^3} \right)^2 dt$.
 
 > 💡 **Verifying Kinematics & Motion**: 
-> You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing the dedicated test command:
+> You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing:
 > ```bash
 > uv run python main.py --task test_simulation
+> uv run pytest tests/ -v
 > ```
 

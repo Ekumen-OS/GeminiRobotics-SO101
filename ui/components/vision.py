@@ -5,8 +5,11 @@ import gradio as gr
 from robot.interface import RobotInterface
 from ui.stream import (
     get_available_camera_choices,
+    get_calibration_status_summary,
     get_default_camera_index,
     prepare_stream_switch,
+    save_workspace_calibration_file,
+    set_calibration_overlay,
     stream_video,
 )
 
@@ -76,6 +79,43 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                     refresh_button = gr.Button("🔄 Refresh Cameras", variant="secondary", scale=1)
                 mode_state = gr.State(value=mode)
 
+                with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
+                    with gr.Row():
+                        overlay_toggle_twin = gr.Checkbox(
+                            label="Show Calibration Overlay",
+                            value=False,
+                            scale=1,
+                        )
+                        calib_status_twin = gr.Textbox(
+                            label="Calibration Status",
+                            value=get_calibration_status_summary(),
+                            interactive=False,
+                            scale=2,
+                        )
+                        save_calib_btn_twin = gr.Button(
+                            "💾 Save Calibration",
+                            variant="secondary",
+                            scale=1,
+                        )
+
+                    overlay_toggle_twin.change(
+                        fn=set_calibration_overlay,
+                        inputs=[overlay_toggle_twin],
+                        outputs=None,
+                    )
+                    save_calib_btn_twin.click(
+                        fn=save_workspace_calibration_file,
+                        inputs=None,
+                        outputs=[calib_status_twin],
+                    )
+
+                    calib_timer_twin = gr.Timer(value=1.5, active=True)
+                    calib_timer_twin.tick(
+                        fn=get_calibration_status_summary,
+                        inputs=None,
+                        outputs=[calib_status_twin],
+                    )
+
                 def refresh_camera_list_twin(current_val: int) -> gr.Dropdown:
                     updated = get_available_camera_choices()
                     valid = {c[1] for c in updated}
@@ -141,6 +181,43 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
             scale=1,
         )
         mode_state = gr.State(value=mode)
+
+    with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
+        with gr.Row():
+            overlay_toggle = gr.Checkbox(
+                label="Show Calibration Overlay",
+                value=False,
+                scale=1,
+            )
+            calib_status = gr.Textbox(
+                label="Calibration Status",
+                value=get_calibration_status_summary(),
+                interactive=False,
+                scale=2,
+            )
+            save_calib_btn = gr.Button(
+                "💾 Save Calibration",
+                variant="secondary",
+                scale=1,
+            )
+
+        overlay_toggle.change(
+            fn=set_calibration_overlay,
+            inputs=[overlay_toggle],
+            outputs=None,
+        )
+        save_calib_btn.click(
+            fn=save_workspace_calibration_file,
+            inputs=None,
+            outputs=[calib_status],
+        )
+
+        calib_timer = gr.Timer(value=1.5, active=True)
+        calib_timer.tick(
+            fn=get_calibration_status_summary,
+            inputs=None,
+            outputs=[calib_status],
+        )
 
     def refresh_camera_list(current_val: int) -> gr.Dropdown:
         updated = get_available_camera_choices()
