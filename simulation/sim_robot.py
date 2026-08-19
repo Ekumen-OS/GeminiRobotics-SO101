@@ -1,5 +1,6 @@
 """SO101Robot helper controller class for MuJoCo simulation."""
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,10 @@ import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
+
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "workspace_calibration.json"
+)
 
 
 class SO101Robot(RobotInterface):
@@ -28,24 +33,25 @@ class SO101Robot(RobotInterface):
         xml_path: str | Path | None = None,
         model: mujoco.MjModel | None = None,
         data: mujoco.MjData | None = None,
-        render_viewer: bool = True,
-    ):
-        """Initialize the SO-101 robot controller wrapper.
+        render_viewer: bool = False,
+    ) -> None:
+        """Initialize SO101Robot with MuJoCo model, data, and joint/actuator references.
 
         Args:
-            xml_path: Optional file path to the MJCF XML model. Used if model is None.
-            model: Optional existing preloaded MuJoCo model instance.
-            data: Optional existing MuJoCo data instance corresponding to the model.
-            render_viewer: Whether to launch a passive 3D MuJoCo viewer window by default.
+            xml_path: Relative or absolute path to the MuJoCo XML scene file.
+            model: Optional preloaded MuJoCo model.
+            data: Optional preloaded MuJoCo data.
+            render_viewer: Whether to launch the passive visualizer.
         """
         if model is not None and data is not None:
             self.model = model
             self.data = data
+            self.xml_path = str(xml_path) if xml_path else "simulation/assets/scene.xml"
         else:
-            if xml_path is None:
-                default_scene = Path(__file__).parent / "assets" / "scene.xml"
-                xml_path = default_scene
-            self.model = mujoco.MjModel.from_xml_path(str(xml_path))
+            default_scene = Path(__file__).parent / "assets" / "scene.xml"
+            scene_to_load = str(xml_path) if xml_path else str(default_scene)
+            self.xml_path = scene_to_load
+            self.model = mujoco.MjModel.from_xml_path(scene_to_load)
             self.data = mujoco.MjData(self.model)
 
         self.joint_ids = [self.model.joint(name).id for name in JOINT_NAMES]
@@ -64,6 +70,10 @@ class SO101Robot(RobotInterface):
         self._renderer_lock = threading.Lock()
         self._stop_requested = False
         self._offscreen_warned = False
+
+        # Dynamically synchronize marker positions and workspace bounds from JSON config
+        self.apply_workspace_calibration_config()
+
         if render_viewer:
             try:
                 from simulation.simulate import ensure_mjpython
@@ -75,6 +85,76 @@ class SO101Robot(RobotInterface):
             except Exception as err:
                 print(f"Notice: Could not launch MuJoCo viewer ({err}). Running in headless mode.")
                 self.viewer = None
+
+    def apply_workspace_calibration_config(self, config_path: str | Path | None = None) -> None:
+        """Dynamically update MuJoCo scene marker positions and boundaries from JSON config.
+
+        Args:
+            config_path: Path to workspace calibration JSON.
+        """
+        cfg_file = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        if not cfg_file.exists():
+            return
+
+        try:
+            cfg = json.loads(cfg_file.read_text())
+            corners = cfg.get("workspace_corners_mm", {})
+            tl = corners.get("top_left", {"x": 380.0, "y": 130.0})
+            tr = corners.get("top_right", {"x": 380.0, "y": -250.0})
+            br = corners.get("bottom_right", {"x": 35.0, "y": -250.0})
+            bl = corners.get("bottom_left", {"x": 35.0, "y": 130.0})
+
+            x_tl, y_tl = tl["x"] / 1000.0, tl["y"] / 1000.0
+            x_tr, y_tr = tr["x"] / 1000.0, tr["y"] / 1000.0
+            x_br, y_br = br["x"] / 1000.0, br["y"] / 1000.0
+            x_bl, y_bl = bl["x"] / 1000.0, bl["y"] / 1000.0
+
+            marker_half = cfg.get("marker_size_mm", 30.0) / 2000.0
+
+            with self._sim_lock:
+                marker_geom_map = {
+                    "aruco_tl_0": (x_tl, y_tl),
+                    "aruco_tr_1": (x_tr, y_tr),
+                    "aruco_br_2": (x_br, y_br),
+                    "aruco_bl_3": (x_bl, y_bl),
+                }
+                for geom_name, (gx, gy) in marker_geom_map.items():
+                    gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+                    if gid >= 0:
+                        self.model.geom_pos[gid] = [gx, gy, 0.0008]
+                        self.model.geom_size[gid] = [marker_half, marker_half, 0.0005]
+
+                top_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_top")
+                if top_gid >= 0:
+                    top_cy = (y_tl + y_tr) / 2.0
+                    top_len_y = abs(y_tl - y_tr) / 2.0
+                    self.model.geom_pos[top_gid] = [x_tl, top_cy, 0.0005]
+                    self.model.geom_size[top_gid] = [0.0015, top_len_y, 0.0005]
+
+                bottom_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_bottom")
+                if bottom_gid >= 0:
+                    bot_cy = (y_bl + y_br) / 2.0
+                    bot_len_y = abs(y_bl - y_br) / 2.0
+                    self.model.geom_pos[bottom_gid] = [x_bl, bot_cy, 0.0005]
+                    self.model.geom_size[bottom_gid] = [0.0015, bot_len_y, 0.0005]
+
+                left_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_left")
+                if left_gid >= 0:
+                    left_cx = (x_tl + x_bl) / 2.0
+                    left_len_x = abs(x_tl - x_bl) / 2.0
+                    self.model.geom_pos[left_gid] = [left_cx, y_tl, 0.0005]
+                    self.model.geom_size[left_gid] = [left_len_x, 0.0015, 0.0005]
+
+                right_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_right")
+                if right_gid >= 0:
+                    right_cx = (x_tr + x_br) / 2.0
+                    right_len_x = abs(x_tr - x_br) / 2.0
+                    self.model.geom_pos[right_gid] = [right_cx, y_tr, 0.0005]
+                    self.model.geom_size[right_gid] = [right_len_x, 0.0015, 0.0005]
+
+                mujoco.mj_forward(self.model, self.data)
+        except Exception as e:
+            print(f"[SO101Robot] Warning updating workspace geoms from config: {e}")
 
     def reset(self, pose: str = "HOME") -> None:
         """Reset the robot to a specified preset pose.
@@ -92,8 +172,46 @@ class SO101Robot(RobotInterface):
             mujoco.mj_forward(self.model, self.data)
             self.step(50)
 
+    def randomize_target(
+        self,
+        x_range: tuple[float, float] = (0.13, 0.25),
+        y_range: tuple[float, float] = (-0.12, 0.12),
+        z_height: float = 0.015,
+    ) -> np.ndarray:
+        """Randomize the target manipulation object position on the tabletop surface.
+
+        Args:
+            x_range: Min and max X coordinates in meters (forward from robot base).
+            y_range: Min and max Y coordinates in meters (left/right span).
+            z_height: Resting height of the object above ground plane in meters.
+
+        Returns:
+            New [x, y, z] position as numpy array.
+        """
+        with self._sim_lock:
+            try:
+                j_id = self.model.joint("target_joint").id
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                qvel_adr = self.model.jnt_dofadr[j_id]
+
+                new_x = float(np.random.uniform(x_range[0], x_range[1]))
+                new_y = float(np.random.uniform(y_range[0], y_range[1]))
+                new_pos = np.array([new_x, new_y, z_height], dtype=np.float64)
+
+                self.data.qpos[qpos_adr : qpos_adr + 3] = new_pos
+                self.data.qpos[qpos_adr + 3 : qpos_adr + 7] = [1.0, 0.0, 0.0, 0.0]
+                self.data.qvel[qvel_adr : qvel_adr + 6] = 0.0
+
+                mujoco.mj_forward(self.model, self.data)
+                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                    self.viewer.sync()
+                return new_pos
+            except (KeyError, AttributeError) as e:
+                print(f"[SO101Robot] Could not randomize target: {e}")
+                return np.zeros(3)
+
     def set_joint_positions(self, qpos: np.ndarray) -> None:
-        """Set target joint position control targets.
+        """Set target joint position control targets and snap joints in sim.
 
         Args:
             qpos: Target joint angles as a numpy array of shape (6,).
@@ -102,6 +220,12 @@ class SO101Robot(RobotInterface):
             assert len(qpos) == len(self.actuator_ids), f"Expected {len(self.actuator_ids)} values"
             for i, act_id in enumerate(self.actuator_ids):
                 self.data.ctrl[act_id] = qpos[i]
+            for i, j_id in enumerate(self.joint_ids):
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                self.data.qpos[qpos_adr] = qpos[i]
+            mujoco.mj_forward(self.model, self.data)
+            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                self.viewer.sync()
 
     def get_joint_positions(self) -> np.ndarray:
         """Get current joint position angles.
@@ -192,12 +316,15 @@ class SO101Robot(RobotInterface):
                 time.sleep(dt)
         self._stop_requested = False
 
-    def render_rgb_frame(self, width: int = 640, height: int = 480) -> np.ndarray:
+    def render_rgb_frame(
+        self, width: int = 640, height: int = 480, camera: str | int | None = "workspace_cam"
+    ) -> np.ndarray:
         """Render the current MuJoCo simulation state as an RGB image.
 
         Args:
             width: Frame width in pixels.
             height: Frame height in pixels.
+            camera: Named camera identifier or camera index (default: 'workspace_cam').
 
         Returns:
             RGB image with shape (height, width, 3) and dtype uint8.
@@ -221,6 +348,12 @@ class SO101Robot(RobotInterface):
             )
             self._offscreen_warned = True
 
+        cam_to_use: str | int | None = camera
+        if isinstance(camera, str):
+            cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
+            if cam_id < 0:
+                cam_to_use = None
+
         with self._sim_lock:
             with self._renderer_lock:
                 target_size = (width, height)
@@ -231,7 +364,10 @@ class SO101Robot(RobotInterface):
                     self._renderer_size = target_size
 
                 try:
-                    self._renderer.update_scene(self.data)
+                    if cam_to_use is not None:
+                        self._renderer.update_scene(self.data, camera=cam_to_use)
+                    else:
+                        self._renderer.update_scene(self.data)
                     frame = self._renderer.render()
                 except Exception as err:
                     raise RuntimeError(f"MuJoCo offscreen render failed: {err}") from err

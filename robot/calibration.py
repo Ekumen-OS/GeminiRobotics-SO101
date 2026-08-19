@@ -19,6 +19,9 @@ DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "workspace_calibration.json"
 )
 DEFAULT_SAVE_PATH = Path(__file__).resolve().parent.parent / "config" / "workspace_homography.npz"
+DEFAULT_SIM_SAVE_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "workspace_homography_sim.npz"
+)
 
 
 class ArucoWorkspaceCalibrator:
@@ -27,13 +30,21 @@ class ArucoWorkspaceCalibrator:
     Uses 4-corner ArUco fiducials to calculate a perspective homography matrix.
     """
 
-    def __init__(self, config_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        save_path: str | Path | None = None,
+        mode: str = "real",
+    ) -> None:
         """Initialize ArUco workspace calibrator.
 
         Args:
             config_path: Path to workspace calibration JSON configuration.
+            save_path: Optional path to saved homography (.npz) file.
+            mode: Operating mode ('real', 'sim', 'twin').
         """
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        self.mode = mode
         self.config: dict[str, Any] = {}
         self.homography_matrix: np.ndarray | None = None
         self.inverse_homography: np.ndarray | None = None
@@ -43,12 +54,19 @@ class ArucoWorkspaceCalibrator:
         self._load_config()
         self._init_aruco()
 
+        # Determine target calibration file path based on mode
+        target_save_path = (
+            Path(save_path)
+            if save_path
+            else (DEFAULT_SIM_SAVE_PATH if mode == "sim" else DEFAULT_SAVE_PATH)
+        )
+
         # Try to load existing saved homography if available
-        if DEFAULT_SAVE_PATH.exists():
-            self.load_calibration(DEFAULT_SAVE_PATH)
-        else:
+        if target_save_path.exists():
+            self.load_calibration(target_save_path)
+        elif mode != "sim":
             warnings.warn(
-                f"[ArucoCalibrator] ⚠️ WARNING: No saved homography found at '{DEFAULT_SAVE_PATH}'. "
+                f"[ArucoCalibrator] ⚠️ WARNING: No saved homography found at '{target_save_path}'. "
                 "Workspace must be calibrated before executing real-world motions.",
                 UserWarning,
                 stacklevel=2,
@@ -496,7 +514,7 @@ class ArucoWorkspaceCalibrator:
         """Persist current homography matrix and reprojection error to an .npz file.
 
         Args:
-            path: Target save path. Defaults to config/workspace_homography.npz.
+            path: Target save path. Defaults to config/workspace_homography.npz (or sim variant).
 
         Returns:
             Status message string.
@@ -504,7 +522,8 @@ class ArucoWorkspaceCalibrator:
         if self.homography_matrix is None:
             return "Cannot save: calibrator has not computed a valid homography."
 
-        save_p = Path(path) if path else DEFAULT_SAVE_PATH
+        default_path = DEFAULT_SIM_SAVE_PATH if self.mode == "sim" else DEFAULT_SAVE_PATH
+        save_p = Path(path) if path else default_path
         save_p.parent.mkdir(parents=True, exist_ok=True)
 
         np.savez(

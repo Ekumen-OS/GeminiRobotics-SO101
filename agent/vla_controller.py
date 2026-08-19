@@ -45,11 +45,62 @@ class VLAController:
             "- The workspace is planar-calibrated using 4 ArUco corner fiducials on the table "
             "surface (Z=0 plane): ID 0 (Top-Left), ID 1 (Top-Right), ID 2 (Bottom-Right), "
             "ID 3 (Bottom-Left).\n"
-            "- When executing spatial pointing or pick-and-place tasks, ALWAYS designate "
-            "coordinates [y, x] in range 0-1000 at the **bottom table contact center** of "
-            "objects to maintain planar homography accuracy.\n"
-            "- For pick-and-place commands, ALWAYS call the closed-loop "
-            "`execute_spav_pick_and_place` tool."
+            + (
+                "- In SIM mode, the workspace is pre-calibrated using a fixed virtual camera "
+                "matching the physical camera view. ArUco fiducial markers (IDs 0-3) and workspace "
+                "boundary guides are visible on the workspace floor at the 4 calibration corners.\n"
+                if self.mode == "sim"
+                else ""
+            )
+            + "\n"
+            "### Available Tools:\n"
+            "- `move_to_spatial_point(point=[y, x], z_height_cm=3.0)`: Move end-effector to a "
+            "camera-space [y, x] coordinate (0-1000). Use z_height_cm=3.0 to 5.0 for hover/transit "
+            "clearance, and z_height_cm=0.0 to descend to table level for grasping.\n"
+            "- `open_gripper()`: Open the gripper jaws fully.\n"
+            "- `close_gripper()`: Close the gripper jaws fully to grasp an object.\n"
+            "- `move_to_pose(qpos=[...], duration_sec=1.0)`: Move arm joints to explicit target "
+            "angles (degrees).\n"
+            "- `move_to_preset(pose_name='HOME')`: Move to named preset pose ('HOME', 'MIDDLE').\n"
+            "- `get_joint_positions()`: Read current joint positions in degrees.\n"
+            "- `get_end_effector_pose()`: Read current 3D position and rotation matrix "
+            "(sim/twin mode).\n\n"
+            "### Pick-and-Place Orchestration Pattern:\n"
+            "When instructed to pick up, move, or sort objects, act as closed-loop orchestrator\n"
+            "by calling tools sequentially and observing the resulting video stream:\n"
+            "1. **Locate Target**: Identify the target object in the camera image and determine "
+            "the normalized [y, x] coordinate (0-1000) of its **bottom table contact center**.\n"
+            "2. **Pre-Grasp Hover**: Call `move_to_spatial_point(point=[y, x], z_height_cm=5.0)` "
+            "to position the open gripper safely above the object.\n"
+            "3. **Ensure Gripper Open**: Call `open_gripper()` if not already open.\n"
+            "4. **Descend to Grasp**: Call `move_to_spatial_point(point=[y, x], z_height_cm=0.0)` "
+            "to lower jaws around the target.\n"
+            "5. **Grasp**: Call `close_gripper()` to secure the object.\n"
+            "6. **Retract to Hover**: Call `move_to_spatial_point(point=[y, x], z_height_cm=5.0)` "
+            "to lift the object.\n"
+            "7. **Visual Verification**: Observe the live video feed. Verify whether the object "
+            "is held in the gripper jaws.\n"
+            "   - If grasp failed (object still on table): call `open_gripper()`, adjust [y, x] "
+            "coordinates to correct any visual offset, and retry from step 2 (up to 3 attempts).\n"
+            "   - If grasp succeeded: proceed to transport.\n"
+            "8. **Transport to Destination**: Call `move_to_spatial_point(point=[dest_y, dest_x], "
+            "z_height_cm=5.0)` to position above the destination bin or target location.\n"
+            "9. **Lower & Release**: Call `move_to_spatial_point(point=[dest_y, dest_x], "
+            "z_height_cm=1.0)` then `open_gripper()` to deposit the object.\n"
+            "10. **Retract & Home**: Call `move_to_spatial_point(point=[dest_y, dest_x], "
+            "z_height_cm=5.0)` then `move_to_preset(pose_name='HOME')`.\n\n"
+            "### Closed-Loop Feedback & Verification Rules:\n"
+            "- After executing actions, use incoming video frames (~1 FPS) to verify state before "
+            "proceeding.\n"
+            "- Explain your reasoning, visual observations, and planned actions clearly.\n"
+            "- If an operation does not achieve the goal, self-correct by adjusting target "
+            "coordinates and retrying.\n\n"
+            "### CRITICAL Spatial Grounding Rule:\n"
+            "- Because 3D coordinate mapping uses a 2D-to-3D planar homography calibrated on the "
+            "table surface (Z=0), ALWAYS designate coordinates [y, x] at the exact **BOTTOM "
+            "CONTACT CENTER** where the object touches the tabletop.\n"
+            "- DO NOT target top faces, top edges, or upper corners of 3D objects to avoid "
+            "perspective parallax error."
         )
         self.history.append({"role": "system", "content": system_prompt})
 
@@ -57,6 +108,13 @@ class VLAController:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
+
+        if self.mode == "sim":
+            from simulation.sim_calibration import init_sim_workspace_calibration
+            from ui.stream import get_calibrator
+
+            calib = get_calibrator(mode="sim")
+            init_sim_workspace_calibration(calibrator=calib)
 
         self._session: GeminiLiveSession | None = None
         self._active_instruction_lock = threading.Lock()

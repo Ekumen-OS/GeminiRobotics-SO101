@@ -183,8 +183,8 @@
 
     // Camera setup (Z-up convention aligned to MuJoCo)
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 20);
-    const defaultCamPos = new THREE.Vector3(0.48, -0.48, 0.38);
-    const defaultCamTarget = new THREE.Vector3(0.12, 0.0, 0.14);
+    const defaultCamPos = new THREE.Vector3(0.185, 0.458, 0.591);
+    const defaultCamTarget = new THREE.Vector3(0.186, 0.042, 0.096);
     camera.position.copy(defaultCamPos);
     camera.up.set(0, 0, 1); // Z is up
 
@@ -204,6 +204,24 @@
     controls.minDistance = 0.12;
     controls.maxDistance = 2.5;
     controls.maxPolarAngle = Math.PI / 2 + 0.05; // Don't go below ground
+
+    // Expose camera and helper in browser console
+    window.camera = camera;
+    window.controls = controls;
+    window.getCameraPose = function () {
+      const p = camera.position;
+      const t = controls.target;
+      const code = `const defaultCamPos = new THREE.Vector3(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)});\nconst defaultCamTarget = new THREE.Vector3(${t.x.toFixed(3)}, ${t.y.toFixed(3)}, ${t.z.toFixed(3)});`;
+      console.log('%c📸 Current 3D Camera Pose (Ready to Paste):', 'color: #38bdf8; font-weight: bold; font-size: 13px;');
+      console.log(code);
+      return { position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] };
+    };
+
+    controls.addEventListener('end', () => {
+      const p = camera.position;
+      const t = controls.target;
+      console.log(`[Camera] pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) | target: (${t.x.toFixed(3)}, ${t.y.toFixed(3)}, ${t.z.toFixed(3)})`);
+    });
 
     // Lighting (Studio Dark Lighting)
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
@@ -261,6 +279,184 @@
     targetCube.receiveShadow = true;
     targetCube.position.set(0.18, 0.0, 0.015);
     scene.add(targetCube);
+
+    // -------------------------------------------------------------
+    // DYNAMIC JSON-DRIVEN WORKSPACE (ArUco Markers & Boundary Guides)
+    // -------------------------------------------------------------
+    const workspaceGroup = new THREE.Group();
+    scene.add(workspaceGroup);
+
+    let lastWorkspaceConfigStr = "";
+
+    function createMarkerTexture(markerId) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 128, 128);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(10, 10, 108, 108);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(26, 26, 76, 76);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 36px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(markerId.toString(), 64, 64);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.encoding = THREE.sRGBEncoding;
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = function() {
+        ctx.drawImage(img, 0, 0, 128, 128);
+        texture.needsUpdate = true;
+      };
+      img.src = '/aruco_markers/marker_' + markerId + '.png';
+
+      return texture;
+    }
+
+    function createLabelSprite(text, bgColor = 'rgba(15, 23, 42, 0.85)', textColor = '#38bdf8') {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(4, 4, 248, 56);
+      ctx.strokeStyle = '#0284c7';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(4, 4, 248, 56);
+      ctx.fillStyle = textColor;
+      ctx.font = 'bold 22px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 128, 32);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+      const sprite = new THREE.Sprite(spriteMat);
+      sprite.scale.set(0.08, 0.02, 1);
+      return sprite;
+    }
+
+    function updateWorkspaceVisuals(config) {
+      if (!config || !config.workspace_corners_mm) return;
+      const configStr = JSON.stringify(config);
+      if (configStr === lastWorkspaceConfigStr) return;
+      lastWorkspaceConfigStr = configStr;
+
+      try {
+        while (workspaceGroup.children.length > 0) {
+          const obj = workspaceGroup.children[0];
+          workspaceGroup.remove(obj);
+        }
+
+        const corners = config.workspace_corners_mm;
+        const tl = corners.top_left || { x: 380, y: 130 };
+        const tr = corners.top_right || { x: 380, y: -250 };
+        const br = corners.bottom_right || { x: 35, y: -250 };
+        const bl = corners.bottom_left || { x: 35, y: 130 };
+
+        const x_tl = tl.x / 1000, y_tl = tl.y / 1000;
+        const x_tr = tr.x / 1000, y_tr = tr.y / 1000;
+        const x_br = br.x / 1000, y_br = br.y / 1000;
+        const x_bl = bl.x / 1000, y_bl = bl.y / 1000;
+
+        const cx = (x_tl + x_br) / 2.0;
+        const cy = (y_tl + y_tr) / 2.0;
+        const sizeX = Math.abs(x_tl - x_bl);
+        const sizeY = Math.abs(y_tl - y_tr);
+
+        const markerSize = (config.marker_size_mm || 30.0) / 1000;
+        const markerIds = config.marker_ids || { top_left: 0, top_right: 1, bottom_right: 2, bottom_left: 3 };
+
+        // 1. Semi-transparent workspace mat plane
+        const matGeo = new THREE.PlaneGeometry(sizeX, sizeY);
+        const matMaterial = new THREE.MeshBasicMaterial({
+          color: 0x0284c7,
+          opacity: 0.18,
+          transparent: true,
+          side: THREE.DoubleSide
+        });
+        const matMesh = new THREE.Mesh(matGeo, matMaterial);
+        matMesh.position.set(cx, cy, 0.002);
+        workspaceGroup.add(matMesh);
+
+        // 2. Thick Cyan Boundary Border Lines
+        const lineMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+        const borderThickness = 0.005;
+        const borderHeight = 0.004;
+
+        // Top line
+        const topMesh = new THREE.Mesh(new THREE.BoxGeometry(borderThickness, sizeY, borderHeight), lineMat);
+        topMesh.position.set(x_tl, cy, 0.003);
+        workspaceGroup.add(topMesh);
+
+        // Bottom line
+        const bottomMesh = new THREE.Mesh(new THREE.BoxGeometry(borderThickness, sizeY, borderHeight), lineMat);
+        bottomMesh.position.set(x_bl, cy, 0.003);
+        workspaceGroup.add(bottomMesh);
+
+        // Left line
+        const leftMesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, borderThickness, borderHeight), lineMat);
+        leftMesh.position.set(cx, y_tl, 0.003);
+        workspaceGroup.add(leftMesh);
+
+        // Right line
+        const rightMesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, borderThickness, borderHeight), lineMat);
+        rightMesh.position.set(cx, y_tr, 0.003);
+        workspaceGroup.add(rightMesh);
+
+        // 3. 4 ArUco Corner Markers
+        const cornerList = [
+          { name: "Top-Left", id: markerIds.top_left ?? 0, x: x_tl, y: y_tl },
+          { name: "Top-Right", id: markerIds.top_right ?? 1, x: x_tr, y: y_tr },
+          { name: "Bottom-Right", id: markerIds.bottom_right ?? 2, x: x_br, y: y_br },
+          { name: "Bottom-Left", id: markerIds.bottom_left ?? 3, x: x_bl, y: y_bl }
+        ];
+
+        cornerList.forEach(c => {
+          // White backing border box
+          const backMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(markerSize * 1.15, markerSize * 1.15, 0.002),
+            new THREE.MeshBasicMaterial({ color: 0xffffff })
+          );
+          backMesh.position.set(c.x, c.y, 0.004);
+          workspaceGroup.add(backMesh);
+
+          // Marker Texture Plane
+          const markerTexture = createMarkerTexture(c.id);
+          const markerMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(markerSize, markerSize),
+            new THREE.MeshBasicMaterial({ map: markerTexture, side: THREE.DoubleSide })
+          );
+          markerMesh.position.set(c.x, c.y, 0.0055);
+          workspaceGroup.add(markerMesh);
+
+          // Label Sprite
+          const label = createLabelSprite(`ID ${c.id} (${c.name})`);
+          label.position.set(c.x, c.y, 0.035);
+          workspaceGroup.add(label);
+        });
+      } catch (err) {
+        console.error("Error updating workspace visuals:", err);
+      }
+    }
+
+    // Initial default layout while fetching config
+    updateWorkspaceVisuals({
+      workspace_corners_mm: {
+        top_left: { x: 380, y: 130 },
+        top_right: { x: 380, y: -250 },
+        bottom_right: { x: 35, y: -250 },
+        bottom_left: { x: 35, y: 130 }
+      },
+      marker_size_mm: 30.0,
+      marker_ids: { top_left: 0, top_right: 1, bottom_right: 2, bottom_left: 3 }
+    });
 
     // -------------------------------------------------------------
     // 17 EXACT MUJOCO VISUAL GEOMS SETUP
@@ -404,6 +600,20 @@
     }
 
     setInterval(fetchSimState, 33); // 30Hz polling
+
+    async function fetchWorkspaceConfig() {
+      try {
+        const res = await fetch('/api/workspace_config?t=' + Date.now());
+        if (res.ok) {
+          const config = await res.json();
+          updateWorkspaceVisuals(config);
+        }
+      } catch (e) {
+        // Ignore network errors
+      }
+    }
+    fetchWorkspaceConfig();
+    setInterval(fetchWorkspaceConfig, 1000); // 1Hz check for workspace JSON changes
 
     // -------------------------------------------------------------
     // CAMERA RESET ACTION

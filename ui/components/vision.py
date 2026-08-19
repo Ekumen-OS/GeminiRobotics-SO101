@@ -29,7 +29,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         '<div style="width: 100%; height: 600px; border-radius: 12px; overflow: hidden; '
         "border: 1px solid #334155; position: relative; background: #0b0f19; "
         'box-shadow: 0 8px 30px rgba(0,0,0,0.5);">'
-        '<iframe src="/ui_assets/sim_viewer.html" style="width: 100%; height: 100%; border: none;" '
+        '<iframe src="/viewer" style="width: 100%; height: 100%; border: none;" '
         'allow="accelerometer; autoplay; encrypted-media; gyroscope; '
         'picture-in-picture"></iframe>'
         "</div>"
@@ -38,25 +38,17 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
     if mode == "sim":
         gr.HTML(value=viewer_iframe)
 
-        with gr.Accordion("🤖 Canonical VLA Vision (MuJoCo Offscreen Observation)", open=False):
-            video_feed = gr.Image(
-                label="AI Model Observation Stream",
-                show_label=False,
-                interactive=False,
-                elem_id="vision-feed",
+        with gr.Accordion("🤖 Canonical VLA Vision (MuJoCo Offscreen Observation)", open=True):
+            mjpeg_viewer = (
+                '<div style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; '
+                "border: 1px solid #334155; position: relative; background: #0b0f19; "
+                'display: flex; align-items: center; justify-content: center;">'
+                '<img src="/api/sim_stream" '
+                'style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;" '
+                'alt="MuJoCo Offscreen Camera Feed (workspace_cam)" />'
+                "</div>"
             )
-            mode_state = gr.State(value=mode)
-            camera_dropdown = gr.State(value=-1)
-
-            def stream_sim_obs(cam_idx: int, m: str):
-                yield from stream_video(camera_index=cam_idx, mode=m, robot=robot)
-
-            demo.load(
-                fn=stream_sim_obs,
-                inputs=[camera_dropdown, mode_state],
-                outputs=[video_feed],
-                concurrency_limit=None,
-            )
+            gr.HTML(value=mjpeg_viewer)
         return
 
     elif mode == "twin":
