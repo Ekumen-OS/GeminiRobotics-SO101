@@ -3,6 +3,7 @@
 This document explains the mathematical foundations for understanding the motion and positioning of the 6-Degrees of Freedom (DOF) SO-101 Robot Arm used in the GeminiRobotics-SO101 project.
 
 ## Table of Contents
+
 1. [Introduction to Robot Kinematics](#1-introduction-to-robot-kinematics)
 2. [Robot Architecture and Joints](#2-robot-architecture-and-joints)
 3. [Forward Kinematics (FK)](#3-forward-kinematics-fk)
@@ -15,12 +16,14 @@ This document explains the mathematical foundations for understanding the motion
 ---
 
 ## 1. Introduction to Robot Kinematics
+
 **Kinematics** is the study of motion without considering the forces that cause it. In robotics, kinematics relates the joint variables (angles of the servo motors) to the position and orientation of the end-effector (the gripper) in 3D Cartesian space (X, Y, Z coordinates plus roll, pitch, yaw angles).
 
 - **Forward Kinematics (FK):** Given the joint angles ($\theta_1, \theta_2, ..., \theta_6$), what is the position and orientation of the gripper?
 - **Inverse Kinematics (IK):** Given a desired position and orientation for the gripper, what should the joint angles be to reach it?
 
 ## 2. Robot Architecture and Joints
+
 The SO-101 is a 6-DOF robotic manipulator using Feetech STS3215 servos. Its structure mimics a human arm:
 
 1. **Base (Shoulder Pan):** Rotates the entire arm around the vertical (Z) axis.
@@ -35,7 +38,9 @@ The SO-101 is a 6-DOF robotic manipulator using Feetech STS3215 servos. Its stru
 The standard way to compute Forward Kinematics is by using the **Denavit-Hartenberg (DH) Convention**. This method assigns a coordinate frame to each link of the robot and defines four parameters to transform from one frame to the next.
 
 ### Denavit-Hartenberg (DH) Convention
+
 The four DH parameters are:
+
 - $a_i$ (Link length): Distance along $X_i$ from $Z_{i-1}$ to $Z_i$.
 - $\alpha_i$ (Link twist): Angle around $X_i$ from $Z_{i-1}$ to $Z_i$.
 - $d_i$ (Link offset): Distance along $Z_{i-1}$ from $X_{i-1}$ to $X_i$.
@@ -44,6 +49,7 @@ The four DH parameters are:
 *Note: The exact physical link lengths ($a$ and $d$) for your specific SO-101 build may vary slightly based on 3D printed tolerances.*
 
 ### Transformation Matrices
+
 The homogeneous transformation matrix $A_i$ from frame $i-1$ to frame $i$ is calculated using the DH parameters:
 
 $$ 
@@ -75,7 +81,9 @@ Inverse kinematics is non-linear and can have zero solutions (target out of reac
 2. **Numerical IK (Damped Least Squares & Null-Space Projection):** Uses iterative optimization algorithms to converge on joint angle configurations by stepping along spatial velocity gradients. In GeminiRobotics-SO101, we implement robust **Levenberg-Marquardt Damped Least Squares (DLS)** combined with secondary-task **Null-Space Posture Regularization** to avoid kinematic singularities and prevent arm collapse.
 
 ### Addressing Under-Actuation and Null-Space Projection
+
 While the SO-101 command vector contains 6 motor inputs, anatomical analysis reveals that only **5 articulated spatial joints** contribute to positioning and orienting the wrist frame:
+
 1. **Base (Shoulder Pan)**: $Z$-axis rotation
 2. **Shoulder Lift**: $Y$-axis elevation
 3. **Elbow Flex**: $Y$-axis pitch
@@ -88,35 +96,37 @@ In our practical implementation, we decouple the spatial IK solver to optimize p
 
 ## 5. Visual Grounding & Perspective Homography Calibration
 
-To enable Gemini VLA models to interact with real-world objects seen via the camera feed, the system maps 2D visual detections into physical 3D end-effector targets via the `move_to_spatial_point` and `execute_spav_pick_and_place` tool adapters:
+To enable Gemini VLA models to interact with objects seen via the camera feed (in both real physical mode and MuJoCo simulation), the system maps 2D visual detections into physical 3D end-effector targets via the `move_to_spatial_point` tool adapter:
 
 1. **Normalized Image Coordinate Frame**: The model identifies target objects using normalized coordinates $[y, x] \in [0, 1000]$, where $(0, 0)$ is the top-left corner and $(1000, 1000)$ is the bottom-right corner.
-2. **Perspective Homography Transformation**: When ArUco workspace markers (`DICT_4X4_50`, IDs 0..3) are detected in view, the calibrator uses a 3x3 projective homography matrix $H \in \mathbb{R}^{3 \times 3}$:
-   $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
-   This accounts for camera tilt, focal distance, and perspective skew, converting pixel coordinates directly into millimeter coordinates in the robot base frame.
-3. **Linear Fallback Mapping**: When uncalibrated, normalized 2D coordinates map linearly across predefined workspace bounding boxes:
-   - $X_{\text{robot}} = X_{\text{max}} + \frac{y}{1000} \cdot (X_{\text{min}} - X_{\text{max}})$ (depth from base, $[0.38\,\text{m} \to 0.12\,\text{m}]$)
-   - $Y_{\text{robot}} = Y_{\text{max}} + \frac{x}{1000} \cdot (Y_{\text{min}} - Y_{\text{max}})$ (lateral span, $[+0.28\,\text{m} \to -0.20\,\text{m}]$)
-   - $Z_{\text{robot}} = Z_{\text{hover}} = 0.03\,\text{m}$ (safe table clearance)
-4. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth trajectory interpolation via `TrajectoryPlanner`.
+2. **Perspective Homography Transformation**:
+   - **Real Physical Mode**: When 4 physical ArUco workspace markers (`DICT_4X4_50`, IDs 0..3) are detected in view, OpenCV computes a 3x3 projective homography matrix $H_{\text{real}} \in \mathbb{R}^{3 \times 3}$:
+     $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
+     This accounts for camera tilt, focal distance, and perspective skew, converting pixel coordinates directly into millimeter coordinates in the robot base frame.
+   - **Simulation Mode**: Uses **Synthetic Homography Calibration** (`simulation/sim_calibration.py`) where the 4 known 3D workspace corners are projected analytically through the virtual MuJoCo camera (`workspace_cam`, $fovy=54^\circ$) to compute an exact homography $H_{\text{sim}} \in \mathbb{R}^{3 \times 3}$ with sub-millimeter precision.
+3. **Variable Height Control**: The `z_height_cm` parameter allows the model to command target heights above the tabletop surface:
+   - $Z = 0.00\,\text{m}$ ($0\,\text{cm}$): Table surface contact for grasping.
+   - $Z = 0.03 - 0.05\,\text{m}$ ($3-5\,\text{cm}$): Pre-grasp hover and transit clearance.
+4. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth motion via `RobotInterface.move_to_pose()`.
 
-## 6. Quintic Minimum-Jerk Motion Interpolation
+## 6. Smooth S-Curve Motion Interpolation
 
-To prevent torque-off faults and eliminate mechanical chattering on 3D-printed joints and Feetech STS3215 servos, trajectories are interpolated using the 5th-order minimum-jerk polynomial:
+To prevent torque-off faults and eliminate mechanical chattering on 3D-printed joints and Feetech STS3215 servos, joint motions are interpolated using smooth cosine S-curve profiles:
 
-$$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5, \quad \tau = \frac{t}{T} \in [0, 1]$$
+$$\alpha(t) = \frac{1}{2} \left( 1 - \cos(\pi \cdot t) \right), \quad t = \frac{\text{step}}{\text{num\_steps}} \in [0, 1]$$
+$$\mathbf{q}(t) = (1 - \alpha(t)) \cdot \mathbf{q}_{\text{start}} + \alpha(t) \cdot \mathbf{q}_{\text{target}}$$
 
-This polynomial satisfies analytical zero-boundary conditions for position, velocity, and acceleration:
-- $s(0) = 0, \quad s(1) = 1$
-- $\dot{s}(0) = 0, \quad \dot{s}(1) = 0$
-- $\ddot{s}(0) = 0, \quad \ddot{s}(1) = 0$
+This profile satisfies zero-velocity boundary conditions:
 
-Guaranteeing $C^2$ continuity and minimizing total mechanical jerk: $\min \int_0^T \left( \frac{d^3 q}{dt^3} \right)^2 dt$.
+- $\alpha(0) = 0, \quad \alpha(1) = 1$
+- $\dot{\alpha}(0) = 0, \quad \dot{\alpha}(1) = 0$
+
+Guaranteeing smooth acceleration and deceleration curves without sudden jerk spikes on actuator gearboxes.
 
 > 💡 **Verifying Kinematics & Motion**: 
 > You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing:
+>
 > ```bash
 > uv run python main.py --task test_simulation
 > uv run pytest tests/ -v
 > ```
-
