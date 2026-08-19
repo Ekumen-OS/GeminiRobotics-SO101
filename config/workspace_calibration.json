@@ -6,7 +6,7 @@
     "bottom_right": 2,
     "bottom_left": 3
   },
-  "marker_size_mm": 20.0,
+  "marker_size_mm": 40.0,
   "workspace_corners_mm": {
     "top_left": {
       "x": 380.0,
@@ -17,11 +17,11 @@
       "y": -250.0
     },
     "bottom_right": {
-      "x": 35.0,
+      "x": 100.0,
       "y": -250.0
     },
     "bottom_left": {
-      "x": 35.0,
+      "x": 100.0,
       "y": 130.0
     }
   },

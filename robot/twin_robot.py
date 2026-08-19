@@ -55,6 +55,15 @@ class TwinSO101Robot(RobotInterface):
         qpos = self.sim.get_joint_positions()
         self.real.set_joint_positions(qpos)
 
+    def randomize_target(
+        self,
+        x_range: tuple[float, float] = (0.13, 0.25),
+        y_range: tuple[float, float] = (-0.12, 0.12),
+        z_height: float = 0.015,
+    ) -> np.ndarray:
+        """Randomize target object position in simulation scene."""
+        return self.sim.randomize_target(x_range=x_range, y_range=y_range, z_height=z_height)
+
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Command target joint positions to both MuJoCo simulation and physical robot.
 
