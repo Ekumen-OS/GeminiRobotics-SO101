@@ -28,13 +28,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task",
-        choices=["check_environment", "test_simulation"],
+        choices=[
+            "check_environment",
+            "test_simulation",
+            "generate_markers",
+            "setup_workspace",
+            "calibrate_workspace",
+        ],
         default=None,
         help=(
-            "Optional verification task: 'check_environment' (System & hardware "
-            "diagnostics) or 'test_simulation' (Kinematics validation via line sweeps). "
+            "Optional verification or setup task: 'check_environment' (System & hardware "
+            "diagnostics), 'test_simulation' (Kinematics validation), or 'generate_markers' / "
+            "'setup_workspace' (Interactive workspace calibration & sheet generator). "
             "If omitted, defaults to launching the Gradio VLA Web UI."
         ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="assets/aruco_markers",
+        help="Directory to save generated ArUco markers and calibration sheet.",
+    )
+    parser.add_argument(
+        "--reuse",
+        action="store_true",
+        help="Reuse existing markers in output directory without regenerating image files.",
+    )
+    parser.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="Force regeneration and overwrite of all marker image files and sheet.",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Skip interactive prompts during setup tasks and use default/existing config.",
     )
     parser.add_argument(
         "--port",
@@ -181,6 +208,18 @@ def _run_once(args: argparse.Namespace) -> None:
         from simulation.test_movement import test_robot_movement
 
         test_robot_movement()
+        return
+
+    elif args.task in ("generate_markers", "setup_workspace", "calibrate_workspace"):
+        from robot.calibration import setup_workspace_interactive
+
+        reuse_flag = True if args.reuse else (False if args.regenerate else None)
+
+        setup_workspace_interactive(
+            output_dir=args.output_dir,
+            interactive=not args.non_interactive,
+            reuse=reuse_flag,
+        )
         return
 
     # 2. Initialize Robot based on mode for Web UI operation without native window popups
