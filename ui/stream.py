@@ -27,6 +27,9 @@ _global_frame_lock = threading.Lock()
 _calibrator_lock = threading.Lock()
 _global_calibrator: ArucoWorkspaceCalibrator | None = None
 _calibration_overlay_enabled: bool = False
+_bounding_boxes_overlay_enabled: bool = False
+_grid_overlay_enabled: bool = False
+_crosshair_overlay_enabled: bool = False
 
 
 def get_calibrator() -> ArucoWorkspaceCalibrator:
@@ -42,18 +45,14 @@ def get_calibrator() -> ArucoWorkspaceCalibrator:
         return _global_calibrator
 
 
-def set_calibration_overlay(enabled: bool) -> bool:
+def set_calibration_overlay(enabled: bool) -> None:
     """Enable or disable the ArUco calibration overlay on live camera feeds.
 
     Args:
         enabled: True to enable overlay drawing, False to disable.
-
-    Returns:
-        The updated overlay state boolean.
     """
     global _calibration_overlay_enabled
     _calibration_overlay_enabled = bool(enabled)
-    return _calibration_overlay_enabled
 
 
 def is_calibration_overlay_enabled() -> bool:
@@ -63,6 +62,63 @@ def is_calibration_overlay_enabled() -> bool:
         True if overlay is active, False otherwise.
     """
     return _calibration_overlay_enabled
+
+
+def set_bounding_boxes_overlay(enabled: bool) -> None:
+    """Enable or disable the bounding boxes overlay on live camera feeds.
+
+    Args:
+        enabled: True to enable overlay drawing, False to disable.
+    """
+    global _bounding_boxes_overlay_enabled
+    _bounding_boxes_overlay_enabled = bool(enabled)
+
+
+def is_bounding_boxes_overlay_enabled() -> bool:
+    """Check if the bounding boxes overlay is currently enabled.
+
+    Returns:
+        True if overlay is active, False otherwise.
+    """
+    return _bounding_boxes_overlay_enabled
+
+
+def set_grid_overlay(enabled: bool) -> None:
+    """Enable or disable the workspace grid overlay on live camera feeds.
+
+    Args:
+        enabled: True to enable overlay drawing, False to disable.
+    """
+    global _grid_overlay_enabled
+    _grid_overlay_enabled = bool(enabled)
+
+
+def is_grid_overlay_enabled() -> bool:
+    """Check if the workspace grid overlay is currently enabled.
+
+    Returns:
+        True if overlay is active, False otherwise.
+    """
+    return _grid_overlay_enabled
+
+
+def set_crosshair_overlay(enabled: bool) -> None:
+    """Enable or disable the crosshair / center marker overlay on live camera feeds.
+
+    Args:
+        enabled: True to enable overlay drawing, False to disable.
+    """
+    global _crosshair_overlay_enabled
+    _crosshair_overlay_enabled = bool(enabled)
+
+
+def is_crosshair_overlay_enabled() -> bool:
+    """Check if the crosshair overlay is currently enabled.
+
+    Returns:
+        True if overlay is active, False otherwise.
+    """
+    return _crosshair_overlay_enabled
 
 
 def get_calibration_status_summary() -> str:
