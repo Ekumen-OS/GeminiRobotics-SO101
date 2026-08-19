@@ -17,6 +17,27 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     Returns:
         Tuple of (prompt_input, chatbot, exec_btn, stop_btn, clear_btn)
     """
+    from ui.stream import get_calibrator
+
+    calib = get_calibrator()
+    is_calibrated = (
+        calib is not None and calib.is_calibrated if controller.mode in ("real", "twin") else True
+    )
+
+    if not is_calibrated:
+        initial_msg = (
+            "⚠️ **Workspace Not Calibrated**\n\n"
+            f"Ready in `{controller.mode.upper()}` mode. Physical workspace calibration is "
+            "required before executing spatial commands.\n\n"
+            "👉 Please place the 4 ArUco markers in view and click **'💾 Save Calibration'** "
+            "under the **🎯 ArUco Workspace Calibration** panel."
+        )
+    else:
+        initial_msg = (
+            f"🤖 **System Active**: Ready in `{controller.mode.upper()}` mode with calibrated "
+            "workspace. Type commands below to invoke spatial reasoning."
+        )
+
     chatbot = gr.Chatbot(
         label="Gemini Robotics Assistant (gemini-robotics-er)",
         height=440,
@@ -24,10 +45,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
         value=[
             {
                 "role": "assistant",
-                "content": (
-                    f"🤖 **System Active**: Ready in `{controller.mode.upper()}` mode. "
-                    "Type commands below to invoke spatial reasoning."
-                ),
+                "content": initial_msg,
             }
         ],
     )
@@ -36,7 +54,11 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
 
     prompt_input = gr.Textbox(
         label="Instruction Prompt",
-        placeholder='e.g., "Pick up red cube and place in sorting basket..."',
+        placeholder=(
+            'e.g., "Pick up red cube and place in sorting basket..."'
+            if is_calibrated
+            else "⚠️ Calibrate workspace before issuing commands..."
+        ),
         lines=2,
         interactive=api_available,
         elem_id="vla-prompt",
@@ -108,16 +130,30 @@ def wire_chat_events(
 
     def clear_chat() -> list:
         controller.clear_history()
-        # Reset UI to show initial state
-        return [
-            {
-                "role": "assistant",
-                "content": (
-                    f"🤖 **System Active**: Ready in `{controller.mode.upper()}` mode. "
-                    "Type commands below to invoke spatial reasoning."
-                ),
-            }
-        ]
+        from ui.stream import get_calibrator
+
+        calib = get_calibrator()
+        is_calibrated = (
+            calib is not None and calib.is_calibrated
+            if controller.mode in ("real", "twin")
+            else True
+        )
+
+        if not is_calibrated:
+            msg = (
+                "⚠️ **Workspace Not Calibrated**\n\n"
+                f"Ready in `{controller.mode.upper()}` mode. Physical workspace calibration is "
+                "required before executing spatial commands.\n\n"
+                "👉 Please place the 4 ArUco markers in view and click **'💾 Save Calibration'** "
+                "under the **🎯 ArUco Workspace Calibration** panel."
+            )
+        else:
+            msg = (
+                f"🤖 **System Active**: Ready in `{controller.mode.upper()}` mode with calibrated "
+                "workspace. Type commands below to invoke spatial reasoning."
+            )
+
+        return [{"role": "assistant", "content": msg}]
 
     exec_btn.click(
         fn=process_instruction,
