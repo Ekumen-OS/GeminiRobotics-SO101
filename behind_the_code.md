@@ -51,12 +51,12 @@ The Gradio web interface was built in a single, monolithic file (`app.py`) spann
 **The Solution:**
 We applied the **Single Responsibility Principle (SRP)** by breaking `app.py` into distinct components:
 
-- `ui/components/chat.py`: Handles the AI interaction interface.
-- `ui/components/telemetry.py`: Renders real-time joint states.
-- `ui/components/controls.py`: Manages the sliders and movement callbacks.
-- `ui/components/vision.py`: Manages video streaming and device selection.
+- `ui/components/chat.py`: Handles the multimodal AI interaction interface with enlarged 600px chat viewport.
+- `ui/components/telemetry.py`: Renders real-time joint states in a collapsible accordion panel.
+- `ui/components/controls.py`: Manages joint sliders, motion status, and reset callbacks within a responsive collapsible accordion.
+- `ui/components/vision.py`: Manages video streaming, overlay toggles (Calibration, Bounding Boxes, Grid, Crosshair), device selection, and ArUco calibration actions.
 
-`app.py` now acts solely as the **Assembler** or **Orchestrator**, importing these modules and placing them in a layout grid.
+`app.py` now acts solely as the **Assembler** or **Orchestrator**, importing these modules and placing them in a layout grid with side-by-side responsive accordions.
 
 **Why it matters:**
 
