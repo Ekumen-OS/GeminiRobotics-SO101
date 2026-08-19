@@ -10,6 +10,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from robot.calibration import ArucoWorkspaceCalibrator
+
 # Synchronization lock and atomic token for instant, zero-latency video source transitions
 _stream_lock = threading.Lock()
 _current_stream_id = 0
@@ -21,6 +23,74 @@ STREAM_FRAME_HEIGHT = 480
 
 _global_latest_frame: np.ndarray | None = None
 _global_frame_lock = threading.Lock()
+
+_calibrator_lock = threading.Lock()
+_global_calibrator: ArucoWorkspaceCalibrator | None = None
+_calibration_overlay_enabled: bool = False
+
+
+def get_calibrator() -> ArucoWorkspaceCalibrator:
+    """Return the shared ArucoWorkspaceCalibrator singleton instance.
+
+    Returns:
+        The active ArucoWorkspaceCalibrator instance.
+    """
+    global _global_calibrator
+    with _calibrator_lock:
+        if _global_calibrator is None:
+            _global_calibrator = ArucoWorkspaceCalibrator()
+        return _global_calibrator
+
+
+def set_calibration_overlay(enabled: bool) -> bool:
+    """Enable or disable the ArUco calibration overlay on live camera feeds.
+
+    Args:
+        enabled: True to enable overlay drawing, False to disable.
+
+    Returns:
+        The updated overlay state boolean.
+    """
+    global _calibration_overlay_enabled
+    _calibration_overlay_enabled = bool(enabled)
+    return _calibration_overlay_enabled
+
+
+def is_calibration_overlay_enabled() -> bool:
+    """Check if the calibration overlay is currently enabled.
+
+    Returns:
+        True if overlay is active, False otherwise.
+    """
+    return _calibration_overlay_enabled
+
+
+def get_calibration_status_summary() -> str:
+    """Return a formatted string describing current calibration status for the UI.
+
+    Returns:
+        Human-readable calibration status string.
+    """
+    calib = get_calibrator()
+    status = calib.get_calibration_status()
+    if status["calibrated"]:
+        err = status["reprojection_error"]
+        err_str = f" (err: {err:.1f}mm)" if err is not None else ""
+        return f"✅ Calibrated{err_str} — {status['markers_detected']}/4 markers visible"
+    elif status["markers_detected"] > 0:
+        return f"⚠️ Incomplete: {status['markers_detected']}/4 markers visible (need 4)"
+    else:
+        return "❌ Not calibrated (no markers detected in view)"
+
+
+def save_workspace_calibration_file() -> str:
+    """Save current workspace homography to disk and return status message.
+
+    Returns:
+        Status message string from the calibrator.
+    """
+    calib = get_calibrator()
+    return calib.save_calibration()
 
 
 def get_latest_jpeg() -> bytes | None:
@@ -783,6 +853,13 @@ def stream_video(
                     (target_width, target_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
+                if is_calibration_overlay_enabled() and camera_active:
+                    calib = get_calibrator()
+                    detected = calib.detect_markers(bottom_frame)
+                    if len(detected) >= 4:
+                        calib.update_homography(detected)
+                    bottom_frame = calib.draw_workspace_overlay(bottom_frame, detected)
+
                 final_frame = _compose_twin_frame(top_frame, bottom_frame)
                 with _global_frame_lock:
                     _global_latest_frame = final_frame.copy()
@@ -853,6 +930,13 @@ def stream_video(
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             else:
                 frame_rgb = generate_mock_test_pattern(camera_index)
+
+            if is_calibration_overlay_enabled() and camera_active:
+                calib = get_calibrator()
+                detected = calib.detect_markers(frame_rgb)
+                if len(detected) >= 4:
+                    calib.update_homography(detected)
+                frame_rgb = calib.draw_workspace_overlay(frame_rgb, detected)
 
             with _global_frame_lock:
                 _global_latest_frame = frame_rgb.copy()
