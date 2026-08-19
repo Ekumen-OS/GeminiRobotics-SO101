@@ -40,7 +40,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
 
     chatbot = gr.Chatbot(
         label="Gemini Robotics Assistant (gemini-robotics-er)",
-        height=440,
+        height=600,
         elem_id="vla-chatbot",
         value=[
             {

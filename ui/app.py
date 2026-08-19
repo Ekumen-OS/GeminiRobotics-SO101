@@ -33,6 +33,26 @@ CUSTOM_CSS = """
 #vla-prompt textarea {
     font-size: 13px !important;
 }
+#vision-feed {
+    height: 600px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+}
+#vision-feed .image-container {
+    height: 100% !important;
+    max-height: 600px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+#vision-feed img {
+    max-height: 570px !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+    border-radius: 8px !important;
+}
 """
 
 
@@ -108,8 +128,7 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
                     vla_controller, api_available=vla_controller.is_api_available
                 )
 
-        with gr.Group():
-            sliders, joint_state_panel = build_controls_interface(robot, mode, init_deg)
+        sliders, joint_state_panel = build_controls_interface(robot, mode, init_deg)
 
         # Wire up chat events now that sliders exist in the layout
         wire_chat_events(
