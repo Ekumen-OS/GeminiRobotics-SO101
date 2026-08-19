@@ -33,9 +33,23 @@ class VLAController:
         self.history: list[dict[str, str]] = []
 
         system_prompt = (
-            f"You are the Gemini Robotics Assistant, controlling the SO-101 robot arm. "
-            f"The system is currently in '{self.mode.upper()}' mode. "
-            f"Your capabilities include spatial reasoning and trajectory generation."
+            f"You are the Gemini Robotics Assistant controlling the physical 6-DOF SO-101 "
+            f"robot arm. The system is operating in '{self.mode.upper()}' mode.\n\n"
+            "### Physical Workspace & Calibration Setup:\n"
+            "- The camera is mounted on the LEFT side of the workspace, viewing the tabletop "
+            "at an oblique angle.\n"
+            "- The SO-101 robot arm is mounted on the RIGHT side of the camera's field of view, "
+            "facing and reaching into the workspace towards the LEFT.\n"
+            "- Forward (+X) for the robot points towards the LEFT of the camera frame.\n"
+            "- Left (+Y) for the robot points towards the BOTTOM of the camera frame.\n"
+            "- The workspace is planar-calibrated using 4 ArUco corner fiducials on the table "
+            "surface (Z=0 plane): ID 0 (Top-Left), ID 1 (Top-Right), ID 2 (Bottom-Right), "
+            "ID 3 (Bottom-Left).\n"
+            "- When executing spatial pointing or pick-and-place tasks, ALWAYS designate "
+            "coordinates [y, x] in range 0-1000 at the **bottom table contact center** of "
+            "objects to maintain planar homography accuracy.\n"
+            "- For pick-and-place commands, ALWAYS call the closed-loop "
+            "`execute_spav_pick_and_place` tool."
         )
         self.history.append({"role": "system", "content": system_prompt})
 
@@ -162,8 +176,21 @@ class VLAController:
                                         )
                                     )
 
+                                def tool_status_callback(status_msg: str) -> None:
+                                    asyncio.run_coroutine_threadsafe(
+                                        response_queue.put(
+                                            {"type": "status", "content": status_msg}
+                                        ),
+                                        self._loop,
+                                    )
+
                                 # Execute tool
-                                result_dict = execute_tool_call(call, self.robot)
+                                result_dict = await execute_tool_call(
+                                    call=call,
+                                    robot=self.robot,
+                                    get_latest_jpeg_fn=get_latest_jpeg_fn,
+                                    status_callback=tool_status_callback,
+                                )
 
                                 if is_blocking:
                                     tool_executing_event.clear()
@@ -236,6 +263,25 @@ class VLAController:
             self.history.append({"role": "assistant", "content": msg})
             yield msg
             return
+
+        # In real or twin mode, block execution if workspace calibration is missing
+        if self.mode in ("real", "twin"):
+            from ui.stream import get_calibrator
+
+            calib = get_calibrator()
+            if calib is None or not calib.is_calibrated:
+                block_msg = (
+                    "⚠️ **Action Blocked — Workspace Not Calibrated**\n\n"
+                    "The physical workspace has not been calibrated. The robot cannot safely "
+                    "execute motions without coordinate calibration.\n\n"
+                    "👉 **Please Calibrate the Workspace:**\n"
+                    "1. Ensure all 4 ArUco markers are visible in the camera stream.\n"
+                    "2. Open the **🎯 ArUco Workspace Calibration** panel on the left.\n"
+                    "3. Click **'💾 Save Calibration'** once the 4 corners are detected."
+                )
+                self.history.append({"role": "assistant", "content": block_msg})
+                yield block_msg
+                return
 
         # Cancel any previous task if it's still running
         if self._current_async_task and not self._current_async_task.done():
