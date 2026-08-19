@@ -9,7 +9,10 @@ from ui.stream import (
     get_default_camera_index,
     prepare_stream_switch,
     save_workspace_calibration_file,
+    set_bounding_boxes_overlay,
     set_calibration_overlay,
+    set_crosshair_overlay,
+    set_grid_overlay,
     stream_video,
 )
 
@@ -23,7 +26,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         demo: The parent Gradio Blocks app to attach load events to.
     """
     viewer_iframe = (
-        '<div style="width: 100%; height: 490px; border-radius: 12px; overflow: hidden; '
+        '<div style="width: 100%; height: 600px; border-radius: 12px; overflow: hidden; '
         "border: 1px solid #334155; position: relative; background: #0b0f19; "
         'box-shadow: 0 8px 30px rgba(0,0,0,0.5);">'
         '<iframe src="/ui_assets/sim_viewer.html" style="width: 100%; height: 100%; border: none;" '
@@ -40,6 +43,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 label="AI Model Observation Stream",
                 show_label=False,
                 interactive=False,
+                elem_id="vision-feed",
             )
             mode_state = gr.State(value=mode)
             camera_dropdown = gr.State(value=-1)
@@ -65,7 +69,51 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                     label="LIVE Observation Stream",
                     show_label=True,
                     interactive=False,
+                    elem_id="vision-feed",
                 )
+                with gr.Row():
+                    calib_chk_twin = gr.Checkbox(
+                        label="Show Calibration Overlay",
+                        value=False,
+                        scale=1,
+                    )
+                    bbox_chk_twin = gr.Checkbox(
+                        label="Show Bounding Boxes",
+                        value=False,
+                        scale=1,
+                    )
+                    grid_chk_twin = gr.Checkbox(
+                        label="Show Grid Overlay",
+                        value=False,
+                        scale=1,
+                    )
+                    crosshair_chk_twin = gr.Checkbox(
+                        label="Show Crosshair",
+                        value=False,
+                        scale=1,
+                    )
+
+                calib_chk_twin.change(
+                    fn=set_calibration_overlay,
+                    inputs=[calib_chk_twin],
+                    outputs=None,
+                )
+                bbox_chk_twin.change(
+                    fn=set_bounding_boxes_overlay,
+                    inputs=[bbox_chk_twin],
+                    outputs=None,
+                )
+                grid_chk_twin.change(
+                    fn=set_grid_overlay,
+                    inputs=[grid_chk_twin],
+                    outputs=None,
+                )
+                crosshair_chk_twin.change(
+                    fn=set_crosshair_overlay,
+                    inputs=[crosshair_chk_twin],
+                    outputs=None,
+                )
+
                 initial_choices = get_available_camera_choices()
                 initial_value = get_default_camera_index(initial_choices)
                 with gr.Row():
@@ -81,16 +129,11 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
 
                 with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
                     with gr.Row():
-                        overlay_toggle_twin = gr.Checkbox(
-                            label="Show Calibration Overlay",
-                            value=False,
-                            scale=1,
-                        )
                         calib_status_twin = gr.Textbox(
                             label="Calibration Status",
                             value=get_calibration_status_summary(),
                             interactive=False,
-                            scale=2,
+                            scale=3,
                         )
                         save_calib_btn_twin = gr.Button(
                             "💾 Save Calibration",
@@ -98,11 +141,6 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                             scale=1,
                         )
 
-                    overlay_toggle_twin.change(
-                        fn=set_calibration_overlay,
-                        inputs=[overlay_toggle_twin],
-                        outputs=None,
-                    )
                     save_calib_btn_twin.click(
                         fn=save_workspace_calibration_file,
                         inputs=None,
@@ -163,7 +201,51 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         label="LIVE Observation Stream",
         show_label=True,
         interactive=False,
+        elem_id="vision-feed",
     )
+    with gr.Row():
+        calib_chk = gr.Checkbox(
+            label="Show Calibration Overlay",
+            value=False,
+            scale=1,
+        )
+        bbox_chk = gr.Checkbox(
+            label="Show Bounding Boxes",
+            value=False,
+            scale=1,
+        )
+        grid_chk = gr.Checkbox(
+            label="Show Grid Overlay",
+            value=False,
+            scale=1,
+        )
+        crosshair_chk = gr.Checkbox(
+            label="Show Crosshair",
+            value=False,
+            scale=1,
+        )
+
+    calib_chk.change(
+        fn=set_calibration_overlay,
+        inputs=[calib_chk],
+        outputs=None,
+    )
+    bbox_chk.change(
+        fn=set_bounding_boxes_overlay,
+        inputs=[bbox_chk],
+        outputs=None,
+    )
+    grid_chk.change(
+        fn=set_grid_overlay,
+        inputs=[grid_chk],
+        outputs=None,
+    )
+    crosshair_chk.change(
+        fn=set_crosshair_overlay,
+        inputs=[crosshair_chk],
+        outputs=None,
+    )
+
     initial_choices = get_available_camera_choices()
     initial_value = get_default_camera_index(initial_choices)
 
@@ -184,16 +266,11 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
 
     with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
         with gr.Row():
-            overlay_toggle = gr.Checkbox(
-                label="Show Calibration Overlay",
-                value=False,
-                scale=1,
-            )
             calib_status = gr.Textbox(
                 label="Calibration Status",
                 value=get_calibration_status_summary(),
                 interactive=False,
-                scale=2,
+                scale=3,
             )
             save_calib_btn = gr.Button(
                 "💾 Save Calibration",
@@ -201,11 +278,6 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 scale=1,
             )
 
-        overlay_toggle.change(
-            fn=set_calibration_overlay,
-            inputs=[overlay_toggle],
-            outputs=None,
-        )
         save_calib_btn.click(
             fn=save_workspace_calibration_file,
             inputs=None,
