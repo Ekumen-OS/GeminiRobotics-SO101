@@ -166,19 +166,23 @@ class CartesianIK:
         achieved_pos = self.data.site_xpos[self.site_id].copy()
         err_dist = np.linalg.norm(target_pos - achieved_pos)
 
-        # If IK got stuck (e.g., trapped against limits), retry from neutral seed
+        # If IK got stuck (e.g., trapped against limits), retry once from neutral seed
         if err_dist > 0.01 and initial_qpos is not None:
             neutral_seed = np.array([0.0, -0.5, 0.5, 0.5, 0.0, 0.0])
-            return self.solve_ik(
-                target_pos=target_pos,
-                target_mat=target_mat,
-                initial_qpos=neutral_seed,
-                nominal_qpos=nominal_qpos,
-                preserve_orientation=preserve_orientation,
-                max_iters=max_iters,
-                tol=tol,
-                damping=damping,
-                null_weight=null_weight,
+            is_neutral = len(initial_qpos) >= 6 and np.allclose(
+                initial_qpos[:6], neutral_seed, atol=1e-3
             )
+            if not is_neutral:
+                return self.solve_ik(
+                    target_pos=target_pos,
+                    target_mat=target_mat,
+                    initial_qpos=neutral_seed,
+                    nominal_qpos=nominal_qpos,
+                    preserve_orientation=preserve_orientation,
+                    max_iters=max_iters,
+                    tol=tol,
+                    damping=damping,
+                    null_weight=null_weight,
+                )
 
         return np.array(qpos_res, dtype=np.float32)

@@ -1,6 +1,7 @@
 """RealSO101Robot interface to communicate with physical SO-101 arm via Feetech servos."""
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +48,7 @@ class RealSO101Robot(RobotInterface):
         self.port = port
         self.baudrate = baudrate
         self.connected = False
+        self._bus_lock = threading.Lock()
 
         if calibration_path is None:
             calibration_path = DEFAULT_CALIB_PATH
@@ -124,30 +126,31 @@ class RealSO101Robot(RobotInterface):
             return
 
         # If calibration is loaded, convert radians to degrees for LeRobot normalized write
-        if self.calibration is not None:
-            joint_degrees = {}
-            for i, joint_name in enumerate(JOINT_NAMES):
-                deg = float(np.degrees(qpos[i]))
-                joint_degrees[joint_name] = deg
+        with self._bus_lock:
+            if self.calibration is not None:
+                joint_degrees = {}
+                for i, joint_name in enumerate(JOINT_NAMES):
+                    deg = float(np.degrees(qpos[i]))
+                    joint_degrees[joint_name] = deg
 
-            try:
-                # Use sync_write to update all joint Goal_Positions cleanly
-                self.bus.sync_write("Goal_Position", joint_degrees, normalize=True)
-            except Exception as e:
-                print(f"Error writing joint positions to bus: {e}")
-        else:
-            # Fallback raw position calculation if no calibration profile
-            TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
-            CENTER_TICK = 2048
-            joint_dict = {}
-            for i, joint_name in enumerate(JOINT_NAMES):
-                tick = int(round(CENTER_TICK + qpos[i] * TICKS_PER_RAD))
-                joint_dict[joint_name] = tick
+                try:
+                    # Use sync_write to update all joint Goal_Positions cleanly
+                    self.bus.sync_write("Goal_Position", joint_degrees, normalize=True)
+                except Exception as e:
+                    print(f"Error writing joint positions to bus: {e}")
+            else:
+                # Fallback raw position calculation if no calibration profile
+                TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
+                CENTER_TICK = 2048
+                joint_dict = {}
+                for i, joint_name in enumerate(JOINT_NAMES):
+                    tick = int(round(CENTER_TICK + qpos[i] * TICKS_PER_RAD))
+                    joint_dict[joint_name] = tick
 
-            try:
-                self.bus.sync_write("Goal_Position", joint_dict, normalize=False)
-            except Exception as e:
-                print(f"Error writing raw joint positions: {e}")
+                try:
+                    self.bus.sync_write("Goal_Position", joint_dict, normalize=False)
+                except Exception as e:
+                    print(f"Error writing raw joint positions: {e}")
 
     def get_joint_positions(self) -> np.ndarray:
         """Read current joint positions from physical motor encoders in radians.
@@ -158,30 +161,31 @@ class RealSO101Robot(RobotInterface):
         if not self.connected or self.bus is None:
             return self._last_qpos.copy()
 
-        try:
-            if self.calibration is not None:
-                deg_dict = self.bus.sync_read("Present_Position", normalize=True)
-                qpos = np.zeros(6, dtype=np.float32)
-                for i, joint_name in enumerate(JOINT_NAMES):
-                    if joint_name in deg_dict:
-                        qpos[i] = np.radians(deg_dict[joint_name])
-                    else:
-                        qpos[i] = self._last_qpos[i]
-                return qpos
-            else:
-                TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
-                CENTER_TICK = 2048
-                tick_dict = self.bus.sync_read("Present_Position", normalize=False)
-                qpos = np.zeros(6, dtype=np.float32)
-                for i, joint_name in enumerate(JOINT_NAMES):
-                    if joint_name in tick_dict:
-                        qpos[i] = (tick_dict[joint_name] - CENTER_TICK) / TICKS_PER_RAD
-                    else:
-                        qpos[i] = self._last_qpos[i]
-                return qpos
-        except Exception as e:
-            print(f"Error reading present positions from bus: {e}")
-            return self._last_qpos.copy()
+        with self._bus_lock:
+            try:
+                if self.calibration is not None:
+                    deg_dict = self.bus.sync_read("Present_Position", normalize=True)
+                    qpos = np.zeros(6, dtype=np.float32)
+                    for i, joint_name in enumerate(JOINT_NAMES):
+                        if joint_name in deg_dict:
+                            qpos[i] = np.radians(deg_dict[joint_name])
+                        else:
+                            qpos[i] = self._last_qpos[i]
+                    return qpos
+                else:
+                    TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
+                    CENTER_TICK = 2048
+                    tick_dict = self.bus.sync_read("Present_Position", normalize=False)
+                    qpos = np.zeros(6, dtype=np.float32)
+                    for i, joint_name in enumerate(JOINT_NAMES):
+                        if joint_name in tick_dict:
+                            qpos[i] = (tick_dict[joint_name] - CENTER_TICK) / TICKS_PER_RAD
+                        else:
+                            qpos[i] = self._last_qpos[i]
+                    return qpos
+            except Exception as e:
+                print(f"Error reading present positions from bus: {e}")
+                return self._last_qpos.copy()
 
     def disconnect(self) -> None:
         """Disconnect and release the serial bus."""
