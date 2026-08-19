@@ -24,18 +24,17 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
 1. **[`/robot`](robot/) (Core Robot Definition & Kinematics)**
    - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`constants.py`](robot/constants.py)).
    - **Kinematics & Theory**: Forward kinematics ([`kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`theory.md`](robot/theory.md)).
-   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and printable calibration mat sheet generator ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
-   - **Trajectory Planning**: $C^2$-continuous quintic minimum-jerk motion interpolation and phased pick-and-place generation ([`trajectory.py`](robot/trajectory.py)).
+   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, printable calibration mat sheet generator, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
    - **Hardware & Digital Twin**: Physical serial bus interfaces for Feetech servos ([`real_robot.py`](robot/real_robot.py)), simulation controller ([`simulation/sim_robot.py`](simulation/sim_robot.py)), and simultaneous simulation-to-hardware streaming ([`twin_robot.py`](robot/twin_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
 
 2. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
    - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
-   - **Closed-Loop SPAV Engine**: Evaluative Sense-Plan-Act-Verify state machine with visual grasp verification and visual offset retry correction (`SPAVStateMachine` in [`spav.py`](agent/spav.py)).
-   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, calibrated spatial pointing, and automated SPAV pick-and-place dispatch.
-   - **VLA Controller**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) bridging synchronous UI streaming with Gemini Live WebSocket turns, continuous video frame ingestion, and emergency stop handling.
+   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
+   - **VLA Controller**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) bridging synchronous UI streaming with Gemini Live WebSocket turns, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
 
 3. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
-   - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)), centered 3D STL meshes, and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
+   - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
+   - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
    - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`warp_env.py`](simulation/warp_env.py)).
    - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`test_movement.py`](simulation/test_movement.py)) and system health checks ([`check_env.py`](simulation/check_env.py)).
 
@@ -122,18 +121,19 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 | `open_gripper` | Fully open the gripper end-effector. | None |
 | `close_gripper` | Fully close the gripper end-effector. | None |
 | `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`, `SWEEP_HOME`). | `pose_name` (string) |
-| `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK. | `point` (array of 2 numbers) |
-| `execute_spav_pick_and_place` | Closed-loop multi-turn Sense-Plan-Act-Verify pick-and-place with vision self-correction. | `instruction` (string) |
+| `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
 | `get_joint_positions` | Read current joint angles in degrees. | None |
 | `get_end_effector_pose` | Read 3D Cartesian position and orientation matrix (sim/twin). | None |
 
-## Closed-Loop SPAV Pipeline & Workspace Calibration
+## Model-Driven Closed-Loop Orchestration & Workspace Calibration
 
 ### 1. ArUco Workspace Calibration & Sheet Generator (`robot/calibration.py`)
+
 - Detects 4-corner ArUco fiducials (`DICT_4X4_50`, IDs 0..3) defining the physical workspace mat.
 - Computes perspective homography mapping camera pixels directly to physical robot base millimeters.
 - Configurable via `config/workspace_calibration.json`.
 - **Interactive Setup Wizard & Marker / Sheet Generator**:
+
   ```bash
   # Launch interactive calibration wizard (auto-detects existing markers and asks whether to reuse or replace):
   uv run python main.py --task generate_markers
@@ -144,28 +144,25 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
   # Force regeneration of marker PNGs and calibration mat sheet:
   uv run python main.py --task generate_markers --regenerate
   ```
+
   Features & Artifacts:
   - **Auto-Detection**: Automatically detects existing marker files in `assets/aruco_markers/` and prompts whether to reuse them or regenerate.
   - `assets/aruco_markers/workspace_calibration_sheet.png` — An all-in-one printable tabletop calibration mat with 4 corner markers, robot base alignment guide, workspace boundaries, and coordinate axes.
   - `assets/aruco_markers/marker_{0..3}.png` — Individual high-resolution marker stickers.
 
-### 2. Quintic Minimum-Jerk Trajectory Planner (`robot/trajectory.py`)
-- Implements $C^2$-continuous 5th-order polynomial interpolation: $s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$.
-- Guarantees zero velocity and zero acceleration at trajectory boundaries ($v(0)=v(T)=0$, $a(0)=a(T)=0$), completely eliminating motor jerk and torque spikes on Feetech STS3215 servos.
-- Discrete 6-phase pick-and-place trajectories: Pre-grasp Hover $\rightarrow$ Linear Descent $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transit to Place $\rightarrow$ Release.
+### 2. Model-as-Orchestrator Closed-Loop Architecture (`agent/vla_controller.py`)
 
-### 3. Closed-Loop SPAV State Machine (`agent/spav.py`)
-- **State 1 (Sense & Plan)**: Analyzes camera snapshot with `gemini-robotics-er-2-preview` to detect target object and destination.
-- **State 2 (Act)**: Transforms coordinates via homography and executes minimum-jerk pick trajectory.
-- **State 3 (Visual Verification)**: Captures post-grasp hover snapshot and verifies if object is securely in jaws.
-- **State 4 (Self-Correction Decision)**: On success, transports to destination bin; on failure, applies visual delta offset $[\Delta y, \Delta x]$ and retries (up to 3 attempts).
+- Powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API bidirectional WebSocket session.
+- **Continuous Video Stream**: Ingests video frames at ~1 FPS, enabling the vision-language-action model to perceive workspace state in real-time.
+- **Direct Primitive Tool Calling**: Rather than relying on a rigid state machine, the model orchestrates multi-step actions (Hover $\rightarrow$ Descend $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transport $\rightarrow$ Release) by invoking tool primitives.
+- **Visual Feedback & Self-Correction**: The model continuously verifies execution success from video feedback. If a grasp fails, it reasons about the visual offset, adjusts coordinates, and autonomously retries.
 
 ## Testing & Diagnostics
 
 Verify system health, MuJoCo simulation physics, inverse kinematics, and unit test suites:
 
 ```bash
-# 1. Run complete automated unit test suite (Calibration, Trajectory, SPAV State Machine)
+# 1. Run complete automated unit test suite (Workspace Calibration, Tool Adapters, VLA Controller, UI)
 uv run pytest tests/ -v
 
 # 2. Verify movement & kinematics via automated X, Y, and Z Cartesian line sweeps

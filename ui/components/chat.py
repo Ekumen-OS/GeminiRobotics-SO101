@@ -15,7 +15,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
         api_available: Whether the Gemini API is available.
 
     Returns:
-        Tuple of (prompt_input, chatbot, exec_btn, stop_btn, clear_btn)
+        Tuple of (prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn)
     """
     from ui.stream import get_calibrator
 
@@ -55,22 +55,27 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     prompt_input = gr.Textbox(
         label="Instruction Prompt",
         placeholder=(
-            'e.g., "Pick up red cube and place in sorting basket..."'
+            'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
             if is_calibrated
             else "⚠️ Calibrate workspace before issuing commands..."
         ),
-        lines=2,
+        lines=1,
+        max_lines=4,
+        autofocus=True,
         interactive=api_available,
         elem_id="vla-prompt",
     )
     with gr.Row():
-        exec_btn = gr.Button(
-            "🚀 Execute Instruction", variant="primary", scale=2, interactive=api_available
+        exec_btn = gr.Button("🚀 Send", variant="primary", scale=2, interactive=api_available)
+        home_btn = gr.Button("🏠 Reset to Home", variant="secondary", scale=1)
+        rand_btn = (
+            gr.Button("🎲 Randomize Cube", variant="secondary", scale=1)
+            if controller.mode in ("sim", "twin")
+            else None
         )
-        stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
         clear_btn = gr.Button("🗑️ Clear Chat", variant="secondary", scale=1)
 
-    return prompt_input, chatbot, exec_btn, stop_btn, clear_btn
+    return prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn
 
 
 def wire_chat_events(
@@ -78,9 +83,10 @@ def wire_chat_events(
     prompt_input: gr.Textbox,
     chatbot: gr.Chatbot,
     exec_btn: gr.Button,
-    stop_btn: gr.Button,
+    home_btn: gr.Button,
     clear_btn: gr.Button,
     sliders: list[gr.Slider],
+    rand_btn: gr.Button | None = None,
 ) -> None:
     """Wire up the event listeners for the chat interface.
 
@@ -88,11 +94,13 @@ def wire_chat_events(
         controller: The VLAController instance.
         prompt_input: The Gradio Textbox for user prompts.
         chatbot: The Gradio Chatbot component.
-        exec_btn: The execute button.
-        stop_btn: The stop button.
+        exec_btn: The execute/send button.
+        home_btn: The reset to home button.
         clear_btn: The clear chat button.
         sliders: The list of 6 Gradio joint sliders to update.
+        rand_btn: Optional randomize target button for sim mode.
     """
+    from robot.constants import PRESET_POSES
 
     def process_instruction(
         msg: str = "",
@@ -127,6 +135,21 @@ def wire_chat_events(
                 pass
 
         yield "", history, *final_deg
+
+    def reset_to_home() -> list[float]:
+        if controller.robot is not None:
+            home_target = PRESET_POSES["HOME"]
+            if hasattr(controller.robot, "move_to_pose"):
+                controller.robot.move_to_pose(home_target, duration_sec=1.0)
+            elif hasattr(controller.robot, "set_joint_positions"):
+                controller.robot.set_joint_positions(home_target)
+        home_deg = [round(float(np.degrees(v)), 1) for v in PRESET_POSES["HOME"]]
+        return home_deg
+
+    def randomize_cube() -> None:
+        if controller.robot is not None and hasattr(controller.robot, "randomize_target"):
+            new_pos = controller.robot.randomize_target()
+            print(f"[UI] Random target placed at XYZ: {[round(v, 3) for v in new_pos]}")
 
     def clear_chat() -> list:
         controller.clear_history()
@@ -165,5 +188,7 @@ def wire_chat_events(
         inputs=[prompt_input, chatbot],
         outputs=[prompt_input, chatbot, *sliders],
     )
-    stop_btn.click(fn=lambda: controller.interrupt(), inputs=None, outputs=None)
+    home_btn.click(fn=reset_to_home, inputs=None, outputs=sliders)
+    if rand_btn is not None:
+        rand_btn.click(fn=randomize_cube, inputs=None, outputs=None)
     clear_btn.click(fn=clear_chat, inputs=None, outputs=[chatbot])

@@ -95,8 +95,6 @@ def build_controls_interface(
         target_qpos = np.radians(target_deg, dtype=np.float32)
         if robot is not None:
             robot.set_joint_positions(target_qpos)
-            if mode != "sim":
-                robot.step(1)
         msg = f"⚡ Command routed to servos: {[round(val, 1) for val in target_deg]}°"
         measured_deg = read_measured_joint_degrees(robot, target_deg)
         panel_html = render_joint_state_panel(target_deg, measured_deg)

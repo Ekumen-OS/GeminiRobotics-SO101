@@ -1,12 +1,13 @@
 """Main Gradio Web UI constructor for GeminiRobotics-SO101 VLA interaction."""
 
+import json
 from pathlib import Path
 
 import gradio as gr
 import numpy as np
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent.vla_controller import VLAController
@@ -112,10 +113,7 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
     init_deg = [round(float(np.degrees(v)), 1) for v in init_qpos]
 
     with gr.Blocks(title=f"GeminiRobotics SO-101 VLA [{mode.upper()}]") as demo:
-        gr.Markdown(
-            "### 🦾 GeminiRobotics SO-101 — Unified VLA Interface | "
-            f"**Operational Mode: `{mode.upper()}`**"
-        )
+        gr.Markdown(f"## 🦾  GeminiRobotics SO-101 | **Mode: `{mode.upper()}`**")
 
         vla_controller = VLAController(mode=mode, robot=robot)
 
@@ -124,15 +122,24 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
                 build_vision_interface(robot, mode, demo)
 
             with gr.Column(scale=5):
-                prompt_input, chatbot, exec_btn, stop_btn, clear_btn = build_chat_interface(
-                    vla_controller, api_available=vla_controller.is_api_available
+                prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn = (
+                    build_chat_interface(
+                        vla_controller, api_available=vla_controller.is_api_available
+                    )
                 )
 
         sliders, joint_state_panel = build_controls_interface(robot, mode, init_deg)
 
         # Wire up chat events now that sliders exist in the layout
         wire_chat_events(
-            vla_controller, prompt_input, chatbot, exec_btn, stop_btn, clear_btn, sliders
+            vla_controller,
+            prompt_input,
+            chatbot,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
         )
 
     return demo
@@ -149,11 +156,21 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
         Configured FastAPI application instance.
     """
     set_active_robot(robot)
+    if mode == "sim":
+        from simulation.sim_calibration import init_sim_workspace_calibration
+        from ui.stream import _SIM_RUNTIME, get_calibrator
+
+        calib = get_calibrator(mode="sim")
+        init_sim_workspace_calibration(calibrator=calib)
+        if robot is not None:
+            _SIM_RUNTIME.ensure_started(robot)
+
     app = FastAPI(title="GeminiRobotics-SO101", docs_url=None, redoc_url=None)
 
     project_root = Path(__file__).resolve().parent.parent
     sim_assets_dir = project_root / "simulation" / "assets"
     ui_assets_dir = Path(__file__).resolve().parent / "assets"
+    aruco_markers_dir = project_root / "assets" / "aruco_markers"
 
     if sim_assets_dir.exists():
         app.mount("/sim_assets", StaticFiles(directory=str(sim_assets_dir)), name="sim_assets")
@@ -161,16 +178,53 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
     if ui_assets_dir.exists():
         app.mount("/ui_assets", StaticFiles(directory=str(ui_assets_dir)), name="ui_assets")
 
+    if aruco_markers_dir.exists():
+        app.mount(
+            "/aruco_markers", StaticFiles(directory=str(aruco_markers_dir)), name="aruco_markers"
+        )
+
     @app.get("/viewer")
     async def get_viewer():
         viewer_path = ui_assets_dir / "sim_viewer.html"
         if viewer_path.exists():
-            return FileResponse(str(viewer_path), media_type="text/html")
+            return FileResponse(
+                str(viewer_path),
+                media_type="text/html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
         return JSONResponse({"error": "sim_viewer.html not found"}, status_code=404)
 
     @app.get("/api/sim_state")
     async def get_sim_state():
         return JSONResponse(get_robot_state_dict())
+
+    @app.get("/api/workspace_config")
+    async def get_workspace_config():
+        cfg_path = project_root / "config" / "workspace_calibration.json"
+        if cfg_path.exists():
+            try:
+                return JSONResponse(json.loads(cfg_path.read_text()))
+            except Exception:
+                pass
+        return JSONResponse({})
+
+    @app.get("/api/sim_stream")
+    async def get_sim_stream():
+        import asyncio
+
+        from ui.stream import get_latest_jpeg
+
+        async def frame_generator():
+            while True:
+                jpg = get_latest_jpeg()
+                if jpg is not None:
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n")
+                await asyncio.sleep(0.033)
+
+        return StreamingResponse(
+            frame_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
 
     theme = get_cached_or_hub_theme("YTheme/TehnoX")
     demo = build_vla_interface(robot=robot, mode=mode)
