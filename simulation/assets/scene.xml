@@ -10,13 +10,40 @@
     <asset>
         <texture type="skybox" builtin="gradient" rgb1="0.1 0.15 0.2" rgb2="0.02 0.03 0.05" width="512" height="512" />
         <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.15 0.17 0.22" rgb2="0.1 0.12 0.15" markrgb="0.8 0.8 0.8" width="300" height="300" />
-        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.05" />
+
+        <!-- ArUco Marker Textures for Simulation Spatial Grounding -->
+        <texture type="2d" name="tex_marker_0" file="../../assets/aruco_markers/marker_0.png" />
+        <texture type="2d" name="tex_marker_1" file="../../assets/aruco_markers/marker_1.png" />
+        <texture type="2d" name="tex_marker_2" file="../../assets/aruco_markers/marker_2.png" />
+        <texture type="2d" name="tex_marker_3" file="../../assets/aruco_markers/marker_3.png" />
+        <material name="mat_marker_0" texture="tex_marker_0" specular="0" shininess="0" />
+        <material name="mat_marker_1" texture="tex_marker_1" specular="0" shininess="0" />
+        <material name="mat_marker_2" texture="tex_marker_2" specular="0" shininess="0" />
+        <material name="mat_marker_3" texture="tex_marker_3" specular="0" shininess="0" />
+        <material name="mat_boundary" rgba="0.0 0.85 1.0 0.9" specular="0.1" />
     </asset>
 
     <worldbody>
         <!-- Directional light and ground plane -->
         <light pos="0 0 3.5" dir="0 0 -1" directional="true" castshadow="true" />
         <geom name="floor" size="2 2 0.05" pos="0 0 0" type="plane" material="groundplane" />
+
+        <!-- Calibrated Workspace Center Target Body & Fixed Camera matching user perspective -->
+        <body name="workspace_center" pos="0.186 0.042 0.096" />
+        <camera name="workspace_cam" pos="0.185 0.458 0.591" mode="targetbody" target="workspace_center" fovy="45" />
+
+        <!-- Workspace Boundary Lines (X: 100mm to 380mm, Y: -250mm to +130mm) -->
+        <geom name="bound_top" type="box" pos="0.380 -0.060 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_bottom" type="box" pos="0.100 -0.060 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_left" type="box" pos="0.240 0.130 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_right" type="box" pos="0.240 -0.250 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+
+        <!-- ArUco Corner Markers (40mm x 40mm fiducials from config/workspace_calibration.json) -->
+        <geom name="aruco_tl_0" type="box" pos="0.380 0.130 0.0008" size="0.020 0.020 0.0005" material="mat_marker_0" contype="0" conaffinity="0" />
+        <geom name="aruco_tr_1" type="box" pos="0.380 -0.250 0.0008" size="0.020 0.020 0.0005" material="mat_marker_1" contype="0" conaffinity="0" />
+        <geom name="aruco_br_2" type="box" pos="0.100 -0.250 0.0008" size="0.020 0.020 0.0005" material="mat_marker_2" contype="0" conaffinity="0" />
+        <geom name="aruco_bl_3" type="box" pos="0.100 0.130 0.0008" size="0.020 0.020 0.0005" material="mat_marker_3" contype="0" conaffinity="0" />
 
         <!-- Target manipulation object to pick -->
         <body name="target" pos="0.18 0.0 0.015">
