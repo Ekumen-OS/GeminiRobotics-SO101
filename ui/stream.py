@@ -32,8 +32,11 @@ _grid_overlay_enabled: bool = False
 _crosshair_overlay_enabled: bool = False
 
 
-def get_calibrator() -> ArucoWorkspaceCalibrator:
+def get_calibrator(mode: str = "real") -> ArucoWorkspaceCalibrator:
     """Return the shared ArucoWorkspaceCalibrator singleton instance.
+
+    Args:
+        mode: Operational mode ('real', 'sim', 'twin').
 
     Returns:
         The active ArucoWorkspaceCalibrator instance.
@@ -41,7 +44,16 @@ def get_calibrator() -> ArucoWorkspaceCalibrator:
     global _global_calibrator
     with _calibrator_lock:
         if _global_calibrator is None:
-            _global_calibrator = ArucoWorkspaceCalibrator()
+            if mode == "sim":
+                from simulation.sim_calibration import init_sim_workspace_calibration
+
+                _global_calibrator = init_sim_workspace_calibration()
+            else:
+                _global_calibrator = ArucoWorkspaceCalibrator(mode=mode)
+        elif mode == "sim" and not _global_calibrator.is_calibrated:
+            from simulation.sim_calibration import init_sim_workspace_calibration
+
+            _global_calibrator = init_sim_workspace_calibration(calibrator=_global_calibrator)
         return _global_calibrator
 
 
@@ -153,8 +165,17 @@ def get_latest_jpeg() -> bytes | None:
     """Get the most recent camera frame from any active stream as a JPEG."""
     with _global_frame_lock:
         frame = _global_latest_frame
+
     if frame is None:
-        return None
+        from ui.state import get_active_robot
+
+        robot = get_active_robot()
+        if robot is not None and hasattr(robot, "render_rgb_frame"):
+            frame = _SIM_RUNTIME.get_latest_frame(robot)
+
+    if frame is None:
+        frame = generate_sim_placeholder_pattern()
+
     bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     success, encoded = cv2.imencode(".jpg", bgr_frame)
     if success:
@@ -834,9 +855,15 @@ def stream_video(
 
     # Mode SIM: live MuJoCo render without hardware camera dependencies
     if mode == "sim":
+        calib = get_calibrator(mode="sim")
         while _current_stream_id == my_stream_id:
             start = time.time()
-            yield get_sim_video_frame(robot=robot)
+            frame = get_sim_video_frame(robot=robot)
+            if is_calibration_overlay_enabled() and calib.is_calibrated:
+                frame = calib.draw_workspace_overlay(frame, detected_markers={}, show_markers=False)
+            with _global_frame_lock:
+                _global_latest_frame = frame.copy()
+            yield frame
             elapsed = time.time() - start
             if elapsed < frame_interval:
                 time.sleep(frame_interval - elapsed)
