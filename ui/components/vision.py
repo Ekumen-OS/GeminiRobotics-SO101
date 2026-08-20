@@ -13,6 +13,7 @@ from ui.stream import (
     set_calibration_overlay,
     set_crosshair_overlay,
     set_grid_overlay,
+    set_target_overlay_enabled,
     stream_video,
 )
 
@@ -38,7 +39,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
     if mode == "sim":
         gr.HTML(value=viewer_iframe)
 
-        with gr.Accordion("🤖 Canonical VLA Vision (MuJoCo Offscreen Observation)", open=True):
+        with gr.Accordion("🤖 Canonical VLA Vision (MuJoCo Offscreen Observation)", open=False):
             mjpeg_viewer = (
                 '<div style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; '
                 "border: 1px solid #334155; position: relative; background: #0b0f19; "
@@ -49,6 +50,28 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 "</div>"
             )
             gr.HTML(value=mjpeg_viewer)
+            with gr.Row():
+                target_chk_sim = gr.Checkbox(
+                    label="🎯 Show Model Target Overlay",
+                    value=True,
+                    scale=1,
+                )
+                calib_chk_sim = gr.Checkbox(
+                    label="📐 Show Calibration Overlay",
+                    value=False,
+                    scale=1,
+                )
+
+            target_chk_sim.change(
+                fn=set_target_overlay_enabled,
+                inputs=[target_chk_sim],
+                outputs=None,
+            )
+            calib_chk_sim.change(
+                fn=set_calibration_overlay,
+                inputs=[calib_chk_sim],
+                outputs=None,
+            )
         return
 
     elif mode == "twin":
@@ -64,6 +87,11 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                     elem_id="vision-feed",
                 )
                 with gr.Row():
+                    target_chk_twin = gr.Checkbox(
+                        label="🎯 Show Model Target",
+                        value=True,
+                        scale=1,
+                    )
                     calib_chk_twin = gr.Checkbox(
                         label="Show Calibration Overlay",
                         value=False,
@@ -84,6 +112,12 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                         value=False,
                         scale=1,
                     )
+
+                target_chk_twin.change(
+                    fn=set_target_overlay_enabled,
+                    inputs=[target_chk_twin],
+                    outputs=None,
+                )
 
                 calib_chk_twin.change(
                     fn=set_calibration_overlay,
@@ -196,6 +230,11 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         elem_id="vision-feed",
     )
     with gr.Row():
+        target_chk = gr.Checkbox(
+            label="🎯 Show Model Target",
+            value=True,
+            scale=1,
+        )
         calib_chk = gr.Checkbox(
             label="Show Calibration Overlay",
             value=False,
@@ -217,6 +256,11 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
             scale=1,
         )
 
+    target_chk.change(
+        fn=set_target_overlay_enabled,
+        inputs=[target_chk],
+        outputs=None,
+    )
     calib_chk.change(
         fn=set_calibration_overlay,
         inputs=[calib_chk],

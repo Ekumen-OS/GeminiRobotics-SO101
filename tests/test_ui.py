@@ -11,19 +11,31 @@ from ui.components.controls import build_controls_interface
 from ui.components.telemetry import render_joint_state_panel
 from ui.components.vision import build_vision_interface
 from ui.stream import (
+    clear_model_target_point,
+    draw_model_target_overlay,
+    get_model_target_point,
     is_bounding_boxes_overlay_enabled,
     is_calibration_overlay_enabled,
     is_crosshair_overlay_enabled,
     is_grid_overlay_enabled,
+    is_target_overlay_enabled,
     set_bounding_boxes_overlay,
     set_calibration_overlay,
     set_crosshair_overlay,
     set_grid_overlay,
+    set_model_target_point,
+    set_target_overlay_enabled,
 )
 
 
 def test_stream_overlay_flags() -> None:
     """Verify getter and setter functionality for all video stream overlay states."""
+    # Test Target overlay toggle
+    set_target_overlay_enabled(True)
+    assert is_target_overlay_enabled() is True
+    set_target_overlay_enabled(False)
+    assert is_target_overlay_enabled() is False
+
     # Test Calibration overlay toggle
     set_calibration_overlay(True)
     assert is_calibration_overlay_enabled() is True
@@ -47,6 +59,29 @@ def test_stream_overlay_flags() -> None:
     assert is_crosshair_overlay_enabled() is True
     set_crosshair_overlay(False)
     assert is_crosshair_overlay_enabled() is False
+
+
+def test_model_target_overlay_drawing() -> None:
+    """Verify set_model_target_point and draw_model_target_overlay rendering."""
+    import numpy as np
+
+    set_target_overlay_enabled(True)
+    set_model_target_point((500.0, 500.0), label="TEST_TARGET [500, 500]")
+    pt, lbl = get_model_target_point()
+    assert pt == (500.0, 500.0)
+    assert lbl == "TEST_TARGET [500, 500]"
+
+    # Test overlay drawing on dummy frame
+    blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    rendered = draw_model_target_overlay(blank_frame)
+    assert rendered.shape == (480, 640, 3)
+    assert np.any(rendered != 0)  # Drawing added non-zero pixels
+
+    # Clear target
+    clear_model_target_point()
+    pt, lbl = get_model_target_point()
+    assert pt is None
+    assert lbl is None
 
 
 def test_build_chat_interface_structure() -> None:
