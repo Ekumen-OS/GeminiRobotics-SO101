@@ -116,10 +116,11 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 | Tool Name | Description | Parameters |
 | :--- | :--- | :--- |
+| `send_message` | Speak, narrate observations, explain planned steps, or confirm completion. | `message` (string) |
 | `move_to_pose` | Smoothly interpolate arm to 6-DOF joint target in degrees. | `qpos` (array of 6 degs), `duration_sec` |
 | `set_joint_positions` | Instant snap joint position command in degrees. | `qpos` (array of 6 degs) |
 | `open_gripper` | Fully open the gripper end-effector. | None |
-| `close_gripper` | Fully close the gripper end-effector. | None |
+| `close_gripper` | Close the gripper end-effector. | None |
 | `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`, `SWEEP_HOME`). | `pose_name` (string) |
 | `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
 | `get_joint_positions` | Read current joint angles in degrees. | None |
@@ -152,10 +153,14 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 ### 2. Model-as-Orchestrator Closed-Loop Architecture (`agent/vla_controller.py`)
 
-- Powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API bidirectional WebSocket session.
-- **Continuous Video Stream**: Ingests video frames at ~1 FPS, enabling the vision-language-action model to perceive workspace state in real-time.
+- Powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API bidirectional WebSocket session with thinking enabled (`include_thoughts=True`).
+- **Continuous Visual Perception**: Ingests video frames at ~1 FPS both during motion execution and continuously in the background while the model reasons between tool calls.
+- **Post-Action Observation Frame**: Injects a fresh settled camera frame (with a 0.3s physical stabilization delay) immediately after every blocking tool execution before returning `FunctionResponse`, providing ground-truth post-action state for immediate inspection.
+- **Minimalist Target Bounding Box Overlay**: Renders a clean, semi-transparent bounding box with corner accents and floating coordinate badge on the video stream showing where Gemini is focusing in real time.
+- **Continuous Live ArUco Calibration**: Dynamically tracks visible fiducials and computes perspective homography continuously on the physical USB camera feed, eliminating camera perspective drift.
+- **Conversational Chain of Thought & Narration**: Streams internal reasoning thoughts (`> 💭 *...*`) and progressive conversational narration explaining visual observations, step-by-step intentions, clarifying questions, and completion summaries directly in the Chat UI.
 - **Direct Primitive Tool Calling**: Rather than relying on a rigid state machine, the model orchestrates multi-step actions (Hover $\rightarrow$ Descend $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transport $\rightarrow$ Release) by invoking tool primitives.
-- **Visual Feedback & Self-Correction**: The model continuously verifies execution success from video feedback. If a grasp fails, it reasons about the visual offset, adjusts coordinates, and autonomously retries.
+- **Explicit Visual Verification & Self-Correction**: The model visually verifies grasp success (checking if the object is held between jaws) and release placement. If an attempt fails, it reasons about observed physical offsets, adjusts coordinates, and autonomously retries.
 
 ## Testing & Diagnostics
 

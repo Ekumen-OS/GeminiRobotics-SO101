@@ -287,3 +287,12 @@ def test_execute_tool_call_sync() -> None:
     call = DummyToolCall("get_joint_positions")
     res = execute_tool_call_sync(call, robot=robot)
     assert "qpos_deg" in res
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_send_message() -> None:
+    """Test send_message tool execution."""
+    call = DummyToolCall("send_message", {"message": "Hello from robot!"})
+    res = await execute_tool_call(call, robot=None)
+    assert res["status"] == "success"
+    assert res["message"] == "Hello from robot!"

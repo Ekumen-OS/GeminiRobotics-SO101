@@ -30,6 +30,11 @@ _calibration_overlay_enabled: bool = False
 _bounding_boxes_overlay_enabled: bool = False
 _grid_overlay_enabled: bool = False
 _crosshair_overlay_enabled: bool = False
+_target_overlay_enabled: bool = True
+
+_model_target_point: tuple[float, float] | None = None
+_model_target_label: str | None = None
+_model_target_lock = threading.Lock()
 
 
 def get_calibrator(mode: str = "real") -> ArucoWorkspaceCalibrator:
@@ -133,6 +138,172 @@ def is_crosshair_overlay_enabled() -> bool:
     return _crosshair_overlay_enabled
 
 
+def set_target_overlay_enabled(enabled: bool) -> None:
+    """Enable or disable the model target overlay on live camera feeds.
+
+    Args:
+        enabled: True to enable overlay drawing, False to disable.
+    """
+    global _target_overlay_enabled
+    _target_overlay_enabled = bool(enabled)
+
+
+def is_target_overlay_enabled() -> bool:
+    """Check if the model target overlay is currently enabled.
+
+    Returns:
+        True if overlay is active, False otherwise.
+    """
+    return _target_overlay_enabled
+
+
+def set_model_target_point(
+    point: tuple[float, float] | list[float] | None,
+    label: str | None = None,
+) -> None:
+    """Set the active 2D normalized target point [y, x] from the VLA model.
+
+    Args:
+        point: [y, x] coordinate in normalized range 0..1000, or None to clear.
+        label: Optional text label to display beside the target marker.
+    """
+    global _model_target_point, _model_target_label
+    with _model_target_lock:
+        if point is None or len(point) < 2:
+            _model_target_point = None
+            _model_target_label = None
+        else:
+            _model_target_point = (float(point[0]), float(point[1]))
+            _model_target_label = label
+
+
+def clear_model_target_point() -> None:
+    """Clear the active model target point overlay."""
+    set_model_target_point(None)
+
+
+def get_model_target_point() -> tuple[tuple[float, float] | None, str | None]:
+    """Get the active model target point and label.
+
+    Returns:
+        Tuple of (target_point, target_label).
+    """
+    with _model_target_lock:
+        return _model_target_point, _model_target_label
+
+
+def draw_model_target_overlay(frame: np.ndarray) -> np.ndarray:
+    """Draw a clean, minimalistic bounding box and label badge at the model's target.
+
+    Args:
+        frame: Input image (RGB or BGR numpy array).
+
+    Returns:
+        Frame with minimalistic target box overlay drawn.
+    """
+    if not is_target_overlay_enabled():
+        return frame
+
+    target_pt, label = get_model_target_point()
+    if target_pt is None:
+        return frame
+
+    h, w = frame.shape[:2]
+    # target_pt is normalized [y, x] in 0..1000
+    norm_y, norm_x = target_pt
+    px = int(np.clip((norm_x / 1000.0) * w, 0, w - 1))
+    py = int(np.clip((norm_y / 1000.0) * h, 0, h - 1))
+
+    out = frame.copy()
+
+    # Premium minimalist color palette
+    color_cyan = (0, 225, 255)  # Vibrant cyan border
+    color_dark_bg = (15, 23, 42)  # Dark slate pill background
+    color_text = (248, 250, 252)  # Crisp white text
+
+    # 1. Minimalist Bounding Box (56x56 px around target)
+    half_box = 28
+    x1, y1 = max(2, px - half_box), max(2, py - half_box)
+    x2, y2 = min(w - 3, px + half_box), min(h - 3, py + half_box)
+
+    # Subtle translucent fill (alpha blending 12%)
+    overlay = out.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color_cyan, -1)
+    cv2.addWeighted(overlay, 0.12, out, 0.88, 0, out)
+
+    # Crisp thin minimalist outline
+    cv2.rectangle(out, (x1, y1), (x2, y2), color_cyan, 1, cv2.LINE_AA)
+
+    # Refined corner markers (length 7px, white)
+    corner_len = 7
+    # Top-Left
+    cv2.line(out, (x1, y1), (x1 + corner_len, y1), (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (x1, y1), (x1, y1 + corner_len), (255, 255, 255), 2, cv2.LINE_AA)
+    # Top-Right
+    cv2.line(out, (x2, y1), (x2 - corner_len, y1), (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (x2, y1), (x2, y1 + corner_len), (255, 255, 255), 2, cv2.LINE_AA)
+    # Bottom-Left
+    cv2.line(out, (x1, y2), (x1 + corner_len, y2), (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (x1, y2), (x1, y2 - corner_len), (255, 255, 255), 2, cv2.LINE_AA)
+    # Bottom-Right
+    cv2.line(out, (x2, y2), (x2 - corner_len, y2), (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (x2, y2), (x2, y2 - corner_len), (255, 255, 255), 2, cv2.LINE_AA)
+
+    # Subtle target centroid dot
+    cv2.circle(out, (px, py), 3, color_dark_bg, -1, cv2.LINE_AA)
+    cv2.circle(out, (px, py), 2, color_cyan, -1, cv2.LINE_AA)
+
+    # 2. Minimalist Floating Label Badge
+    tag_text = label if label else f"[{int(norm_y)}, {int(norm_x)}]"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.40
+    font_thickness = 1
+    (t_w, t_h), _ = cv2.getTextSize(tag_text, font, font_scale, font_thickness)
+
+    # Placement: float neatly above the box, or below if near top border
+    pad_x, pad_y = 7, 5
+    dot_radius = 3
+    dot_space = 10
+    total_badge_w = t_w + dot_space + (pad_x * 2)
+    total_badge_h = t_h + (pad_y * 2)
+
+    bx1 = max(4, min(w - total_badge_w - 4, px - total_badge_w // 2))
+    if y1 - total_badge_h - 6 > 4:
+        by1 = y1 - total_badge_h - 6
+    else:
+        by1 = y2 + 6
+    bx2 = bx1 + total_badge_w
+    by2 = by1 + total_badge_h
+
+    # Semi-transparent dark pill background (alpha 85%)
+    badge_layer = out.copy()
+    cv2.rectangle(badge_layer, (bx1, by1), (bx2, by2), color_dark_bg, -1)
+    cv2.addWeighted(badge_layer, 0.85, out, 0.15, 0, out)
+
+    # Clean 1px border
+    cv2.rectangle(out, (bx1, by1), (bx2, by2), color_cyan, 1, cv2.LINE_AA)
+
+    # Indicator dot & text
+    dot_cx = bx1 + pad_x + dot_radius
+    dot_cy = by1 + pad_y + (t_h // 2)
+    cv2.circle(out, (dot_cx, dot_cy), dot_radius, color_cyan, -1, cv2.LINE_AA)
+
+    text_x = bx1 + pad_x + dot_space
+    text_y = by1 + pad_y + t_h
+    cv2.putText(
+        out,
+        tag_text,
+        (text_x, text_y),
+        font,
+        font_scale,
+        color_text,
+        font_thickness,
+        cv2.LINE_AA,
+    )
+
+    return out
+
+
 def get_calibration_status_summary() -> str:
     """Return a formatted string describing current calibration status for the UI.
 
@@ -175,6 +346,14 @@ def get_latest_jpeg() -> bytes | None:
 
     if frame is None:
         frame = generate_sim_placeholder_pattern()
+
+    if frame is not None:
+        if is_calibration_overlay_enabled():
+            calib = get_calibrator(mode="sim")
+            if calib.is_calibrated:
+                frame = calib.draw_workspace_overlay(frame, detected_markers={}, show_markers=False)
+        if is_target_overlay_enabled():
+            frame = draw_model_target_overlay(frame)
 
     bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     success, encoded = cv2.imencode(".jpg", bgr_frame)
@@ -861,6 +1040,8 @@ def stream_video(
             frame = get_sim_video_frame(robot=robot)
             if is_calibration_overlay_enabled() and calib.is_calibrated:
                 frame = calib.draw_workspace_overlay(frame, detected_markers={}, show_markers=False)
+            if is_target_overlay_enabled():
+                frame = draw_model_target_overlay(frame)
             with _global_frame_lock:
                 _global_latest_frame = frame.copy()
             yield frame
@@ -936,12 +1117,16 @@ def stream_video(
                     (target_width, target_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
-                if is_calibration_overlay_enabled() and camera_active:
+                if camera_active:
                     calib = get_calibrator()
                     detected = calib.detect_markers(bottom_frame)
                     if len(detected) >= 4:
                         calib.update_homography(detected)
-                    bottom_frame = calib.draw_workspace_overlay(bottom_frame, detected)
+                    if is_calibration_overlay_enabled():
+                        bottom_frame = calib.draw_workspace_overlay(bottom_frame, detected)
+
+                if is_target_overlay_enabled():
+                    bottom_frame = draw_model_target_overlay(bottom_frame)
 
                 final_frame = _compose_twin_frame(top_frame, bottom_frame)
                 with _global_frame_lock:
@@ -1014,12 +1199,16 @@ def stream_video(
             else:
                 frame_rgb = generate_mock_test_pattern(camera_index)
 
-            if is_calibration_overlay_enabled() and camera_active:
+            if camera_active:
                 calib = get_calibrator()
                 detected = calib.detect_markers(frame_rgb)
                 if len(detected) >= 4:
                     calib.update_homography(detected)
-                frame_rgb = calib.draw_workspace_overlay(frame_rgb, detected)
+                if is_calibration_overlay_enabled():
+                    frame_rgb = calib.draw_workspace_overlay(frame_rgb, detected)
+
+            if is_target_overlay_enabled():
+                frame_rgb = draw_model_target_overlay(frame_rgb)
 
             with _global_frame_lock:
                 _global_latest_frame = frame_rgb.copy()
