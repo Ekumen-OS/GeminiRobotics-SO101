@@ -65,15 +65,36 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
         interactive=api_available,
         elem_id="vla-prompt",
     )
-    with gr.Row():
-        exec_btn = gr.Button("🚀 Send", variant="primary", scale=2, interactive=api_available)
-        home_btn = gr.Button("🏠 Reset to Home", variant="secondary", scale=1)
+    with gr.Row(equal_height=True, elem_classes=["chat-action-row"]):
+        exec_btn = gr.Button(
+            "🚀 Send",
+            variant="primary",
+            scale=1,
+            interactive=api_available,
+            elem_classes=["chat-action-btn"],
+        )
+        home_btn = gr.Button(
+            "🏠 Reset to Home",
+            variant="secondary",
+            scale=1,
+            elem_classes=["chat-action-btn"],
+        )
         rand_btn = (
-            gr.Button("🎲 Randomize Cube", variant="secondary", scale=1)
+            gr.Button(
+                "🎲 Randomize Cube",
+                variant="secondary",
+                scale=1,
+                elem_classes=["chat-action-btn"],
+            )
             if controller.mode in ("sim", "twin")
             else None
         )
-        clear_btn = gr.Button("🗑️ Clear Chat", variant="secondary", scale=1)
+        clear_btn = gr.Button(
+            "🗑️ Clear Chat",
+            variant="secondary",
+            scale=1,
+            elem_classes=["chat-action-btn"],
+        )
 
     return prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn
 
