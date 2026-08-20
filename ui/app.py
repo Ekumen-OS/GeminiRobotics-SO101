@@ -54,6 +54,59 @@ CUSTOM_CSS = """
     object-fit: contain !important;
     border-radius: 8px !important;
 }
+.camera-control-row {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+}
+.camera-control-row > .form,
+.camera-control-row > div:first-child {
+    flex: 3 1 0% !important;
+    margin: 0 !important;
+}
+.camera-control-row > button,
+.camera-control-row .camera-refresh-btn {
+    flex: 1 1 auto !important;
+    min-width: 170px !important;
+    max-width: 220px !important;
+    height: auto !important;
+    min-height: 100% !important;
+    align-self: stretch !important;
+    margin: 0 !important;
+    padding: 0 16px !important;
+    white-space: nowrap !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+}
+.chat-action-row {
+    display: flex !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+}
+.chat-action-row > div {
+    flex: 1 1 0% !important;
+    display: flex !important;
+}
+.chat-action-row button,
+.chat-action-btn {
+    height: 46px !important;
+    min-height: 46px !important;
+    max-height: 46px !important;
+    padding: 0 12px !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    white-space: nowrap !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
+}
 """
 
 

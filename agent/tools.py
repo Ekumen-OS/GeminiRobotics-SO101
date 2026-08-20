@@ -391,12 +391,33 @@ async def execute_tool_call(
 
             # Update live visual target overlay on camera stream
             try:
-                from ui.stream import set_model_target_point
+                from ui.stream import get_model_targets, set_model_targets
 
-                set_model_target_point(
-                    point,
-                    label=f"TARGET [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)",
+                active_label = (
+                    f"🎯 ACTIVE [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)"
                 )
+                active_target = {
+                    "point": (float(point[0]), float(point[1])),
+                    "label": active_label,
+                    "color": (0, 225, 255),
+                }
+                existing = get_model_targets()
+                if existing:
+                    updated = []
+                    matched = False
+                    for tgt in existing:
+                        dy = abs(tgt["point"][0] - point[0])
+                        dx = abs(tgt["point"][1] - point[1])
+                        if dy < 35 and dx < 35 and not matched:
+                            updated.append(active_target)
+                            matched = True
+                        else:
+                            updated.append(tgt)
+                    if not matched:
+                        updated.insert(0, active_target)
+                    set_model_targets(updated)
+                else:
+                    set_model_targets([active_target])
             except Exception:
                 pass
 
