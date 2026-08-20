@@ -15,6 +15,78 @@ from robot.interface import RobotInterface
 GEMINI_ROBOTICS_MODEL = "gemini-robotics-er-2-streaming-preview"
 
 
+def parse_targets_from_text(text: str) -> list[dict]:
+    """Extract 2D spatial points and bounding boxes with associated labels from text.
+
+    Args:
+        text: Input string from model speech or response containing spatial coordinates.
+
+    Returns:
+        List of target dictionaries suitable for set_model_targets().
+    """
+    if not text:
+        return []
+
+    targets: list[dict] = []
+    # Pattern to find all bracketed coordinate sequences: [123, 456] or [123, 456, 789, 101]
+    coord_blocks = list(re.finditer(r"\[\s*(\d{1,4}(?:\s*,\s*\d{1,4}){1,3})\s*\]", text))
+
+    for match in coord_blocks:
+        nums = [float(n.strip()) for n in match.group(1).split(",") if n.strip()]
+        if not all(0 <= n <= 1000 for n in nums):
+            continue
+
+        start_idx = match.start()
+        context_before = text[max(0, start_idx - 50) : start_idx].strip()
+        label = None
+        label_match = re.search(
+            r"([A-Za-z0-9_\-\s]{2,25})\s*(?:at|:|\sis\sat|=)?\s*$", context_before
+        )
+        if label_match:
+            candidate = label_match.group(1).strip(" -*#:\t\n")
+            if (
+                candidate
+                and len(candidate) > 1
+                and candidate.lower()
+                not in (
+                    "coordinates",
+                    "point",
+                    "box",
+                    "at",
+                    "target",
+                    "value",
+                    "pos",
+                )
+            ):
+                label = candidate.upper()
+
+        if len(nums) == 4:
+            ymin, xmin, ymax, xmax = nums
+            cy, cx = (ymin + ymax) / 2.0, (xmin + xmax) / 2.0
+            tag_label = label if label else f"OBJ #{len(targets) + 1} [{int(cy)}, {int(cx)}]"
+            targets.append(
+                {
+                    "point": (cy, cx),
+                    "box_2d": [ymin, xmin, ymax, xmax],
+                    "label": tag_label,
+                }
+            )
+        elif len(nums) == 2:
+            y_val, x_val = nums
+            tag_label = (
+                label if label else f"SPOTTED #{len(targets) + 1} [{int(y_val)}, {int(x_val)}]"
+            )
+            targets.append(
+                {
+                    "point": (y_val, x_val),
+                    "box_2d": None,
+                    "label": tag_label,
+                }
+            )
+
+    return targets
+
+
 class VLAController:
     """Core controller for managing interaction with gemini-robotics-er.
 
@@ -313,21 +385,13 @@ class VLAController:
                                     )
                                     await response_queue.put({"type": "text", "content": msg_text})
 
-                                    # If message mentions coordinates, preview overlay
-                                    coord_match = re.search(
-                                        r"\[(\d{1,4})\s*,\s*(\d{1,4})\]", msg_text
-                                    )
-                                    if coord_match:
+                                    # If message mentions coordinates, preview targets overlay
+                                    parsed_targets = parse_targets_from_text(msg_text)
+                                    if parsed_targets:
                                         try:
-                                            from ui.stream import set_model_target_point
+                                            from ui.stream import set_model_targets
 
-                                            y_val = float(coord_match.group(1))
-                                            x_val = float(coord_match.group(2))
-                                            if 0 <= y_val <= 1000 and 0 <= x_val <= 1000:
-                                                set_model_target_point(
-                                                    (y_val, x_val),
-                                                    label=f"SPOTTED [{int(y_val)}, {int(x_val)}]",
-                                                )
+                                            set_model_targets(parsed_targets)
                                         except Exception:
                                             pass
 
