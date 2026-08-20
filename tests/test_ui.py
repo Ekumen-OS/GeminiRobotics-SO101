@@ -3,7 +3,7 @@
 import gradio as gr
 from fastapi import FastAPI
 
-from agent.vla_controller import VLAController
+from agent.vla_controller import VLAController, parse_targets_from_text
 from robot.constants import JOINT_LIMITS
 from ui.app import build_vla_interface, create_app
 from ui.components.chat import build_chat_interface
@@ -11,9 +11,12 @@ from ui.components.controls import build_controls_interface
 from ui.components.telemetry import render_joint_state_panel
 from ui.components.vision import build_vision_interface
 from ui.stream import (
+    add_model_target,
     clear_model_target_point,
+    clear_model_targets,
     draw_model_target_overlay,
     get_model_target_point,
+    get_model_targets,
     is_bounding_boxes_overlay_enabled,
     is_calibration_overlay_enabled,
     is_crosshair_overlay_enabled,
@@ -24,6 +27,7 @@ from ui.stream import (
     set_crosshair_overlay,
     set_grid_overlay,
     set_model_target_point,
+    set_model_targets,
     set_target_overlay_enabled,
 )
 
@@ -82,6 +86,63 @@ def test_model_target_overlay_drawing() -> None:
     pt, lbl = get_model_target_point()
     assert pt is None
     assert lbl is None
+
+
+def test_multi_target_management_and_drawing() -> None:
+    """Verify multi-target setters, getters, box_2d parsing, and overlay drawing."""
+    import numpy as np
+
+    set_target_overlay_enabled(True)
+    clear_model_targets()
+    assert len(get_model_targets()) == 0
+
+    # Set multiple targets
+    targets_data = [
+        {"point": (300.0, 400.0), "label": "RED CUBE [300, 400]"},
+        {"point": (600.0, 700.0), "label": "BLUE CYLINDER [600, 700]"},
+        {"box_2d": [100.0, 200.0, 250.0, 350.0], "label": "GREEN BOWL"},
+    ]
+    set_model_targets(targets_data)
+
+    active_targets = get_model_targets()
+    assert len(active_targets) == 3
+    assert active_targets[0]["point"] == (300.0, 400.0)
+    assert active_targets[1]["point"] == (600.0, 700.0)
+    # 3rd target point is computed center of box_2d: (175.0, 275.0)
+    assert active_targets[2]["point"] == (175.0, 275.0)
+    assert active_targets[2]["box_2d"] == [100.0, 200.0, 250.0, 350.0]
+
+    # Add another target
+    add_model_target((450.0, 550.0), label="YELLOW PRISM")
+    assert len(get_model_targets()) == 4
+
+    # Draw multi-target overlay on a blank frame
+    blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    rendered = draw_model_target_overlay(blank_frame)
+    assert rendered.shape == (480, 640, 3)
+    assert np.any(rendered != 0)
+
+    clear_model_targets()
+    assert len(get_model_targets()) == 0
+
+
+def test_parse_targets_from_text() -> None:
+    """Verify extraction of multiple 2D spatial points and bounding boxes from text."""
+    sample_text = (
+        "I observe 2 objects on the table: red cube at [320, 450] and blue cylinder at [600, 750]."
+    )
+    targets = parse_targets_from_text(sample_text)
+    assert len(targets) == 2
+    assert targets[0]["point"] == (320.0, 450.0)
+    assert "RED CUBE" in targets[0]["label"]
+    assert targets[1]["point"] == (600.0, 750.0)
+    assert "BLUE CYLINDER" in targets[1]["label"]
+
+    box_text = "Target object bounding box is [200, 300, 400, 500] on the surface."
+    targets_box = parse_targets_from_text(box_text)
+    assert len(targets_box) == 1
+    assert targets_box[0]["point"] == (300.0, 400.0)
+    assert targets_box[0]["box_2d"] == [200.0, 300.0, 400.0, 500.0]
 
 
 def test_build_chat_interface_structure() -> None:

@@ -54,7 +54,7 @@ We applied the **Single Responsibility Principle (SRP)** by breaking `app.py` in
 - `ui/components/chat.py`: Handles the multimodal AI interaction interface with enlarged 600px chat viewport.
 - `ui/components/telemetry.py`: Renders real-time joint states in a collapsible accordion panel.
 - `ui/components/controls.py`: Manages joint sliders, motion status, and reset callbacks within a responsive collapsible accordion.
-- `ui/components/vision.py`: Manages video streaming, overlay toggles (Calibration, Bounding Boxes, Grid, Crosshair), device selection, and ArUco calibration actions.
+- `ui/components/vision.py`: Manages video streaming, streamlined overlay toggles (Model Targets, Calibration), aligned camera selection row, and ArUco workspace calibration actions.
 
 `app.py` now acts solely as the **Assembler** or **Orchestrator**, importing these modules and placing them in a layout grid with side-by-side responsive accordions.
 
@@ -183,7 +183,7 @@ We established parity between the simulation and physical setups through **Synth
 3. **Analytical Pinhole Projection (`simulation/sim_calibration.py`)**: Computed the exact synthetic homography matrix $H_{\text{sim}}$ by projecting the known 3D workspace corners through the virtual camera's projection matrix into image pixels and computing $H_{\text{sim}} \in \mathbb{R}^{3 \times 3}$.
 4. **Dual Calibration Persistence & High-Speed Streaming**: Calibrations are isolated into `config/workspace_homography.npz` (real mode) and `config/workspace_homography_sim.npz` (simulation mode), with high-performance 30+ FPS non-blocking MJPEG observation streaming (`/api/sim_stream`).
 5. **Continuous Live ArUco Calibration Tracking**: In real and digital twin modes, the video stream continuously tracks visible ArUco fiducials and dynamically updates the perspective homography in real time, eliminating camera drift and ensuring millimeter-level accuracy across varying physical camera placements.
-6. **Minimalist Target Bounding Box Overlay (`ui/stream.py`)**: Dynamically overlays a sleek, semi-transparent bounding box with corner notches and a floating coordinate badge on the camera feed showing the exact object region and coordinates Gemini is focusing on in real time.
+6. **Minimalist Multi-Target Bounding Box Overlay (`ui/stream.py`)**: Dynamically overlays sleek, color-coded bounding boxes with corner notches and floating coordinate badges on the camera feed for multiple simultaneous objects identified by the Gemini Robotics ER Model.
 
 **Why it matters:**
 

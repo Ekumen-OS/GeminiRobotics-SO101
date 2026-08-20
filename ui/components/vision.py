@@ -9,10 +9,7 @@ from ui.stream import (
     get_default_camera_index,
     prepare_stream_switch,
     save_workspace_calibration_file,
-    set_bounding_boxes_overlay,
     set_calibration_overlay,
-    set_crosshair_overlay,
-    set_grid_overlay,
     set_target_overlay_enabled,
     stream_video,
 )
@@ -52,7 +49,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
             gr.HTML(value=mjpeg_viewer)
             with gr.Row():
                 target_chk_sim = gr.Checkbox(
-                    label="🎯 Show Model Target Overlay",
+                    label="🎯 Show Model Targets",
                     value=True,
                     scale=1,
                 )
@@ -88,27 +85,12 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 )
                 with gr.Row():
                     target_chk_twin = gr.Checkbox(
-                        label="🎯 Show Model Target",
+                        label="🎯 Show Model Targets",
                         value=True,
                         scale=1,
                     )
                     calib_chk_twin = gr.Checkbox(
-                        label="Show Calibration Overlay",
-                        value=False,
-                        scale=1,
-                    )
-                    bbox_chk_twin = gr.Checkbox(
-                        label="Show Bounding Boxes",
-                        value=False,
-                        scale=1,
-                    )
-                    grid_chk_twin = gr.Checkbox(
-                        label="Show Grid Overlay",
-                        value=False,
-                        scale=1,
-                    )
-                    crosshair_chk_twin = gr.Checkbox(
-                        label="Show Crosshair",
+                        label="📐 Show Calibration Overlay",
                         value=False,
                         scale=1,
                     )
@@ -124,33 +106,24 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                     inputs=[calib_chk_twin],
                     outputs=None,
                 )
-                bbox_chk_twin.change(
-                    fn=set_bounding_boxes_overlay,
-                    inputs=[bbox_chk_twin],
-                    outputs=None,
-                )
-                grid_chk_twin.change(
-                    fn=set_grid_overlay,
-                    inputs=[grid_chk_twin],
-                    outputs=None,
-                )
-                crosshair_chk_twin.change(
-                    fn=set_crosshair_overlay,
-                    inputs=[crosshair_chk_twin],
-                    outputs=None,
-                )
 
                 initial_choices = get_available_camera_choices()
                 initial_value = get_default_camera_index(initial_choices)
-                with gr.Row():
+                with gr.Row(equal_height=True, elem_classes=["camera-control-row"]):
                     camera_dropdown = gr.Dropdown(
                         choices=initial_choices,
                         value=initial_value,
                         label="Select Video Source Device",
                         interactive=True,
                         scale=3,
+                        elem_classes=["camera-dropdown"],
                     )
-                    refresh_button = gr.Button("🔄 Refresh Cameras", variant="secondary", scale=1)
+                    refresh_button = gr.Button(
+                        "🔄 Refresh Cameras",
+                        variant="secondary",
+                        scale=1,
+                        elem_classes=["camera-refresh-btn"],
+                    )
                 mode_state = gr.State(value=mode)
 
                 with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
@@ -231,27 +204,12 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
     )
     with gr.Row():
         target_chk = gr.Checkbox(
-            label="🎯 Show Model Target",
+            label="🎯 Show Model Targets",
             value=True,
             scale=1,
         )
         calib_chk = gr.Checkbox(
-            label="Show Calibration Overlay",
-            value=False,
-            scale=1,
-        )
-        bbox_chk = gr.Checkbox(
-            label="Show Bounding Boxes",
-            value=False,
-            scale=1,
-        )
-        grid_chk = gr.Checkbox(
-            label="Show Grid Overlay",
-            value=False,
-            scale=1,
-        )
-        crosshair_chk = gr.Checkbox(
-            label="Show Crosshair",
+            label="📐 Show Calibration Overlay",
             value=False,
             scale=1,
         )
@@ -266,37 +224,24 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         inputs=[calib_chk],
         outputs=None,
     )
-    bbox_chk.change(
-        fn=set_bounding_boxes_overlay,
-        inputs=[bbox_chk],
-        outputs=None,
-    )
-    grid_chk.change(
-        fn=set_grid_overlay,
-        inputs=[grid_chk],
-        outputs=None,
-    )
-    crosshair_chk.change(
-        fn=set_crosshair_overlay,
-        inputs=[crosshair_chk],
-        outputs=None,
-    )
 
     initial_choices = get_available_camera_choices()
     initial_value = get_default_camera_index(initial_choices)
 
-    with gr.Row():
+    with gr.Row(equal_height=True, elem_classes=["camera-control-row"]):
         camera_dropdown = gr.Dropdown(
             choices=initial_choices,
             value=initial_value,
             label="Select Video Source Device",
             interactive=True,
             scale=3,
+            elem_classes=["camera-dropdown"],
         )
         refresh_button = gr.Button(
             "🔄 Refresh Cameras",
             variant="secondary",
             scale=1,
+            elem_classes=["camera-refresh-btn"],
         )
         mode_state = gr.State(value=mode)
 
