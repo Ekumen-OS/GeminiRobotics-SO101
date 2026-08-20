@@ -16,6 +16,24 @@ GRIPPER_CLOSE_DEG = JOINT_LIMITS["gripper"][0]
 
 ROBOT_TOOL_DECLARATIONS = [
     {
+        "name": "send_message",
+        "description": (
+            "Speak, narrate, or deliver a conversational message to the user. "
+            "Use this to explain your thoughts, describe visual observations, "
+            "ask questions, or confirm task progress."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "message": {
+                    "type": "STRING",
+                    "description": "The natural language message to narrate to the user.",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+    {
         "name": "move_to_pose",
         "description": "Smoothly interpolate motion to a 6-DOF joint target.",
         "parameters": {
@@ -249,11 +267,15 @@ async def execute_tool_call(
     Returns:
         A dictionary containing the response result to be sent back to Gemini.
     """
-    if robot is None:
-        return {"error": "RobotInterface is not initialized or injected."}
-
     name = call.name
     args = call.args if hasattr(call, "args") else {}
+
+    if name == "send_message":
+        message_text = args.get("message", "")
+        return {"status": "success", "message": message_text}
+
+    if robot is None:
+        return {"error": "RobotInterface is not initialized or injected."}
 
     try:
         if name == "move_to_pose":
@@ -292,7 +314,13 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_OPEN_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
-            response = {"status": "success", "executed_qpos_deg": clamped_qpos}
+            response = {
+                "status": "success",
+                "executed_qpos_deg": clamped_qpos,
+                "visual_hint": (
+                    "Gripper is now OPEN. Look at the camera frame to visually verify object state."
+                ),
+            }
             if warnings:
                 response["warnings"] = warnings
             return response
@@ -303,7 +331,14 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_CLOSE_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
-            response = {"status": "success", "executed_qpos_deg": clamped_qpos}
+            response = {
+                "status": "success",
+                "executed_qpos_deg": clamped_qpos,
+                "visual_hint": (
+                    "Gripper closed. Lift arm to hover (z=5cm) and inspect camera frame "
+                    "to visually confirm if object is held between jaws or still on table."
+                ),
+            }
             if warnings:
                 response["warnings"] = warnings
             return response
@@ -316,7 +351,17 @@ async def execute_tool_call(
             target_rad = PRESET_POSES[pose_name]
             robot.move_to_pose(target_rad, duration_sec=1.0)
             target_deg = [float(v) for v in np.degrees(target_rad)]
-            return {"status": "success", "pose_name": pose_name, "executed_qpos_deg": target_deg}
+            response = {
+                "status": "success",
+                "pose_name": pose_name,
+                "executed_qpos_deg": target_deg,
+            }
+            if pose_name == "HOME":
+                response["visual_hint"] = (
+                    "Arm is now at HOME pose with clear workspace view. "
+                    "Inspect the fresh camera frame to locate target object coordinates."
+                )
+            return response
 
         elif name == "get_end_effector_pose":
             if not hasattr(robot, "get_end_effector_pose"):
@@ -344,6 +389,17 @@ async def execute_tool_call(
                 f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]"
             )
 
+            # Update live visual target overlay on camera stream
+            try:
+                from ui.stream import set_model_target_point
+
+                set_model_target_point(
+                    point,
+                    label=f"TARGET [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)",
+                )
+            except Exception:
+                pass
+
             # Use current joints as IK seed for smooth continuation
             current_rad = robot.get_joint_positions()
             ik = _get_ik_solver()
@@ -365,6 +421,16 @@ async def execute_tool_call(
                 "target_xyz_m": target_xyz.tolist(),
                 "executed_qpos_deg": clamped_qpos,
             }
+            if z_height_cm >= 3.0:
+                response["visual_hint"] = (
+                    "Arm reached hover height (z>=3cm). Inspect the camera frame "
+                    "to visually verify object state before taking the next action."
+                )
+            else:
+                response["visual_hint"] = (
+                    f"Arm reached target height (z={z_height_cm}cm). Inspect the camera frame "
+                    "to visually verify object state and alignment before proceeding."
+                )
             if warnings:
                 response["warnings"] = warnings
             return response
