@@ -37,6 +37,7 @@ def build_live_config(tool_declarations: list[dict], system_instruction: str) ->
     """Build the LiveConnectConfig for the session."""
     return {
         "response_modalities": ["TEXT"],
+        "thinking_config": {"include_thoughts": True},
         "tools": [{"function_declarations": tool_declarations}],
         "system_instruction": {"parts": [{"text": system_instruction}]},
     }
@@ -63,6 +64,7 @@ class GeminiLiveSession:
         self._session = None
         self._session_cm = None
         self._lock = asyncio.Lock()
+        self._ws_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
@@ -75,54 +77,66 @@ class GeminiLiveSession:
             if self._session is not None:
                 return
 
-            print(f"[LiveSession] Connecting to {self.model}...")
-            print(f"[LiveSession] Config: {self.config}")
+            print(f"[LiveSession] Connecting to {self.model}...", flush=True)
+            print(f"[LiveSession] Config: {self.config}", flush=True)
             self._session_cm = self.client.aio.live.connect(model=self.model, config=self.config)
             self._session = await self._session_cm.__aenter__()
-            print("[LiveSession] Connected successfully.")
+            print("[LiveSession] Connected successfully.", flush=True)
 
     async def disconnect(self) -> None:
         """Close the live WebSocket connection."""
-        print("[LiveSession] Disconnecting...")
+        print("[LiveSession] Disconnecting...", flush=True)
         async with self._lock:
             if self._session_cm is not None:
                 try:
                     await self._session_cm.__aexit__(None, None, None)
                 except Exception as e:
-                    print(f"[LiveSession] Error during disconnect: {e}")
+                    print(f"[LiveSession] Error during disconnect: {e}", flush=True)
                 self._session_cm = None
             self._session = None
-        print("[LiveSession] Disconnected.")
+        print("[LiveSession] Disconnected.", flush=True)
 
     async def send_instruction(self, text: str, frame_jpeg: bytes | None) -> None:
         """Send user instruction with an optional JPEG frame."""
         if not self._session:
             raise ConnectionError("Session is not connected.")
 
-        if frame_jpeg:
-            print(f"[LiveSession] Sending frame ({len(frame_jpeg)} bytes)")
-            await self._session.send_realtime_input(
-                video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
-            )
+        async with self._ws_lock:
+            if frame_jpeg:
+                print(f"[LiveSession] Sending frame ({len(frame_jpeg)} bytes)", flush=True)
+                await self._session.send_realtime_input(
+                    video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
+                )
 
-        print(f"[LiveSession] Sending text: {text!r}")
-        await self._session.send_realtime_input(text=text)
+            print(f"[LiveSession] Sending text: {text!r}", flush=True)
+            await self._session.send_realtime_input(text=text)
+
+    async def send_text(self, text: str) -> None:
+        """Send a realtime text prompt to the session."""
+        if not self._session:
+            return
+        async with self._ws_lock:
+            print(f"[LiveSession] Sending text: {text!r}", flush=True)
+            await self._session.send_realtime_input(text=text)
 
     async def send_frame(self, jpeg_bytes: bytes) -> None:
         """Send a JPEG frame to the model without instruction (proactive)."""
         if not self._session:
             return
-        await self._session.send_realtime_input(
-            video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
-        )
+        async with self._ws_lock:
+            print(f"[LiveSession] 📸 Sent video frame ({len(jpeg_bytes)} bytes)", flush=True)
+            await self._session.send_realtime_input(
+                video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
+            )
 
     async def send_tool_response(self, function_responses: list[types.FunctionResponse]) -> None:
         """Send tool execution results back to the model."""
         if not self._session:
             return
 
-        print(f"[LiveSession] Sending tool responses: {function_responses}")
-        await self._session.send_tool_response(function_responses=function_responses)
+        async with self._ws_lock:
+            print(f"[LiveSession] Sending tool responses: {function_responses}", flush=True)
+            await self._session.send_tool_response(function_responses=function_responses)
 
     async def receive(self) -> AsyncIterator[types.LiveServerMessage]:
         """Yield messages from the active session."""

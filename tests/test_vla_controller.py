@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
+import pytest
 from google.genai import types
 
 from agent.vla_controller import VLAController
@@ -43,10 +44,12 @@ def test_vla_controller_init() -> None:
     # Verify system prompt components
     assert "Gemini Robotics Assistant" in prompt
     assert "'SIM' mode" in prompt
+    assert "Conversational Interaction & Narration Rules" in prompt
     assert "move_to_spatial_point" in prompt
     assert "z_height_cm" in prompt
-    assert "Pick-and-Place Orchestration Pattern" in prompt
-    assert "Closed-Loop Feedback & Verification Rules" in prompt
+    assert "Dynamic Closed-Loop Pick-and-Place Workflow" in prompt
+    assert "Clear Occlusion" in prompt
+    assert "Visual Inspection" in prompt
     assert "execute_spav_pick_and_place" not in prompt
 
 
@@ -131,6 +134,8 @@ def test_vla_controller_stream_processing_mocked() -> None:
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
+    mock_session.send_frame = AsyncMock()
+    mock_session.send_text = AsyncMock()
 
     # Generate mock live server messages
     async def mock_receive():
@@ -158,9 +163,221 @@ def test_vla_controller_stream_processing_mocked() -> None:
     mock_session.receive = mock_receive
     controller._session = mock_session
 
-    chunks = list(controller.process_instruction_stream("Move home"))
+    fake_jpeg = b"\xff\xd8\xff\xe0mock_jpeg"
+    chunks = list(
+        controller.process_instruction_stream("Move home", get_latest_jpeg_fn=lambda: fake_jpeg)
+    )
     full_output = "".join(chunks)
 
     assert "Locating red cube..." in full_output
     assert "move_to_preset" in full_output
     assert "completed" in full_output
+    assert mock_session.send_frame.called
+
+
+def test_vla_controller_post_action_frame_delivery() -> None:
+    """Test that a post-action observation frame is delivered after a blocking tool call."""
+    robot = MockRobot()
+    controller = VLAController(mode="sim", robot=robot)
+    controller._api_available = True
+
+    mock_session = MagicMock()
+    mock_session.is_connected = True
+    mock_session.connect = AsyncMock()
+    mock_session.send_instruction = AsyncMock()
+    mock_session.send_tool_response = AsyncMock()
+    mock_session.send_frame = AsyncMock()
+    mock_session.send_text = AsyncMock()
+
+    async def mock_receive():
+        # Tool call
+        yield types.LiveServerMessage(
+            tool_call=types.LiveServerToolCall(
+                function_calls=[
+                    types.FunctionCall(
+                        name="open_gripper",
+                        args={},
+                        id="call_open",
+                    )
+                ]
+            )
+        )
+        yield types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True))
+
+    mock_session.receive = mock_receive
+    controller._session = mock_session
+
+    mock_frame = b"\xff\xd8\xff\xe0post_action_jpeg"
+    get_frame_mock = MagicMock(return_value=mock_frame)
+
+    list(
+        controller.process_instruction_stream("Open the gripper", get_latest_jpeg_fn=get_frame_mock)
+    )
+
+    # Verify send_frame was called with mock_frame
+    mock_session.send_frame.assert_called_with(mock_frame)
+    mock_session.send_tool_response.assert_called_once()
+
+
+def test_vla_controller_send_message_tool() -> None:
+    """Test send_message tool call translates directly into conversational text."""
+    controller = VLAController(mode="sim")
+    controller._api_available = True
+
+    mock_session = MagicMock()
+    mock_session.is_connected = True
+    mock_session.connect = AsyncMock()
+    mock_session.send_instruction = AsyncMock()
+    mock_session.send_tool_response = AsyncMock()
+    mock_session.send_frame = AsyncMock()
+
+    async def mock_receive():
+        yield types.LiveServerMessage(
+            tool_call=types.LiveServerToolCall(
+                function_calls=[
+                    types.FunctionCall(
+                        name="send_message",
+                        args={"message": "I see the red cube and will pick it up."},
+                        id="call_msg",
+                    )
+                ]
+            )
+        )
+        yield types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True))
+
+    mock_session.receive = mock_receive
+    controller._session = mock_session
+
+    chunks = list(controller.process_instruction_stream("Pick up cube"))
+    full_output = "".join(chunks)
+
+    assert "I see the red cube and will pick it up." in full_output
+    assert "Executing `send_message`" not in full_output
+    mock_session.send_tool_response.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_vla_controller_background_streamer() -> None:
+    """Test background frame streamer sends frames and respects tool execution state."""
+    import asyncio
+
+    controller = VLAController(mode="sim")
+    mock_session = MagicMock()
+    mock_session.send_frame = AsyncMock()
+    controller._session = mock_session
+
+    mock_frame = b"mock_bg_frame"
+    get_frame = MagicMock(return_value=mock_frame)
+
+    stop_event = asyncio.Event()
+    tool_executing_event = asyncio.Event()
+
+    task = asyncio.create_task(
+        controller._stream_frames_in_background(get_frame, stop_event, tool_executing_event)
+    )
+
+    # Allow one background tick
+    await asyncio.sleep(0.05)
+    assert mock_session.send_frame.called
+
+    # When tool is executing, send_frame should not be called by background task
+    mock_session.send_frame.reset_mock()
+    tool_executing_event.set()
+    await asyncio.sleep(0.05)
+    assert not mock_session.send_frame.called
+
+    # Stop task
+    stop_event.set()
+    await task
+
+
+def test_vla_controller_thought_and_narration_streaming() -> None:
+    """Test that model thoughts and narration stream properly with formatted markdown."""
+    controller = VLAController(mode="sim")
+    controller._api_available = True
+
+    mock_session = MagicMock()
+    mock_session.is_connected = True
+    mock_session.connect = AsyncMock()
+    mock_session.send_instruction = AsyncMock()
+    mock_session.send_tool_response = AsyncMock()
+    mock_session.send_frame = AsyncMock()
+    mock_session.send_text = AsyncMock()
+
+    async def mock_receive():
+        # Thought part
+        yield types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                model_turn=types.Content(
+                    parts=[
+                        types.Part(
+                            text="I see the red cube on the table at [650, 420].", thought=True
+                        )
+                    ]
+                )
+            )
+        )
+        # Narration text part
+        yield types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                model_turn=types.Content(
+                    parts=[
+                        types.Part.from_text(
+                            text="I will pick up the red cube and move it to the target."
+                        )
+                    ]
+                )
+            )
+        )
+        yield types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True))
+
+    mock_session.receive = mock_receive
+    controller._session = mock_session
+
+    chunks = list(controller.process_instruction_stream("Pick up the red cube"))
+    full_output = "".join(chunks)
+
+    # Check thought formatting
+    assert "> 💭 *" in full_output
+    assert "I see the red cube on the table at [650, 420]." in full_output
+    # Check narration
+    assert "I will pick up the red cube and move it to the target." in full_output
+
+
+def test_vla_controller_conversational_dialogue() -> None:
+    """Test conversational response when user asks a general question without tool calls."""
+    controller = VLAController(mode="sim")
+    controller._api_available = True
+
+    mock_session = MagicMock()
+    mock_session.is_connected = True
+    mock_session.connect = AsyncMock()
+    mock_session.send_instruction = AsyncMock()
+    mock_session.send_frame = AsyncMock()
+
+    async def mock_receive():
+        yield types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                model_turn=types.Content(
+                    parts=[
+                        types.Part.from_text(
+                            text=(
+                                "Hello! I see a calibrated tabletop with 4 ArUco corner "
+                                "fiducials and a red cube."
+                            )
+                        )
+                    ]
+                )
+            )
+        )
+        yield types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True))
+
+    mock_session.receive = mock_receive
+    controller._session = mock_session
+
+    chunks = list(controller.process_instruction_stream("Hello! What do you see?"))
+    full_output = "".join(chunks)
+
+    assert "Hello! I see a calibrated tabletop" in full_output
+    assert mock_session.send_instruction.called
+    assert len(controller.get_history()) == 3

@@ -102,12 +102,13 @@ To enable Gemini VLA models to interact with objects seen via the camera feed (i
 2. **Perspective Homography Transformation**:
    - **Real Physical Mode**: When 4 physical ArUco workspace markers (`DICT_4X4_50`, IDs 0..3) are detected in view, OpenCV computes a 3x3 projective homography matrix $H_{\text{real}} \in \mathbb{R}^{3 \times 3}$:
      $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
-     This accounts for camera tilt, focal distance, and perspective skew, converting pixel coordinates directly into millimeter coordinates in the robot base frame.
+     The video stream continuously tracks visible markers in real time, automatically updating $H_{\text{real}}$ to account for camera tilt, focal distance, and perspective skew, converting pixel coordinates directly into millimeter coordinates in the robot base frame.
    - **Simulation Mode**: Uses **Synthetic Homography Calibration** (`simulation/sim_calibration.py`) where the 4 known 3D workspace corners are projected analytically through the virtual MuJoCo camera (`workspace_cam`, $fovy=54^\circ$) to compute an exact homography $H_{\text{sim}} \in \mathbb{R}^{3 \times 3}$ with sub-millimeter precision.
 3. **Variable Height Control**: The `z_height_cm` parameter allows the model to command target heights above the tabletop surface:
    - $Z = 0.00\,\text{m}$ ($0\,\text{cm}$): Table surface contact for grasping.
    - $Z = 0.03 - 0.05\,\text{m}$ ($3-5\,\text{cm}$): Pre-grasp hover and transit clearance.
-4. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth motion via `RobotInterface.move_to_pose()`.
+4. **Visual Bounding Box & Target Overlay**: When a spatial target point is selected or predicted by Gemini, the system projects the 2D image coordinate and renders a translucent bounding box and coordinate tag directly onto the observation video stream.
+5. **IK Resolution & Execution**: The mapped $[X, Y, Z]$ coordinate is dispatched to `CartesianIK.solve_ik()`, which computes target joint angles $\mathbf{q}^*$, validates them against `JOINT_LIMITS`, and executes smooth motion via `RobotInterface.move_to_pose()`.
 
 ## 6. Smooth S-Curve Motion Interpolation
 
@@ -122,6 +123,14 @@ This profile satisfies zero-velocity boundary conditions:
 - $\dot{\alpha}(0) = 0, \quad \dot{\alpha}(1) = 0$
 
 Guaranteeing smooth acceleration and deceleration curves without sudden jerk spikes on actuator gearboxes.
+
+## 7. Closed-Loop Post-Action Observation & Visual Verification
+
+To achieve robust visual manipulation in real-world environments with friction and gripper-object dynamics, the system operates as a closed-loop controller:
+
+1. **Post-Action State Capture**: After executing any blocking action (e.g., `close_gripper`, `move_to_spatial_point`), the controller introduces a $0.3\,\text{s}$ stabilization delay to let actuators settle and eliminate motion blur, then captures and transmits a post-action observation frame to the VLA model.
+2. **Visual Grasp Verification**: The model inspects the frame to verify object containment between the gripper jaws and detect any post-contact displacement.
+3. **Homography-Guided Self-Correction**: If a grasp attempt fails (object remains ungrasped on the tabletop), the model calculates visual offset corrections in normalized coordinate space $[y, x]$ and autonomously triggers a retry sequence (up to 3 attempts) without human intervention.
 
 > 💡 **Verifying Kinematics & Motion**: 
 > You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing:

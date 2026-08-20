@@ -152,20 +152,23 @@ $$q(t) = (1 - \alpha(t)) \cdot q_{\text{start}} + \alpha(t) \cdot q_{\text{targe
 
 ## 9. Model-Driven Closed-Loop Orchestration
 
-**The Problem:**
-Traditional state machine pipelines (like rigid Sense-Plan-Act-Verify loops) add unnecessary code complexity, inflexible state transitions, and fragile retry heuristics that duplicate reasoning already capable within frontier vision-language-action models.
+ **The Problem:**
+ Traditional state machine pipelines (like rigid Sense-Plan-Act-Verify loops) add unnecessary code complexity, inflexible state transitions, and fragile retry heuristics that duplicate reasoning already capable within frontier vision-language-action models. Conversely, executing actions without post-action visual feedback blinds the model to execution state changes (such as gripper grasp verification or object slippage).
 
-**The Solution:**
-We streamlined the architecture into a **pure model-as-orchestrator paradigm** powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API:
+ **The Solution:**
+ We streamlined the architecture into a **pure model-as-orchestrator closed-loop paradigm** powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API:
 
-- **Continuous Video Stream**: Ingests video frames at ~1 FPS over a bidirectional WebSocket session.
+- **Continuous Background Video Stream**: Ingests video frames at ~1 FPS both during motion execution and continuously while the model reasons between tool calls.
+- **Post-Action Observation Frame Pattern**: Immediately after a blocking physical action completes, the controller waits 0.3s for actuator/camera stabilization, captures a fresh post-action frame, and sends it directly to the model prior to the `FunctionResponse`.
+- **Observation Nudges & Interleaved Narration**: Sends observation nudge prompts after tool responses to prompt the model to describe the updated visual scene and state its next step, ensuring rich, continuous conversational dialogue throughout multi-step robot tasks.
+- **Chain of Thought & Conversational Narration**: Configures Gemini Live thinking (`include_thoughts=True`) and renders reasoning thought traces (`> 💭 *...*`) alongside real-time natural language narration, conversational dialogue, and clarifying question asking in the Gradio chat viewport.
 - **Primitive Function Calling**: The model autonomously breaks down high-level user commands into sequences of primitive tool invocations (`move_to_spatial_point`, `open_gripper`, `close_gripper`, `move_to_pose`, `move_to_preset`).
-- **Closed-Loop Visual Feedback**: After tool execution, the model observes the updated video stream, verifies grasp success or object placement, and autonomously reasons about self-corrections (adjusting $[y, x]$ coordinates when an object shifts or slips).
+- **Closed-Loop Visual Verification & Self-Correction**: The model visually verifies post-action results (e.g. confirming whether an item is grasped between the jaws) and self-corrects by re-estimating spatial coordinates and retrying up to 3 times if needed.
 
-**Why it matters:**
+ **Why it matters:**
 
 - **Simplicity & Maintainability**: Eliminates monolithic state machines while unlocking dynamic, adaptive planning.
-- **Zero-Latency Reasoning**: Takes full advantage of the Live API's low-latency streaming and blocking tool calling capabilities.
+- **True Closed-Loop Autonomy**: Ensures the model makes decisions grounded in the true post-action state of the physical or simulated environment.
 
 ## 10. Simulation Spatial Grounding & Synthetic Homography Calibration
 
@@ -179,11 +182,14 @@ We established parity between the simulation and physical setups through **Synth
 2. **Visual ArUco Corners & Dynamic JSON Synchronization**: Rendered the 4 ArUco marker textures (IDs 0–3) and a cyan bounding rectangle directly onto the floor and 3D WebGL viewport, dynamically reading and adapting to any corner coordinate or marker size changes in [`config/workspace_calibration.json`](config/workspace_calibration.json).
 3. **Analytical Pinhole Projection (`simulation/sim_calibration.py`)**: Computed the exact synthetic homography matrix $H_{\text{sim}}$ by projecting the known 3D workspace corners through the virtual camera's projection matrix into image pixels and computing $H_{\text{sim}} \in \mathbb{R}^{3 \times 3}$.
 4. **Dual Calibration Persistence & High-Speed Streaming**: Calibrations are isolated into `config/workspace_homography.npz` (real mode) and `config/workspace_homography_sim.npz` (simulation mode), with high-performance 30+ FPS non-blocking MJPEG observation streaming (`/api/sim_stream`).
+5. **Continuous Live ArUco Calibration Tracking**: In real and digital twin modes, the video stream continuously tracks visible ArUco fiducials and dynamically updates the perspective homography in real time, eliminating camera drift and ensuring millimeter-level accuracy across varying physical camera placements.
+6. **Minimalist Target Bounding Box Overlay (`ui/stream.py`)**: Dynamically overlays a sleek, semi-transparent bounding box with corner notches and a floating coordinate badge on the camera feed showing the exact object region and coordinates Gemini is focusing on in real time.
 
 **Why it matters:**
 
 - **Zero Sim-to-Real Cognitive Discrepancy**: Gemini sees the exact same spatial layout (robot on the right, +X pointing left, +Y pointing bottom) across both simulation and real hardware.
-- **Identical Tool Pipeline**: The `move_to_spatial_point` tool executes flawlessly in simulation with sub-millimeter geometric accuracy ($< 10^{-12}\,\text{mm}$ error).
+- **Visual Attention Transparency**: The live minimalist bounding box enables operators to immediately confirm object localization and Cartesian grounding before and during physical manipulation.
+- **Identical Tool Pipeline**: The `move_to_spatial_point` tool executes flawlessly in both simulation ($< 10^{-12}\,\text{mm}$ error) and physical hardware with active real-time homography updating.
 
 ---
 
