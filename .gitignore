@@ -9,6 +9,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Developer
+*.npz
+
 # Distribution / packaging
 .Python
 build/
