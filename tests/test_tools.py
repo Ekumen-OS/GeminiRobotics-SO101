@@ -296,3 +296,49 @@ async def test_execute_tool_send_message() -> None:
     res = await execute_tool_call(call, robot=None)
     assert res["status"] == "success"
     assert res["message"] == "Hello from robot!"
+
+
+def test_default_serial_port_override() -> None:
+    """Verify DEFAULT_SERIAL_PORT reflects the configured port from environment."""
+    import importlib
+    import os
+
+    import robot.constants
+
+    with patch("dotenv.load_dotenv"):
+        with patch.dict(os.environ, {"ROBOT_PORT": "/dev/ttyACM1"}):
+            importlib.reload(robot.constants)
+            assert robot.constants.DEFAULT_SERIAL_PORT == "/dev/ttyACM1"
+
+        with patch.dict(os.environ, {"ROBOT_PORT": "", "SO101_PORT": "/dev/ttyUSB0"}, clear=False):
+            del os.environ["ROBOT_PORT"]
+            importlib.reload(robot.constants)
+            assert robot.constants.DEFAULT_SERIAL_PORT == "/dev/ttyUSB0"
+
+        with patch.dict(os.environ, {}, clear=False):
+            if "ROBOT_PORT" in os.environ:
+                del os.environ["ROBOT_PORT"]
+            if "SO101_PORT" in os.environ:
+                del os.environ["SO101_PORT"]
+            importlib.reload(robot.constants)
+            assert robot.constants.DEFAULT_SERIAL_PORT == "/dev/tty.usbmodem5B415332861"
+
+
+def test_default_serial_port_local_env() -> None:
+    """Verify DEFAULT_SERIAL_PORT loads the local .env setting (/dev/ttyACM0)."""
+    import importlib
+
+    import robot.constants
+
+    importlib.reload(robot.constants)
+    assert robot.constants.DEFAULT_SERIAL_PORT == "/dev/ttyACM0"
+
+
+def test_main_parser_default_port() -> None:
+    """Verify main argument parser defaults to DEFAULT_SERIAL_PORT."""
+    import robot.constants
+    from main import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args([])
+    assert args.port == robot.constants.DEFAULT_SERIAL_PORT
