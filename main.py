@@ -7,9 +7,13 @@ import sys
 import time
 from pathlib import Path
 
-from robot import PRESET_POSES, RealSO101Robot
+from dotenv import load_dotenv
+
+from robot import DEFAULT_SERIAL_PORT, PRESET_POSES, RealSO101Robot
 from robot.twin_robot import TwinSO101Robot
 from simulation.sim_robot import SO101Robot
+
+load_dotenv()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -65,8 +69,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--port",
-        default="/dev/tty.usbmodem5B415332861",
-        help="Serial port for physical arm (e.g., /dev/tty.usbmodem5B415332861).",
+        default=DEFAULT_SERIAL_PORT,
+        help=(
+            f"Serial port for physical arm (default: {DEFAULT_SERIAL_PORT}). "
+            "Can also be configured via ROBOT_PORT or SO101_PORT environment variable."
+        ),
     )
     parser.add_argument(
         "--reload",
