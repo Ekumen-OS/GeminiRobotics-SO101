@@ -42,7 +42,7 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
    - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
    - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` and `twin` modes.
    - **Thread-Safe State Management**: Centralized robot state manager (`RobotStateManager` in [`state.py`](ui/state.py)) for synchronized joint telemetry and actuator feedback.
-   - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV and native macOS hardware camera enumeration via AVFoundation ([`stream.py`](ui/stream.py), [`components/vision.py`](ui/components/vision.py)).
+   - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV and cross-platform hardware camera enumeration (Linux V4L2 & macOS AVFoundation) ([`stream.py`](ui/stream.py), [`components/vision.py`](ui/components/vision.py)).
    - **Multimodal Chat & Controls**: Real-time conversational AI interface with tool execution status updates ([`components/chat.py`](ui/components/chat.py)) and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
 
 ## Getting Started
