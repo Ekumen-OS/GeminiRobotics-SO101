@@ -54,6 +54,7 @@ class CartesianIK:
         initial_qpos: np.ndarray | None = None,
         nominal_qpos: np.ndarray | None = None,
         preserve_orientation: bool = False,
+        approach: str = "top_down",
         max_iters: int = 200,
         tol: float = 1e-4,
         damping: float = 1e-3,
@@ -70,6 +71,7 @@ class CartesianIK:
             initial_qpos: Starting joint angles configuration array (length 5 or 6).
             nominal_qpos: Preferred rest posture for null-space regularization.
             preserve_orientation: If True and target_mat is None, retain starting orientation.
+            approach: Approach mode ('top_down' for vertical grasp, 'horizontal' for lateral).
             max_iters: Maximum IK optimization iterations.
             tol: Target distance and rotational error threshold in meters/radians.
             damping: Damped least-squares regularization factor (lambda).
@@ -88,11 +90,20 @@ class CartesianIK:
 
         if preserve_orientation and target_mat is None:
             target_mat = self.data.site_xmat[self.site_id].reshape(3, 3).copy()
+        elif target_mat is None and approach == "top_down":
+            psi = np.arctan2(target_pos[1], target_pos[0])
+            u_x = np.array([0.0, 0.0, -1.0])
+            u_y = np.array([-np.sin(psi), np.cos(psi), 0.0])
+            u_z = np.array([np.cos(psi), np.sin(psi), 0.0])
+            target_mat = np.column_stack([u_x, u_y, u_z])
 
         if nominal_qpos is None and initial_qpos is not None:
             nominal_qpos = initial_qpos[: len(self.joint_ids)].copy()
         elif nominal_qpos is not None:
             nominal_qpos = nominal_qpos[: len(self.joint_ids)].copy()
+        elif approach == "top_down":
+            pan_rad = float(-np.arctan2(target_pos[1], target_pos[0]))
+            nominal_qpos = np.radians([np.degrees(pan_rad), 15.0, 50.0, 75.0, 0.0])
         else:
             nominal_qpos = np.array(
                 [self.data.qpos[self.model.jnt_qposadr[j]] for j in self.joint_ids]
@@ -168,21 +179,49 @@ class CartesianIK:
 
         # If IK got stuck (e.g., trapped against limits), retry once from neutral seed
         if err_dist > 0.01 and initial_qpos is not None:
-            neutral_seed = np.array([0.0, -0.5, 0.5, 0.5, 0.0, 0.0])
+            pan_rad = float(-np.arctan2(target_pos[1], target_pos[0]))
+            neutral_seed = (
+                np.radians([np.degrees(pan_rad), 15.0, 50.0, 75.0, 0.0, 0.0])
+                if approach == "top_down"
+                else np.array([0.0, -0.5, 0.5, 0.5, 0.0, 0.0])
+            )
             is_neutral = len(initial_qpos) >= 6 and np.allclose(
                 initial_qpos[:6], neutral_seed, atol=1e-3
             )
             if not is_neutral:
-                return self.solve_ik(
+                res = self.solve_ik(
                     target_pos=target_pos,
                     target_mat=target_mat,
                     initial_qpos=neutral_seed,
                     nominal_qpos=nominal_qpos,
                     preserve_orientation=preserve_orientation,
+                    approach=approach,
                     max_iters=max_iters,
                     tol=tol,
                     damping=damping,
                     null_weight=null_weight,
                 )
+                for i, j_id in enumerate(self.all_joint_ids):
+                    self.data.qpos[self.model.jnt_qposadr[j_id]] = res[i]
+                mujoco.mj_forward(self.model, self.data)
+                achieved_pos = self.data.site_xpos[self.site_id].copy()
+                err_dist = np.linalg.norm(target_pos - achieved_pos)
+                if err_dist <= 0.01:
+                    return res
+
+        # Fallback to position-only tracking if top-down orientation is unreachable
+        if err_dist > 0.015 and approach == "top_down" and target_mat is not None:
+            return self.solve_ik(
+                target_pos=target_pos,
+                target_mat=None,
+                initial_qpos=initial_qpos,
+                nominal_qpos=None,
+                preserve_orientation=False,
+                approach="horizontal",
+                max_iters=max_iters,
+                tol=tol,
+                damping=damping,
+                null_weight=null_weight,
+            )
 
         return np.array(qpos_res, dtype=np.float32)

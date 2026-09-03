@@ -6,10 +6,11 @@ from fastapi import FastAPI
 from agent.vla_controller import VLAController, parse_targets_from_text
 from robot.constants import JOINT_LIMITS
 from ui.app import build_vla_interface, create_app
-from ui.components.chat import build_chat_interface
+from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.telemetry import render_joint_state_panel
 from ui.components.vision import build_vision_interface
+from ui.state import get_active_robot, set_active_robot
 from ui.stream import (
     add_model_target,
     clear_model_target_point,
@@ -149,12 +150,13 @@ def test_build_chat_interface_structure() -> None:
     """Verify chat component creation and button layout configuration."""
     controller_sim = VLAController(mode="sim", robot=None)
     with gr.Blocks():
-        prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn = build_chat_interface(
-            controller=controller_sim, api_available=False
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = (
+            build_chat_interface(controller=controller_sim, api_available=False)
         )
 
     assert chatbot.elem_id == "vla-chatbot"
     assert chatbot.height == 600
+    assert status_banner.elem_id == "vla-status-banner"
     assert prompt_input.elem_id == "vla-prompt"
     assert prompt_input.lines == 1
     assert exec_btn is not None
@@ -165,10 +167,300 @@ def test_build_chat_interface_structure() -> None:
     # In real mode, rand_btn is None
     controller_real = VLAController(mode="real", robot=None)
     with gr.Blocks():
-        _, _, _, _, _, rand_btn_real = build_chat_interface(
+        _, _, _, _, _, _, rand_btn_real = build_chat_interface(
             controller=controller_real, api_available=False
         )
     assert rand_btn_real is None
+
+
+def test_chat_status_banner_initial_state() -> None:
+    """Verify initial status banner values across different configurations."""
+    # API available in sim mode (calibrated by default)
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+    with gr.Blocks():
+        _, _, banner_ready, _, _, _, _ = build_chat_interface(
+            controller=controller_sim, api_available=True
+        )
+    assert banner_ready.value == "🟢 **Status: Ready**"
+
+    # API unavailable in sim mode
+    with gr.Blocks():
+        _, _, banner_no_api, _, _, _, _ = build_chat_interface(
+            controller=controller_sim, api_available=False
+        )
+    assert banner_no_api.value == "⚠️ **Status: Gemini API Unavailable**"
+
+    # Real mode without calibration
+    from ui.stream import get_calibrator
+
+    calib = get_calibrator(mode="real")
+    if calib is not None:
+        calib.homography_matrix = None
+    controller_real = VLAController(mode="real", robot=None)
+    controller_real._api_available = True
+    with gr.Blocks():
+        _, _, banner_uncalib, _, _, _, _ = build_chat_interface(
+            controller=controller_real, api_available=True
+        )
+    assert banner_uncalib.value == "⚠️ **Status: Workspace Not Calibrated**"
+
+
+def test_process_instruction_blocks_and_unblocks_inputs() -> None:
+    """Verify input blocking on turn start, intermediate streaming, and unblocking on completion."""
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+
+    # Mock process_instruction_stream to yield intermediate chunks
+    def mock_stream(instruction: str, get_latest_jpeg_fn=None):
+        yield "Thinking..."
+        yield "Moving arm..."
+        yield "Completed task."
+
+    controller_sim.process_instruction_stream = mock_stream
+
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_sim, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_sim,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    process_fn = handlers["process_instruction"]
+    gen = process_fn("Pick up red cube", [])
+
+    # Yield 0 (Turn Start): All inputs blocked, status Working
+    y0 = next(gen)
+    prompt_up, hist_up, status_up, exec_up, home_up, clear_up, rand_up = y0[:7]
+    assert prompt_up.get("interactive") is False
+    assert prompt_up.get("value") == ""
+    assert status_up.get("value") == "⏳ **Status: Working...**"
+    assert exec_up.get("interactive") is False
+    assert home_up.get("interactive") is False
+    assert clear_up.get("interactive") is False
+    assert rand_up.get("interactive") is False
+    assert len(hist_up) == 2
+    assert hist_up[0]["content"] == "Pick up red cube"
+
+    # Yield 1: Streaming first chunk
+    y1 = next(gen)
+    assert y1[1][-1]["content"] == "Thinking..."
+    assert type(y1[0]) is type(gr.skip()) or y1[0] == gr.skip()
+    assert type(y1[2]) is type(gr.skip()) or y1[2] == gr.skip()
+
+    # Yield 2: Streaming second chunk
+    y2 = next(gen)
+    assert y2[1][-1]["content"] == "Moving arm..."
+
+    # Yield 3: Streaming third chunk
+    y3 = next(gen)
+    assert y3[1][-1]["content"] == "Completed task."
+
+    # Yield 4 (Completion / Final): All inputs re-enabled, status Ready
+    y_final = next(gen)
+    prompt_fin, hist_fin, status_fin, exec_fin, home_fin, clear_fin, rand_fin = y_final[:7]
+    assert prompt_fin.get("interactive") is True
+    assert status_fin.get("value") == "🟢 **Status: Ready**"
+    assert exec_fin.get("interactive") is True
+    assert home_fin.get("interactive") is True
+    assert clear_fin.get("interactive") is True
+    assert rand_fin.get("interactive") is True
+    assert hist_fin[-1]["content"] == "Completed task."
+
+
+def test_process_instruction_recovers_on_exception() -> None:
+    """Verify robust recovery and input re-enabling when controller stream raises an exception."""
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+
+    def mock_failing_stream(instruction: str, get_latest_jpeg_fn=None):
+        yield "Starting task..."
+        raise RuntimeError("Simulated WebSocket connection drop")
+
+    controller_sim.process_instruction_stream = mock_failing_stream
+
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_sim, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_sim,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    process_fn = handlers["process_instruction"]
+    gen = process_fn("Pick up red cube", [])
+    yields = list(gen)
+
+    # Initial blocking yield, 1 chunk yield, final finally yield
+    assert len(yields) >= 3
+
+    y_final = yields[-1]
+    prompt_fin, hist_fin, status_fin, exec_fin, home_fin, clear_fin, rand_fin = y_final[:7]
+    assert prompt_fin.get("interactive") is True
+    assert status_fin.get("value") == "🟢 **Status: Ready**"
+    assert exec_fin.get("interactive") is True
+    assert home_fin.get("interactive") is True
+    assert clear_fin.get("interactive") is True
+    assert rand_fin.get("interactive") is True
+    # Verify runtime error was cleanly communicated in chat history
+    assert "Runtime Error" in hist_fin[-1]["content"]
+    assert "Simulated WebSocket connection drop" in hist_fin[-1]["content"]
+
+
+def test_process_instruction_uncalibrated_status() -> None:
+    """Verify status banner and placeholder when workspace calibration is missing in real mode."""
+    from ui.stream import get_calibrator
+
+    calib = get_calibrator(mode="real")
+    if calib is not None:
+        calib.homography_matrix = None
+
+    controller_real = VLAController(mode="real", robot=None)
+    controller_real._api_available = True
+
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_real, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_real,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    process_fn = handlers["process_instruction"]
+    yields = list(process_fn("Move to box", []))
+    y_final = yields[-1]
+    prompt_fin, _, status_fin, _, _, _, _ = y_final[:7]
+
+    assert status_fin.get("value") == "⚠️ **Status: Workspace Not Calibrated**"
+    assert "Calibrate workspace" in prompt_fin.get("placeholder", "")
+    assert prompt_fin.get("interactive") is True
+
+
+def test_process_instruction_empty_prompt_no_lock() -> None:
+    """Verify empty or whitespace prompt returns immediately without locking controls."""
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_sim, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_sim,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    process_fn = handlers["process_instruction"]
+    initial_history = [{"role": "assistant", "content": "Welcome"}]
+    yields = list(process_fn("   ", initial_history))
+    assert len(yields) == 1
+    y0 = yields[0]
+    # Verify history was unchanged and controls were not modified
+    assert y0[1] == initial_history
+    assert type(y0[0]) is type(gr.skip()) or y0[0] == gr.skip()
+    assert type(y0[2]) is type(gr.skip()) or y0[2] == gr.skip()
+
+
+def test_clear_chat_resets_status_banner() -> None:
+    """Verify clear chat button resets chatbot and updates status banner."""
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_sim, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_sim,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    clear_fn = handlers["clear_chat"]
+    new_chat, status_update = clear_fn()
+    assert len(new_chat) == 1
+    assert "System Active" in new_chat[0]["content"]
+    assert status_update.get("value") == "🟢 **Status: Ready**"
+
+
+def test_chat_uses_raw_jpeg_stream() -> None:
+    """Verify that chat instruction execution passes get_latest_raw_jpeg to the controller."""
+    import ui.stream as stream_mod
+
+    controller_sim = VLAController(mode="sim", robot=None)
+    controller_sim._api_available = True
+    captured_kwargs: dict = {}
+
+    def mock_process_stream(instruction: str, get_latest_jpeg_fn=None, **kwargs):
+        captured_kwargs["get_latest_jpeg_fn"] = get_latest_jpeg_fn
+        yield "Step done."
+
+    controller_sim.process_instruction_stream = mock_process_stream
+
+    with gr.Blocks():
+        components = build_chat_interface(controller=controller_sim, api_available=True)
+        prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = components
+        sliders = [gr.Slider(value=0.0) for _ in range(6)]
+        handlers = wire_chat_events(
+            controller_sim,
+            prompt_input,
+            chatbot,
+            status_banner,
+            exec_btn,
+            home_btn,
+            clear_btn,
+            sliders,
+            rand_btn=rand_btn,
+        )
+
+    process_fn = handlers["process_instruction"]
+    list(process_fn("Pick up red cube", []))
+
+    assert "get_latest_jpeg_fn" in captured_kwargs
+    fn_passed = captured_kwargs["get_latest_jpeg_fn"]
+    assert callable(fn_passed)
+
+    if hasattr(stream_mod, "get_latest_raw_jpeg"):
+        assert (
+            fn_passed is stream_mod.get_latest_raw_jpeg
+            or fn_passed.__name__ == "get_latest_raw_jpeg"
+        )
 
 
 def test_build_controls_interface_structure() -> None:
@@ -254,3 +546,20 @@ def test_sim_robot_randomize_target() -> None:
     assert 0.15 <= new_pos[0] <= 0.22
     assert -0.10 <= new_pos[1] <= 0.10
     assert new_pos[2] == 0.015
+
+
+def test_active_robot_state() -> None:
+    """Verify get_active_robot and set_active_robot global state getters and setters."""
+    # Store original robot state
+    original_robot = get_active_robot()
+    try:
+        set_active_robot(None)
+        assert get_active_robot() is None
+
+        from simulation.sim_robot import SO101Robot
+
+        sim_robot = SO101Robot(render_viewer=False)
+        set_active_robot(sim_robot)
+        assert get_active_robot() is sim_robot
+    finally:
+        set_active_robot(original_robot)

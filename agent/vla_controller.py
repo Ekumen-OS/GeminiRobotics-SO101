@@ -1,9 +1,11 @@
 """Controller for managing Vision-Language-Action (VLA) agent interactions."""
 
 import asyncio
+import datetime
 import re
+import sys
 import threading
-from typing import Generator
+from typing import Any, Generator
 
 from google.genai import types
 
@@ -13,6 +15,22 @@ from robot.interface import RobotInterface
 
 # The model to use for the live streaming session
 GEMINI_ROBOTICS_MODEL = "gemini-robotics-er-2-streaming-preview"
+
+
+def _log(module: str, tag: str, message: str, stream: Any = None) -> None:
+    """Format and print an ISO-timestamped diagnostic log entry.
+
+    Args:
+        module: Component name (e.g. 'VLAController').
+        tag: Semantic tag (e.g. 'DECISION', 'REASONING', 'TOOL_CALL', 'TOOL_RESULT',
+            'ERROR', 'WARN', 'STREAM').
+        message: Log message content.
+        stream: Output stream (defaults to sys.stderr for ERROR/WARN, sys.stdout otherwise).
+    """
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    if stream is None:
+        stream = sys.stderr if tag in ("ERROR", "WARN") else sys.stdout
+    print(f"[{now_str}] [{module}] [{tag}] {message}", file=stream, flush=True)
 
 
 def parse_targets_from_text(text: str) -> list[dict]:
@@ -107,37 +125,59 @@ class VLAController:
 
         system_prompt = (
             f"You are the Gemini Robotics Assistant, an intelligent, conversational, and "
-            f"autonomous 6-DOF robot arm orchestrator. The system is operating in "
-            f"'{self.mode.upper()}' mode.\n\n"
+            f"autonomous 6-DOF robot arm orchestrator operating in '{self.mode.upper()}' mode.\n\n"
+            '### Strict "Move -> Look -> Correct" Visual Verification Loop (MANDATORY):\n'
+            "You operate in a strict visual closed-loop regime. Open-loop action chaining without "
+            "verification is strictly forbidden. For EVERY spatial movement and manipulation "
+            "phase, you MUST execute the following 3-step verification loop:\n\n"
+            "1. **MOVE (Single Primitive Action)**:\n"
+            "   - Execute exactly ONE physical action per turn (`move_to_preset`, "
+            "`move_to_spatial_point`, `open_gripper`, or `close_gripper`).\n"
+            "   - NEVER batch multiple physical commands together in a single turn.\n\n"
+            "2. **LOOK (Mandatory Visual Observation Pause)**:\n"
+            "   - After every physical action, a fresh post-action camera frame is injected into "
+            "context along with the tool execution response.\n"
+            "   - You MUST pause and visually analyze this fresh image.\n"
+            "   - In your reasoning / response text, you MUST explicitly formulate:\n"
+            "     a) **Gripper Position**: Identify the normalized image coordinates [y, x] of "
+            "the gripper fingertip center.\n"
+            "     b) **Target Position**: Identify the normalized image coordinates [y, x] of "
+            "the target object at its bottom table contact center.\n"
+            "     c) **Relative Position Error**: Calculate the relative position error offset "
+            "`[dy, dx] = [target_y - gripper_y, target_x - gripper_x]`.\n\n"
+            "3. **CORRECT (Alignment Verification or Adjustment)**:\n"
+            "   - **If Misaligned (|dy| > 25 or |dx| > 25)**: State the relative position error "
+            "(e.g., 'Gripper is offset by dy=+30, dx=-15 from the target. Correcting position at "
+            "hover height.') and call `move_to_spatial_point` with the adjusted coordinate at "
+            "hover height before attempting to descend.\n"
+            "   - **If Aligned (|dy| <= 25 and |dx| <= 25)**: Explicitly confirm alignment "
+            "(e.g., 'Gripper is centered above target contact center [dy=0, dx=0]. Descending to "
+            "grasp.') and proceed to descent.\n\n"
             "### Conversational Interaction & Narration Rules (MANDATORY):\n"
-            "- You are directly communicating with a human user in an interactive chat "
-            "interface.\n"
+            "- You are communicating directly with a human user in an interactive chat interface.\n"
             "- ALWAYS speak to the user! Never execute tool actions in complete silence.\n"
-            "- When receiving an instruction, emit 1-2 conversational sentences in natural "
-            "language explaining your visual observations, reasoning, and planned actions "
-            "BEFORE calling any tool.\n"
-            "- After every tool execution and observation frame, explain what you observe (e.g., "
-            "'The gripper closed around the red cube; lifting now.') and state your next step.\n"
-            "- If a user's instruction is conversational, general, or asks a question (e.g., "
-            "'What do you see on the table?', 'Can you help me?', 'Hello!'), respond naturally, "
-            "describe what is visible in the camera frame, and ask clarifying questions if "
-            "needed.\n"
-            "- If multiple candidate objects exist or user intent is ambiguous (e.g., 'Pick up the "
-            "cube' when multiple cubes are present), ask the user to clarify before taking "
-            "action.\n"
+            "- When receiving an instruction, emit 1-2 conversational sentences explaining your "
+            "visual observations, reasoning, and planned actions BEFORE calling any tool.\n"
+            "- After every tool execution and observation frame, narrate your visual verification, "
+            "state the relative position error [dy, dx], and state your next step.\n"
+            "- If the user's prompt is conversational or asks a question (e.g., 'What do you see "
+            "on the table?', 'Can you help me?'), describe the scene and ask clarifying "
+            "questions if needed.\n"
+            "- If multiple candidate objects exist or user intent is ambiguous, ask the user to "
+            "clarify before taking action.\n"
             "- When all steps are finished, provide a clear, friendly completion confirmation.\n"
             "- If an action fails or you encounter difficulty after retrying, transparently "
             "explain what you observe and ask the user for guidance or assistance.\n\n"
             "### Physical Workspace & Calibration Setup:\n"
-            "- The camera is mounted on the LEFT side of the workspace, viewing the tabletop "
-            "at an oblique angle.\n"
-            "- The SO-101 robot arm is mounted on the RIGHT side of the camera's field of view, "
-            "facing and reaching into the workspace towards the LEFT.\n"
+            "- The camera is mounted on the LEFT side of the workspace, viewing the tabletop at "
+            "an oblique angle.\n"
+            "- The SO-101 robot arm is mounted on the RIGHT side of the camera field of view, "
+            "reaching into the workspace towards the LEFT.\n"
             "- Forward (+X) for the robot points towards the LEFT of the camera frame.\n"
             "- Left (+Y) for the robot points towards the BOTTOM of the camera frame.\n"
             "- The workspace is planar-calibrated using 4 ArUco corner fiducials on the table "
-            "surface (Z=0 plane): ID 0 (Top-Left), ID 1 (Top-Right), ID 2 (Bottom-Right), "
-            "ID 3 (Bottom-Left).\n"
+            "surface (Z=0 plane): ID 1 (Top-Left), ID 2 (Top-Right), ID 3 (Bottom-Right), "
+            "ID 0 (Bottom-Left).\n"
             + (
                 "- In SIM mode, the workspace is pre-calibrated using a fixed virtual camera "
                 "matching the physical camera view. ArUco fiducial markers (IDs 0-3) and workspace "
@@ -147,11 +187,11 @@ class VLAController:
             )
             + "\n"
             "### Available Tools:\n"
-            "- `send_message(message='...')`: Speak, narrate your observations, explain your "
-            "planned steps, ask clarifying questions, or confirm task completion to the user.\n"
-            "- `move_to_spatial_point(point=[y, x], z_height_cm=3.0)`: Move end-effector to a "
-            "camera-space [y, x] coordinate (0-1000). Use z_height_cm=3.0 to 5.0 for hover/transit "
-            "clearance, and z_height_cm=0.0 to descend to table level for grasping.\n"
+            "- `send_message(message='...')`: Speak, narrate visual observations and relative "
+            "error calculations.\n"
+            "- `move_to_spatial_point(point=[y, x], z_height_cm=3.0)`: Move end-effector to "
+            "camera-space [y, x] coordinate (0-1000). Use z_height_cm=5.0 for hover/transit and "
+            "z_height_cm=0.0 for table contact.\n"
             "- `open_gripper()`: Open the gripper jaws fully.\n"
             "- `close_gripper()`: Close the gripper jaws fully to grasp an object.\n"
             "- `move_to_pose(qpos=[...], duration_sec=1.0)`: Move arm joints to explicit target "
@@ -160,40 +200,36 @@ class VLAController:
             "- `get_joint_positions()`: Read current joint positions in degrees.\n"
             "- `get_end_effector_pose()`: Read current 3D position and rotation matrix "
             "(sim/twin mode).\n\n"
-            "### Dynamic Closed-Loop Pick-and-Place Workflow:\n"
-            "When instructed to pick up, move, or sort objects, execute actions dynamically:\n"
-            "**CRITICAL ANTI-BATCHING RULE**: Do NOT batch multiple physical tools into a "
-            "single response turn! You MUST execute ONE physical action "
-            "(e.g. `move_to_spatial_point` or `close_gripper`), then wait for the tool "
-            "response and fresh camera frame before deciding the next action. "
-            "If you batch actions, you are executing open-loop and will fail to adapt to errors.\n"
-            "1. **Clear Occlusion & Observe**: If not already at HOME, first call "
-            "`move_to_preset(pose_name='HOME')` to give camera an unobstructed view.\n"
-            "2. **Locate Target in Current Frame**: ONLY after arriving at HOME, inspect latest "
-            "camera image to find target's normalized [y, x] coordinate (0-1000) at its "
-            "**bottom table contact center**. Call `send_message` to state your observation.\n"
-            "3. **Pre-Grasp & Open**: Call `open_gripper()` then "
+            "### Step-by-Step Pick-and-Place Workflow with Visual Verification:\n"
+            "1. **Clear Occlusion & Observe**: If not at HOME, call "
+            "`move_to_preset(pose_name='HOME')`. In the fresh frame, locate the target object's "
+            "normalized [y, x] coordinate at its bottom contact center.\n"
+            "2. **Pre-Grasp Hover & Open**: Call `open_gripper()`, then call "
             "`move_to_spatial_point(point=[y, x], z_height_cm=5.0)` to hover safely above target.\n"
+            "3. **Visual Verification & Error Check (Hover)**: In the fresh frame, inspect "
+            "gripper-to-target alignment. Describe gripper [y, x], target [y, x], and calculate "
+            "relative position error [dy, dx]. If misaligned (|dy|>25 or |dx|>25), issue "
+            "corrective hover move. Only proceed to descend when aligned.\n"
             "4. **Descend & Grasp**: Call `move_to_spatial_point(point=[y, x], z_height_cm=0.0)` "
             "to lower jaws around the object, then call `close_gripper()`.\n"
-            "5. **Lift to Hover**: Call `move_to_spatial_point(point=[y, x], z_height_cm=5.0)`.\n"
-            "6. **Visual Inspection**: Look at the fresh camera frame after lifting:\n"
-            "   - **Missed Grasp**: If the object is still resting on the tabletop surface and the "
-            "gripper is empty, the grasp MISSED. Call `send_message` (e.g. 'Visual check: grasp "
-            "missed, object is still on the table at [y, x]. Retrying.'), call `open_gripper()`, "
-            "re-target the object's visible position, and retry (up to 3 attempts).\n"
-            "   - **Successful Grasp**: If the object is visibly elevated between the jaws, call "
-            "`send_message` and proceed to transport.\n"
-            "7. **Transport & Release**: Call `move_to_spatial_point(point=[dest_y, dest_x], "
-            "z_height_cm=5.0)`, descend to `z_height_cm=1.0`, call `open_gripper()`, and retract.\n"
-            "8. **Return Home & Confirm**: Call `move_to_preset(pose_name='HOME')` and confirm "
-            "completion with `send_message`.\n\n"
+            "5. **Lift & Grasp Inspection**: Call `move_to_spatial_point(point=[y, x], "
+            "z_height_cm=5.0)` to lift. Inspect the fresh frame:\n"
+            "   - **Missed Grasp**: If the object is still resting on the table and gripper is "
+            "empty, state 'Grasp missed. Target at [y, x]. Retrying.', open gripper, re-target, "
+            "and retry (up to 3 attempts).\n"
+            "   - **Successful Grasp**: If object is visibly lifted between jaws, state "
+            "confirmation and proceed.\n"
+            "6. **Transport to Destination Hover**: Call `move_to_spatial_point(point=[dest_y, "
+            "dest_x], z_height_cm=5.0)`. Verify placement alignment over destination in fresh "
+            "frame.\n"
+            "7. **Release & Retract**: Call `move_to_spatial_point(point=[dest_y, dest_x], "
+            "z_height_cm=1.0)`, call `open_gripper()`, lift to `z_height_cm=5.0`, and return home "
+            "with `move_to_preset(pose_name='HOME')`.\n"
+            "8. **Confirm Completion**: Confirm successful completion with `send_message`.\n\n"
             "### CRITICAL Spatial Grounding Rule:\n"
-            "- Because 3D coordinate mapping uses a 2D-to-3D planar homography calibrated on the "
-            "table surface (Z=0), ALWAYS designate coordinates [y, x] at the exact **BOTTOM "
-            "CONTACT CENTER** where the object touches the tabletop.\n"
-            "- DO NOT target top faces, top edges, or upper corners of 3D objects to avoid "
-            "perspective parallax error."
+            "- ALWAYS designate coordinates [y, x] at the exact **BOTTOM CONTACT CENTER** where "
+            "the object touches the tabletop (Z=0).\n"
+            "- DO NOT target top faces or upper edges to avoid perspective parallax error."
         )
         self.history.append({"role": "system", "content": system_prompt})
 
@@ -222,7 +258,7 @@ class VLAController:
                 system_instruction=system_prompt,
             )
         except ConnectionError as e:
-            print(f"[VLAController] ⚠️ {e}")
+            _log("VLAController", "WARN", f"⚠️ {e}")
             self._api_available = False
 
     def _run_loop(self) -> None:
@@ -249,7 +285,11 @@ class VLAController:
                 await self._session.connect()
                 return
             except Exception as e:
-                print(f"[VLAController] Connection attempt {attempt + 1} failed: {e}")
+                _log(
+                    "VLAController",
+                    "ERROR",
+                    f"Connection attempt {attempt + 1} failed: {e}",
+                )
                 await asyncio.sleep(delay)
 
         raise ConnectionError("Failed to connect to Gemini Live API after 3 attempts.")
@@ -257,7 +297,7 @@ class VLAController:
     async def _stream_frames_during_execution(
         self, get_latest_jpeg_fn, tool_executing_event: asyncio.Event
     ) -> None:
-        """Stream frames at ~1 FPS while a BLOCKING tool is executing."""
+        """Stream pristine raw frames at ~1 FPS while a BLOCKING tool is executing."""
         if not self._session or not get_latest_jpeg_fn:
             return
 
@@ -267,7 +307,7 @@ class VLAController:
                 try:
                     await self._session.send_frame(jpeg)
                 except Exception as e:
-                    print(f"[VLAController] Frame stream error: {e}")
+                    _log("VLAController", "ERROR", f"Frame stream error: {e}")
                     break
             await asyncio.sleep(1.0)
 
@@ -283,7 +323,7 @@ class VLAController:
         handles tool execution periods.
 
         Args:
-            get_latest_jpeg_fn: Callable returning the latest camera frame as JPEG bytes.
+            get_latest_jpeg_fn: Callable returning latest pristine raw camera frame as JPEG bytes.
             stop_event: Event signaling the background streamer to terminate.
             tool_executing_event: Event indicating whether a BLOCKING tool is currently executing.
         """
@@ -297,7 +337,7 @@ class VLAController:
                     try:
                         await self._session.send_frame(jpeg)
                     except Exception as e:
-                        print(f"[VLAController] Background frame stream error: {e}")
+                        _log("VLAController", "ERROR", f"Background frame stream error: {e}")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=3.0)
             except asyncio.TimeoutError:
@@ -319,6 +359,8 @@ class VLAController:
             await response_queue.put(None)
             return
 
+        _log("VLAController", "DECISION", f"🚀 Received user instruction: {instruction!r}")
+
         async with self._async_instruction_lock:
             # Inject initial snapshot
             initial_frame = get_latest_jpeg_fn() if get_latest_jpeg_fn else None
@@ -339,26 +381,24 @@ class VLAController:
 
                 async for message in self._session.receive():
                     if isinstance(message, types.LiveServerMessage):
-                        print(
-                            f"[VLAController] 📩 Live Message: "
+                        _log(
+                            "VLAController",
+                            "INFO",
+                            f"📩 Live Message: "
                             f"server_content={message.server_content is not None}, "
                             f"tool_call={message.tool_call is not None}",
-                            flush=True,
                         )
                         if message.server_content and message.server_content.model_turn:
                             for part in message.server_content.model_turn.parts:
                                 is_thought = getattr(part, "thought", False)
-                                print(
-                                    f"[VLAController] 📝 Part: thought={is_thought}, "
-                                    f"text={part.text!r}",
-                                    flush=True,
-                                )
                                 if is_thought:
+                                    _log("VLAController", "REASONING", f"💭 {part.text}")
                                     if part.text:
                                         await response_queue.put(
                                             {"type": "thought", "content": part.text}
                                         )
                                 elif part.text:
+                                    _log("VLAController", "DECISION", f"📝 Model text: {part.text}")
                                     await response_queue.put({"type": "text", "content": part.text})
                                 elif part.executable_code:
                                     pass  # not handling executable code in this scope
@@ -367,10 +407,11 @@ class VLAController:
                             # Handle tool calls
                             function_responses = []
                             for call in message.tool_call.function_calls:
-                                print(
-                                    f"[VLAController] 🔧 Tool Call: {call.name} "
-                                    f"with args: {call.args}",
-                                    flush=True,
+                                _log(
+                                    "VLAController",
+                                    "TOOL_CALL",
+                                    f"🔧 Dispatching '{call.name}' [ID: {call.id}] | "
+                                    f"Payload: {call.args}",
                                 )
 
                                 if call.name == "send_message":
@@ -379,9 +420,10 @@ class VLAController:
                                         if hasattr(call, "args")
                                         else ""
                                     )
-                                    print(
-                                        f"[VLAController] 💬 Model speech: {msg_text}",
-                                        flush=True,
+                                    _log(
+                                        "VLAController",
+                                        "DECISION",
+                                        f"💬 Model speech: {msg_text}",
                                     )
                                     await response_queue.put({"type": "text", "content": msg_text})
 
@@ -401,6 +443,12 @@ class VLAController:
                                             id=call.id,
                                             response={"status": "success"},
                                         )
+                                    )
+                                    _log(
+                                        "VLAController",
+                                        "TOOL_RESULT",
+                                        f"✅ Tool 'send_message' completed [ID: {call.id}] | "
+                                        "Result: {'status': 'success'}",
                                     )
                                     continue
 
@@ -452,11 +500,18 @@ class VLAController:
                                     )
                                     if post_frame:
                                         try:
+                                            _log(
+                                                "VLAController",
+                                                "STREAM",
+                                                "📸 Injected post-action observation frame "
+                                                f"({len(post_frame)} bytes)",
+                                            )
                                             await self._session.send_frame(post_frame)
                                         except Exception as e:
-                                            print(
-                                                f"[VLAController] Post-action frame error: {e}",
-                                                flush=True,
+                                            _log(
+                                                "VLAController",
+                                                "ERROR",
+                                                f"Post-action frame error: {e}",
                                             )
 
                                 function_responses.append(
@@ -465,7 +520,17 @@ class VLAController:
                                     )
                                 )
 
-                                if "error" in result_dict:
+                                has_error = "error" in result_dict
+                                status_emoji = "⚠️" if has_error else "✅"
+                                _log(
+                                    "VLAController",
+                                    "TOOL_RESULT",
+                                    f"{status_emoji} Tool '{call.name}' completed [ID: {call.id}] "
+                                    f"| Result: {result_dict}",
+                                    stream=sys.stderr if has_error else sys.stdout,
+                                )
+
+                                if has_error:
                                     err_msg = result_dict["error"]
                                     await response_queue.put(
                                         {
@@ -486,20 +551,25 @@ class VLAController:
 
                         if message.server_content and message.server_content.turn_complete:
                             if not message.tool_call:
-                                print("[VLAController] 🏁 Full turn complete received.", flush=True)
+                                _log(
+                                    "VLAController",
+                                    "DECISION",
+                                    "🏁 Full turn complete received.",
+                                )
                                 break
                             else:
-                                print(
-                                    "[VLAController] ℹ️ Sub-turn complete on tool_call message; "
+                                _log(
+                                    "VLAController",
+                                    "INFO",
+                                    "ℹ️ Sub-turn complete on tool_call message; "
                                     "waiting for model response to tool output.",
-                                    flush=True,
                                 )
 
             except asyncio.CancelledError:
-                print("[VLAController] Instruction task cancelled.")
+                _log("VLAController", "WARN", "Instruction task cancelled.")
                 raise
             except Exception as e:
-                print(f"[VLAController] Error during session loop: {e}")
+                _log("VLAController", "ERROR", f"Error during session loop: {e}")
                 await response_queue.put({"type": "error", "content": f"Session error: {e}"})
                 # Try to disconnect so it can reconnect cleanly
                 try:
@@ -510,8 +580,6 @@ class VLAController:
                 bg_stream_stop_event.set()
                 if bg_stream_task and not bg_stream_task.done():
                     bg_stream_task.cancel()
-                    # if bg_streamer_task:
-                    #     await bg_streamer_task
                     try:
                         await bg_stream_task
                     except asyncio.CancelledError:
@@ -525,7 +593,7 @@ class VLAController:
 
         Args:
             instruction: The text instruction from the user.
-            get_latest_jpeg_fn: Optional callable returning latest camera frame as JPEG bytes.
+            get_latest_jpeg_fn: Optional callable returning pristine raw camera frame as JPEG bytes.
 
         Yields:
             Progressive response string for Gradio chatbot streaming.

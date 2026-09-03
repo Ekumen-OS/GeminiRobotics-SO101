@@ -106,6 +106,8 @@ def test_move_to_spatial_point_schema() -> None:
     props = matching[0]["parameters"]["properties"]
     assert "point" in props
     assert "z_height_cm" in props
+    assert "approach" in props
+    assert "approach" in matching[0]["parameters"]["required"]
 
 
 def test_validate_and_clamp_joints() -> None:
@@ -186,12 +188,16 @@ async def test_execute_tool_gripper() -> None:
     open_call = DummyToolCall("open_gripper")
     open_res = await execute_tool_call(open_call, robot=robot)
     assert open_res.get("status") == "success"
+    assert "visual_hint" in open_res
+    assert "Gripper opened" in open_res["visual_hint"]
     assert np.isclose(robot.get_joint_positions()[5], np.radians(GRIPPER_OPEN_DEG), atol=1e-3)
 
     # Close gripper
     close_call = DummyToolCall("close_gripper")
     close_res = await execute_tool_call(close_call, robot=robot)
     assert close_res.get("status") == "success"
+    assert "visual_hint" in close_res
+    assert "Gripper closed" in close_res["visual_hint"]
     assert np.isclose(robot.get_joint_positions()[5], np.radians(GRIPPER_CLOSE_DEG), atol=1e-3)
 
 
@@ -203,6 +209,8 @@ async def test_execute_tool_move_to_preset() -> None:
     call = DummyToolCall("move_to_preset", {"pose_name": "HOME"})
     res = await execute_tool_call(call, robot=robot)
     assert res.get("status") == "success"
+    assert "visual_hint" in res
+    assert "Arm is at HOME pose" in res["visual_hint"]
     np.testing.assert_allclose(robot.get_joint_positions(), PRESET_POSES["HOME"], atol=1e-4)
 
     bad_call = DummyToolCall("move_to_preset", {"pose_name": "NONEXISTENT"})
@@ -237,16 +245,30 @@ async def test_execute_tool_move_to_spatial_point() -> None:
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
     with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
-        call = DummyToolCall("move_to_spatial_point", {"point": [500.0, 500.0], "z_height_cm": 5.0})
+        call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+        )
         res = await execute_tool_call(call, robot=robot)
         assert res.get("status") == "success"
+        assert res.get("approach") == "top_down"
         assert robot.move_to_pose_called
+        assert "visual_hint" in res
+        assert "Visual Verification Loop" in res["visual_hint"]
         mock_calibrator.gemini_to_robot_xyz.assert_called_once_with(
             [500.0, 500.0], img_shape=(480, 640), z_m=0.05
         )
 
+    # Missing approach returns error
+    missing_approach_call = DummyToolCall(
+        "move_to_spatial_point", {"point": [500.0, 500.0], "z_height_cm": 5.0}
+    )
+    missing_res = await execute_tool_call(missing_approach_call, robot=robot)
+    assert "error" in missing_res
+    assert "requires 'approach' parameter" in missing_res["error"]
+
     # Bad point format
-    bad_call = DummyToolCall("move_to_spatial_point", {"point": [500.0]})
+    bad_call = DummyToolCall("move_to_spatial_point", {"point": [500.0], "approach": "top_down"})
     bad_res = await execute_tool_call(bad_call, robot=robot)
     assert "error" in bad_res
 
@@ -296,3 +318,126 @@ async def test_execute_tool_send_message() -> None:
     res = await execute_tool_call(call, robot=None)
     assert res["status"] == "success"
     assert res["message"] == "Hello from robot!"
+
+
+@pytest.mark.asyncio
+async def test_tools_visual_hints_enrichment() -> None:
+    """Test all tool returns contain the expected enriched visual_hint strings."""
+    robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
+
+    mock_calibrator = MagicMock()
+    mock_calibrator.is_calibrated = True
+    mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
+
+    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+        # Hover height >= 3.0
+        hover_call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+        )
+        hover_res = await execute_tool_call(hover_call, robot=robot)
+        assert "visual_hint" in hover_res
+        hint = hover_res["visual_hint"]
+        assert "hover position" in hint
+        assert "Visual Verification Loop" in hint
+        assert "[dy, dx]" in hint
+
+        # Contact height < 3.0
+        contact_call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "z_height_cm": 0.0, "approach": "top_down"},
+        )
+        contact_res = await execute_tool_call(contact_call, robot=robot)
+        assert "visual_hint" in contact_res
+        assert "contact height" in contact_res["visual_hint"]
+
+    # Open gripper
+    open_res = await execute_tool_call(DummyToolCall("open_gripper"), robot=robot)
+    assert "visual_hint" in open_res
+    assert "Gripper opened" in open_res["visual_hint"]
+
+    # Close gripper
+    close_res = await execute_tool_call(DummyToolCall("close_gripper"), robot=robot)
+    assert "visual_hint" in close_res
+    assert "Gripper closed" in close_res["visual_hint"]
+
+    # Preset HOME
+    home_res = await execute_tool_call(
+        DummyToolCall("move_to_preset", {"pose_name": "HOME"}), robot=robot
+    )
+    assert "visual_hint" in home_res
+    assert "Arm is at HOME pose with clear workspace view" in home_res["visual_hint"]
+
+
+@pytest.mark.asyncio
+async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
+    """Test tool execution logging to stdout and error/warning routing to stderr."""
+    import re
+
+    robot = MockRobot()
+    mock_calibrator = MagicMock()
+    mock_calibrator.is_calibrated = True
+    mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
+
+    # 1. Successful move_to_spatial_point logs to stdout with ISO timestamp
+    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+        call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [600.0, 400.0], "z_height_cm": 3.0, "approach": "top_down"},
+        )
+        await execute_tool_call(call, robot=robot)
+
+    captured = capsys.readouterr()
+    assert "[Tools] [EXEC] move_to_spatial_point: image [600, 400]" in captured.out
+    timestamp_pattern = re.compile(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[Tools\] \[EXEC\]"
+    )
+    assert timestamp_pattern.search(captured.out) is not None
+
+    # 2. Clamping warning logs to stderr
+    q_exceeded = [JOINT_LIMITS["shoulder_pan"][1] + 15.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    validate_and_clamp_joints(q_exceeded)
+    captured_clamp = capsys.readouterr()
+    assert "[Tools] [WARN] shoulder_pan was clamped" in captured_clamp.err
+    warn_timestamp_pattern = re.compile(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[Tools\] \[WARN\]"
+    )
+    assert warn_timestamp_pattern.search(captured_clamp.err) is not None
+
+    # 3. Tool error logs to stderr
+    err_call = DummyToolCall("move_to_pose", {"qpos": [0.0, 0.0]})  # invalid joint count
+    await execute_tool_call(err_call, robot=robot)
+    captured_err = capsys.readouterr()
+    assert "[Tools] [ERROR] move_to_pose expects 6 joint angles" in captured_err.err
+
+
+@pytest.mark.asyncio
+async def test_move_to_spatial_point_custom_label() -> None:
+    """Verify that custom label parameter is preserved on the visual overlay."""
+    from ui.stream import get_model_targets
+
+    robot = MockRobot()
+    mock_calib = MagicMock()
+    mock_calib.is_calibrated = True
+    mock_calib.gemini_to_robot_xyz.return_value = np.array([0.2, 0.0, 0.05])
+
+    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+        call = DummyToolCall(
+            "move_to_spatial_point",
+            {
+                "point": [762, 483],
+                "z_height_cm": 5.0,
+                "approach": "top_down",
+                "label": "Red Cube Pick",
+            },
+        )
+        resp = await execute_tool_call(call, robot=robot)
+        assert resp["status"] == "success"
+
+        # Check visual target overlay
+        targets = get_model_targets()
+        assert len(targets) >= 1
+        active = targets[0]
+        assert "[RED CUBE PICK]" in active["label"]
+        assert "(z=5.0cm, top_down)" in active["label"]
+        assert "🎯" not in active["label"]
