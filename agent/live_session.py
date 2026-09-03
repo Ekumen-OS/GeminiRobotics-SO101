@@ -1,12 +1,29 @@
 """Live API WebSocket session manager for Gemini."""
 
 import asyncio
+import datetime
 import os
-from typing import AsyncIterator
+import sys
+from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+
+def _log(module: str, tag: str, message: str, stream: Any = None) -> None:
+    """Format and print an ISO-timestamped diagnostic log entry.
+
+    Args:
+        module: Component name (e.g. 'LiveSession').
+        tag: Semantic tag (e.g. 'INFO', 'STREAM', 'ERROR', 'WARN').
+        message: Log message content.
+        stream: Output stream (defaults to sys.stderr for ERROR/WARN, sys.stdout otherwise).
+    """
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    if stream is None:
+        stream = sys.stderr if tag in ("ERROR", "WARN") else sys.stdout
+    print(f"[{now_str}] [{module}] [{tag}] {message}", file=stream, flush=True)
 
 
 def create_genai_client() -> genai.Client:
@@ -77,24 +94,24 @@ class GeminiLiveSession:
             if self._session is not None:
                 return
 
-            print(f"[LiveSession] Connecting to {self.model}...", flush=True)
-            print(f"[LiveSession] Config: {self.config}", flush=True)
+            _log("LiveSession", "INFO", f"Connecting to {self.model}...")
+            _log("LiveSession", "INFO", f"Config: {self.config}")
             self._session_cm = self.client.aio.live.connect(model=self.model, config=self.config)
             self._session = await self._session_cm.__aenter__()
-            print("[LiveSession] Connected successfully.", flush=True)
+            _log("LiveSession", "INFO", "Connected successfully.")
 
     async def disconnect(self) -> None:
         """Close the live WebSocket connection."""
-        print("[LiveSession] Disconnecting...", flush=True)
+        _log("LiveSession", "INFO", "Disconnecting...")
         async with self._lock:
             if self._session_cm is not None:
                 try:
                     await self._session_cm.__aexit__(None, None, None)
                 except Exception as e:
-                    print(f"[LiveSession] Error during disconnect: {e}", flush=True)
+                    _log("LiveSession", "ERROR", f"Error during disconnect: {e}")
                 self._session_cm = None
             self._session = None
-        print("[LiveSession] Disconnected.", flush=True)
+        _log("LiveSession", "INFO", "Disconnected.")
 
     async def send_instruction(self, text: str, frame_jpeg: bytes | None) -> None:
         """Send user instruction with an optional JPEG frame."""
@@ -103,12 +120,16 @@ class GeminiLiveSession:
 
         async with self._ws_lock:
             if frame_jpeg:
-                print(f"[LiveSession] Sending frame ({len(frame_jpeg)} bytes)", flush=True)
+                _log(
+                    "LiveSession",
+                    "STREAM",
+                    f"📸 Sent initial observation frame ({len(frame_jpeg)} bytes)",
+                )
                 await self._session.send_realtime_input(
                     video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
                 )
 
-            print(f"[LiveSession] Sending text: {text!r}", flush=True)
+            _log("LiveSession", "INFO", f"Sending text: {text!r}")
             await self._session.send_realtime_input(text=text)
 
     async def send_text(self, text: str) -> None:
@@ -116,7 +137,7 @@ class GeminiLiveSession:
         if not self._session:
             return
         async with self._ws_lock:
-            print(f"[LiveSession] Sending text: {text!r}", flush=True)
+            _log("LiveSession", "INFO", f"Sending text: {text!r}")
             await self._session.send_realtime_input(text=text)
 
     async def send_frame(self, jpeg_bytes: bytes) -> None:
@@ -124,7 +145,7 @@ class GeminiLiveSession:
         if not self._session:
             return
         async with self._ws_lock:
-            print(f"[LiveSession] 📸 Sent video frame ({len(jpeg_bytes)} bytes)", flush=True)
+            _log("LiveSession", "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
             await self._session.send_realtime_input(
                 video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
             )
@@ -135,7 +156,7 @@ class GeminiLiveSession:
             return
 
         async with self._ws_lock:
-            print(f"[LiveSession] Sending tool responses: {function_responses}", flush=True)
+            _log("LiveSession", "INFO", f"Sending tool responses: {function_responses}")
             await self._session.send_tool_response(function_responses=function_responses)
 
     async def receive(self) -> AsyncIterator[types.LiveServerMessage]:

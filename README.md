@@ -25,12 +25,14 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
    - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`constants.py`](robot/constants.py)).
    - **Kinematics & Theory**: Forward kinematics ([`kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`theory.md`](robot/theory.md)).
    - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, printable calibration mat sheet generator, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
+   - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`perception.py`](robot/perception.py), [`vision_detector.py`](robot/vision_detector.py)).
    - **Hardware & Digital Twin**: Physical serial bus interfaces for Feetech servos ([`real_robot.py`](robot/real_robot.py)), simulation controller ([`simulation/sim_robot.py`](simulation/sim_robot.py)), and simultaneous simulation-to-hardware streaming ([`twin_robot.py`](robot/twin_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
 
 2. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
    - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
    - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
-   - **VLA Controller**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) bridging synchronous UI streaming with Gemini Live WebSocket turns, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
+   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
+   - **Verbose Diagnostic Terminal Logging**: ISO-8601 millisecond-precision diagnostic logging (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`) routing model decisions, tool call payloads (`call.args`), and execution results (`result_dict`) to stdout/stderr while keeping Chat UI reasoning clean.
 
 3. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
    - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
@@ -41,9 +43,9 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
 4. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
    - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
    - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` and `twin` modes.
-   - **Thread-Safe State Management**: Centralized robot state manager (`RobotStateManager` in [`state.py`](ui/state.py)) for synchronized joint telemetry and actuator feedback.
+   - **Thread-Safe State Management**: Centralized robot state manager (`RobotStateManager` and `get_active_robot` in [`state.py`](ui/state.py)) for synchronized joint telemetry and actuator feedback.
    - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV and native macOS hardware camera enumeration via AVFoundation ([`stream.py`](ui/stream.py), [`components/vision.py`](ui/components/vision.py)).
-   - **Multimodal Chat & Controls**: Real-time conversational AI interface with tool execution status updates ([`components/chat.py`](ui/components/chat.py)) and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
+   - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
 
 ## Getting Started
 
@@ -130,9 +132,9 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 ### 1. ArUco Workspace Calibration & Sheet Generator (`robot/calibration.py`)
 
-- Detects 4-corner ArUco fiducials (`DICT_4X4_50`, IDs 0..3) defining the physical workspace mat.
-- Computes perspective homography mapping camera pixels directly to physical robot base millimeters.
-- Configurable via `config/workspace_calibration.json`.
+- Detects 4-corner ArUco fiducials (`DICT_4X4_50`, canonical IDs: `1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`) defining the physical workspace mat.
+- Computes perspective homography mapping camera pixels directly to physical robot base millimeters with lateral $Y$-axis parity.
+- Configurable via `config/workspace_calibration.json`. Full architecture details are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - **Interactive Setup Wizard & Marker / Sheet Generator**:
 
   ```bash
@@ -155,12 +157,24 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 - Powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API bidirectional WebSocket session with thinking enabled (`include_thoughts=True`).
 - **Continuous Visual Perception**: Ingests video frames at ~1 FPS both during motion execution and continuously in the background while the model reasons between tool calls.
-- **Post-Action Observation Frame**: Injects a fresh settled camera frame (with a 0.3s physical stabilization delay) immediately after every blocking tool execution before returning `FunctionResponse`, providing ground-truth post-action state for immediate inspection.
+- **Strict "Move -> Look -> Correct" Visual Verification Loop**:
+  - Enforces a mandatory 3-phase cycle for spatial manipulation:
+    1. **Move**: Move the arm/gripper towards approach hover altitude above the target object using `move_to_spatial_point`.
+    2. **Look**: Model explicitly pauses, inspects the freshly settled post-action camera frame, detects current gripper position $[y_g, x_g]$ and target coordinates $[y_t, x_t]$, and computes the relative offset error $[dy, dx] = [y_t - y_g, x_t - x_g]$.
+    3. **Correct**: If visual alignment error exceeds threshold ($\| [dy, dx] \| > \epsilon$), the model executes corrective micro-adjustments before descending to grasp depth.
+- **Programmatic Perception Feedback & Anti-Hallucination Guardrails (`robot/perception.py`)**:
+  - Automatically calculates real OpenCV visual offsets $[dy, dx]$, distances, and binary alignment flags (`is_aligned` within tolerance $\le 25$) returned in tool payloads.
+  - Enforces strict controller gates blocking table descent when misaligned ($|dy| > 25$ or $|dx| > 25$) and blocking transport if the object remains on the table post-lift.
+  - Automates a 3-attempt grasp retry loop with graceful escalation if missed.
+- **Post-Action Observation Frame Injection**: Injects a fresh settled camera frame (with a 0.3s physical stabilization delay) immediately after every blocking tool execution before returning `FunctionResponse`, providing ground-truth post-action state for immediate inspection and error correction.
+- **UI Input Blocking & Dynamic Status Indication**: Prevents concurrent user input or race conditions during model turns. When an instruction is submitted, the prompt textbox, execution button, homing button, clear button, and randomize target button are disabled, and the banner transitions to `⏳ Status: Working...`. Once the model finishes its execution turn (or on exception), the UI is safely restored to `🟢 Status: Ready` via a robust `try...finally` block.
+- **Verbose Timestamped Terminal Logging vs. Chatbot CoT**:
+  - Maintains a clean separation between user-facing conversational narration and operator diagnostics.
+  - High-level thoughts (`> 💭 *...*`) and responses stream cleanly to the Gradio Chatbot.
+  - Low-level JSON tool call payloads (`call.args`), execution results (`result_dict`), WebSocket frame dispatches, and error traces are printed to `stdout`/`stderr` with ISO-8601 millisecond timestamps (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`).
 - **Minimalist Multi-Target Bounding Box Overlay**: Renders clean, color-coded bounding boxes with corner accents and floating coordinate badges on the video stream showing all detected objects and where Gemini is focusing in real time.
 - **Continuous Live ArUco Calibration**: Dynamically tracks visible fiducials and computes perspective homography continuously on the physical USB camera feed, eliminating camera perspective drift.
-- **Conversational Chain of Thought & Narration**: Streams internal reasoning thoughts (`> 💭 *...*`) and progressive conversational narration explaining visual observations, step-by-step intentions, clarifying questions, and completion summaries directly in the Chat UI.
-- **Direct Primitive Tool Calling**: Rather than relying on a rigid state machine, the model orchestrates multi-step actions (Hover $\rightarrow$ Descend $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transport $\rightarrow$ Release) by invoking tool primitives.
-- **Explicit Visual Verification & Self-Correction**: The model visually verifies grasp success (checking if the object is held between jaws) and release placement. If an attempt fails, it reasons about observed physical offsets, adjusts coordinates, and autonomously retries.
+- **Direct Primitive Tool Calling**: Rather than relying on a rigid state machine, the model orchestrates multi-step actions (Hover $\rightarrow$ Look $\rightarrow$ Correct $\rightarrow$ Descend $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transport $\rightarrow$ Release) by invoking tool primitives.
 
 ## Testing & Diagnostics
 

@@ -86,6 +86,18 @@ def set_active_robot(robot: RobotInterface | None) -> None:
         _active_robot = robot
 
 
+def get_active_robot() -> RobotInterface | None:
+    """Retrieve the globally active robot controller reference.
+
+    Returns:
+        The active RobotInterface instance (hardware or simulation) if set,
+        or None if no robot is currently active.
+    """
+    global _active_robot
+    with _state_lock:
+        return _active_robot
+
+
 def set_target_joints_deg(deg: list[float]) -> None:
     """Update target joint positions in degrees and radians.
 
