@@ -4,7 +4,9 @@ import tempfile
 from pathlib import Path
 
 import cv2
+import mujoco
 import numpy as np
+import pytest
 
 from robot.calibration import ArucoWorkspaceCalibrator, generate_aruco_markers
 
@@ -80,8 +82,6 @@ def test_homography_estimation_and_roundtrip() -> None:
 
 def test_uncalibrated_raises_error() -> None:
     """Test that gemini_to_robot_xyz and pixel_to_robot_mm raise RuntimeError when uncalibrated."""
-    import pytest
-
     calibrator = ArucoWorkspaceCalibrator()
     calibrator.homography_matrix = None
 
@@ -268,7 +268,16 @@ def test_sim_robot_camera_rendering() -> None:
 
     robot = SO101Robot(render_viewer=False)
     try:
-        frame = robot.render_rgb_frame(width=640, height=480, camera="workspace_cam")
+        try:
+            frame = robot.render_rgb_frame(width=640, height=480, camera="workspace_cam")
+        except (mujoco.FatalError, RuntimeError) as err:
+            pytest.skip(f"MuJoCo offscreen rendering requires hardware OpenGL/EGL context: {err}")
+        except Exception as err:
+            if "gladLoadGL" in str(err) or "DISPLAY" in str(err):
+                pytest.skip(
+                    f"MuJoCo offscreen rendering requires hardware OpenGL/EGL context: {err}"
+                )
+            raise
         assert frame.shape == (480, 640, 3)
         assert frame.dtype == np.uint8
         # Ensure frame is not completely blank / black

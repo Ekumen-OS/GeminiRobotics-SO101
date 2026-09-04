@@ -1,6 +1,10 @@
 """Unit tests for the Gradio Web UI components, stream overlays, and FastAPI app mount."""
 
+import threading
+
+import cv2
 import gradio as gr
+import numpy as np
 from fastapi import FastAPI
 
 from agent.vla_controller import VLAController, parse_targets_from_text
@@ -16,6 +20,8 @@ from ui.stream import (
     clear_model_target_point,
     clear_model_targets,
     draw_model_target_overlay,
+    get_latest_jpeg,
+    get_latest_raw_jpeg,
     get_model_target_point,
     get_model_targets,
     is_bounding_boxes_overlay_enabled,
@@ -68,8 +74,6 @@ def test_stream_overlay_flags() -> None:
 
 def test_model_target_overlay_drawing() -> None:
     """Verify set_model_target_point and draw_model_target_overlay rendering."""
-    import numpy as np
-
     set_target_overlay_enabled(True)
     set_model_target_point((500.0, 500.0), label="TEST_TARGET [500, 500]")
     pt, lbl = get_model_target_point()
@@ -91,8 +95,6 @@ def test_model_target_overlay_drawing() -> None:
 
 def test_multi_target_management_and_drawing() -> None:
     """Verify multi-target setters, getters, box_2d parsing, and overlay drawing."""
-    import numpy as np
-
     set_target_overlay_enabled(True)
     clear_model_targets()
     assert len(get_model_targets()) == 0
@@ -125,6 +127,97 @@ def test_multi_target_management_and_drawing() -> None:
 
     clear_model_targets()
     assert len(get_model_targets()) == 0
+
+
+def test_dual_buffer_stream_zero_leakage(
+    neutral_frame: np.ndarray, clean_stream_state: None
+) -> None:
+    """Verify get_latest_raw_jpeg has zero annotations while get_latest_jpeg includes overlays."""
+    import ui.stream as stream_mod
+
+    raw_canvas = neutral_frame.copy()
+    with stream_mod._global_frame_lock:
+        if hasattr(stream_mod, "_global_latest_raw_frame"):
+            stream_mod._global_latest_raw_frame = raw_canvas.copy()
+        stream_mod._global_latest_frame = raw_canvas.copy()
+
+    set_target_overlay_enabled(True)
+    set_model_targets(
+        [
+            {
+                "point": (350.0, 450.0),
+                "label": "VERIFY_TARGET",
+                "box_2d": [200, 300, 500, 600],
+            }
+        ]
+    )
+
+    raw_jpeg = get_latest_raw_jpeg()
+    annotated_jpeg = get_latest_jpeg()
+
+    assert raw_jpeg is not None
+    assert annotated_jpeg is not None
+    assert raw_jpeg != annotated_jpeg
+
+    raw_bgr = cv2.imdecode(np.frombuffer(raw_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
+    diff_raw = np.abs(raw_rgb.astype(int) - raw_canvas.astype(int))
+    assert np.max(diff_raw) <= 5
+
+
+def test_stream_color_fidelity_rgb_vs_bgr(
+    smooth_gradient_frame: np.ndarray, clean_stream_state: None
+) -> None:
+    """Verify color channel ordering is preserved and does not swap R and B."""
+    import ui.stream as stream_mod
+
+    test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    test_frame[:, :, 0] = 230  # High Red, Zero Blue
+    with stream_mod._global_frame_lock:
+        if hasattr(stream_mod, "_global_latest_raw_frame"):
+            stream_mod._global_latest_raw_frame = test_frame.copy()
+        stream_mod._global_latest_frame = test_frame.copy()
+
+    raw_jpeg = get_latest_raw_jpeg()
+    assert raw_jpeg is not None
+    decoded_bgr = cv2.imdecode(np.frombuffer(raw_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    decoded_rgb = cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
+
+    # Red channel should dominate, Blue should remain near zero
+    assert decoded_rgb[200, 200, 0] > 200
+    assert decoded_rgb[200, 200, 2] < 20
+
+
+def test_stream_concurrency_thread_safety(
+    neutral_frame: np.ndarray, clean_stream_state: None
+) -> None:
+    """Verify thread safety under concurrent reads of raw and annotated buffers."""
+    import ui.stream as stream_mod
+
+    with stream_mod._global_frame_lock:
+        if hasattr(stream_mod, "_global_latest_raw_frame"):
+            stream_mod._global_latest_raw_frame = neutral_frame.copy()
+        stream_mod._global_latest_frame = neutral_frame.copy()
+
+    errors: list[Exception] = []
+
+    def reader_task() -> None:
+        try:
+            for _ in range(50):
+                raw = get_latest_raw_jpeg()
+                ann = get_latest_jpeg()
+                assert raw is not None
+                assert ann is not None
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=reader_task) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0
 
 
 def test_parse_targets_from_text() -> None:

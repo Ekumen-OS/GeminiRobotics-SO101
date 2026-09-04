@@ -17,52 +17,7 @@ from agent.tools import (
 )
 from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.interface import RobotInterface
-
-
-class MockRobot(RobotInterface):
-    """Mock robot for testing tool dispatching."""
-
-    def __init__(self, qpos: np.ndarray | None = None) -> None:
-        """Initialize mock robot with joint configuration."""
-        self.qpos = qpos if qpos is not None else np.zeros(6, dtype=np.float32)
-        self.move_to_pose_called = False
-        self.last_move_target = None
-        self.last_move_duration = None
-        self.set_joint_positions_called = False
-
-    def set_joint_positions(self, qpos: np.ndarray) -> None:
-        """Set joint positions."""
-        self.qpos = np.asarray(qpos, dtype=np.float32)
-        self.set_joint_positions_called = True
-
-    def get_joint_positions(self) -> np.ndarray:
-        """Get current joint positions."""
-        return self.qpos.copy()
-
-    def move_to_pose(
-        self, target_qpos: np.ndarray, duration_sec: float = 1.0, dt: float = 0.002
-    ) -> None:
-        """Simulate moving to pose."""
-        self.qpos = np.asarray(target_qpos, dtype=np.float32)
-        self.move_to_pose_called = True
-        self.last_move_target = self.qpos.copy()
-        self.last_move_duration = duration_sec
-
-    def get_end_effector_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return dummy end effector pose."""
-        pos = np.array([0.15, 0.0, 0.05], dtype=np.float64)
-        rot = np.eye(3, dtype=np.float64)
-        return pos, rot
-
-
-class DummyToolCall:
-    """Simulated Live API FunctionCall object."""
-
-    def __init__(self, name: str, args: dict | None = None) -> None:
-        """Initialize dummy tool call."""
-        self.name = name
-        self.args = args or {}
-        self.id = "mock_call_id"
+from tests.conftest import DummyToolCall, MockRobot
 
 
 def test_tool_declarations_structure() -> None:
@@ -414,8 +369,9 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
 @pytest.mark.asyncio
 async def test_move_to_spatial_point_custom_label() -> None:
     """Verify that custom label parameter is preserved on the visual overlay."""
-    from ui.stream import get_model_targets
+    from ui.stream import clear_model_targets, get_model_targets
 
+    clear_model_targets()
     robot = MockRobot()
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -437,7 +393,8 @@ async def test_move_to_spatial_point_custom_label() -> None:
         # Check visual target overlay
         targets = get_model_targets()
         assert len(targets) >= 1
-        active = targets[0]
+        active = targets[-1]
         assert "[RED CUBE PICK]" in active["label"]
         assert "(z=5.0cm, top_down)" in active["label"]
         assert "🎯" not in active["label"]
+        clear_model_targets()
