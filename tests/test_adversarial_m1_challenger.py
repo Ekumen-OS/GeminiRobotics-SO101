@@ -20,7 +20,6 @@ from agent.tools import image_point_to_xyz, validate_and_clamp_joints
 from robot.calibration import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_SAVE_PATH,
-    DEFAULT_SIM_SAVE_PATH,
     ArucoWorkspaceCalibrator,
 )
 from robot.cartesian_ik import CartesianIK
@@ -250,13 +249,13 @@ def test_adversarial_ik_singularity_and_hostile_seed_recovery() -> None:
     assert len(warnings_ext) == 0
 
 
-def test_adversarial_homography_files_lateral_parity_matrix_elements() -> None:
+def test_adversarial_homography_files_lateral_parity_matrix_elements(
+    sim_homography_path: Path,
+    real_homography_path: Path,
+) -> None:
     """Directly verify homography matrices for lateral axis inversion bug elimination."""
-    assert DEFAULT_SIM_SAVE_PATH.exists()
-    assert DEFAULT_SAVE_PATH.exists()
-
-    data_sim = np.load(DEFAULT_SIM_SAVE_PATH)
-    data_real = np.load(DEFAULT_SAVE_PATH)
+    data_sim = np.load(sim_homography_path)
+    data_real = np.load(real_homography_path)
 
     h_sim = data_sim["homography"]
     h_real = data_real["homography"]
