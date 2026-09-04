@@ -10,7 +10,6 @@ Covers:
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -27,6 +26,7 @@ from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
+from tests.conftest import DummyToolCall
 from ui.stream import get_calibrator
 
 # ==============================================================================
@@ -175,15 +175,15 @@ def test_t1_f3_calibrator_mode_routing_sim_and_real() -> None:
     real_calib = ArucoWorkspaceCalibrator(mode="real")
     assert real_calib.mode == "real"
 
-    if DEFAULT_SIM_SAVE_PATH.exists():
-        sim_calib.load_calibration(DEFAULT_SIM_SAVE_PATH)
-        assert sim_calib.is_calibrated is True
-        assert sim_calib.homography_matrix.shape == (3, 3)
+    assert DEFAULT_SIM_SAVE_PATH.exists()
+    sim_calib.load_calibration(DEFAULT_SIM_SAVE_PATH)
+    assert sim_calib.is_calibrated is True
+    assert sim_calib.homography_matrix.shape == (3, 3)
 
-    if DEFAULT_SAVE_PATH.exists():
-        real_calib.load_calibration(DEFAULT_SAVE_PATH)
-        assert real_calib.is_calibrated is True
-        assert real_calib.homography_matrix.shape == (3, 3)
+    assert DEFAULT_SAVE_PATH.exists()
+    real_calib.load_calibration(DEFAULT_SAVE_PATH)
+    assert real_calib.is_calibrated is True
+    assert real_calib.homography_matrix.shape == (3, 3)
 
 
 def test_t1_f4_cartesian_ik_reachability_within_envelope() -> None:
@@ -335,10 +335,9 @@ def test_t3_cross_feature_tools_image_point_to_xyz_integration() -> None:
         assert np.allclose(xyz_tool, xyz_calib, atol=1e-4)
 
 
-def test_t3_cross_feature_move_to_spatial_point_execution() -> None:
+@pytest.mark.asyncio
+async def test_t3_cross_feature_move_to_spatial_point_execution() -> None:
     """Validate move_to_spatial_point tool execution in headless simulation."""
-    import asyncio
-
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
@@ -346,11 +345,11 @@ def test_t3_cross_feature_move_to_spatial_point_execution() -> None:
     robot.reset("HOME")
 
     try:
-        call = SimpleNamespace(
+        call = DummyToolCall(
             name="move_to_spatial_point",
             args={"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
         )
-        result = asyncio.run(execute_tool_call(call=call, robot=robot))
+        result = await execute_tool_call(call=call, robot=robot)
 
         assert result.get("status") == "success"
         assert "target_xyz_m" in result
@@ -389,10 +388,9 @@ def test_t3_cross_feature_camera_fov_containment() -> None:
 # ==============================================================================
 
 
-def test_t4_scenario_pick_hover_and_descend_workflow() -> None:
+@pytest.mark.asyncio
+async def test_t4_scenario_pick_hover_and_descend_workflow() -> None:
     """Real-World Scenario 1: Model moves to hover above target, then descends to contact."""
-    import asyncio
-
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
@@ -401,45 +399,44 @@ def test_t4_scenario_pick_hover_and_descend_workflow() -> None:
 
     try:
         # Step 1: Hover at 4.0 cm
-        hover_call = SimpleNamespace(
+        hover_call = DummyToolCall(
             name="move_to_spatial_point",
             args={"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
         )
-        res1 = asyncio.run(execute_tool_call(call=hover_call, robot=robot))
+        res1 = await execute_tool_call(call=hover_call, robot=robot)
         assert res1["status"] == "success"
         assert "Visual Verification Loop" in res1["visual_hint"]
 
         # Step 2: Descend to 0.0 cm (table contact)
-        descend_call = SimpleNamespace(
+        descend_call = DummyToolCall(
             name="move_to_spatial_point",
             args={"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"},
         )
-        res2 = asyncio.run(execute_tool_call(call=descend_call, robot=robot))
+        res2 = await execute_tool_call(call=descend_call, robot=robot)
         assert res2["status"] == "success"
         assert res2["target_xyz_m"][2] == 0.0
 
         # Step 3: Close gripper
-        close_call = SimpleNamespace(name="close_gripper", args={})
-        res3 = asyncio.run(execute_tool_call(call=close_call, robot=robot))
+        close_call = DummyToolCall(name="close_gripper", args={})
+        res3 = await execute_tool_call(call=close_call, robot=robot)
         assert res3["status"] == "success"
         assert "Gripper closed" in res3["visual_hint"]
 
         # Step 4: Lift to 5.0 cm
-        lift_call = SimpleNamespace(
+        lift_call = DummyToolCall(
             name="move_to_spatial_point",
             args={"point": [760.0, 484.0], "z_height_cm": 5.0, "approach": "top_down"},
         )
-        res4 = asyncio.run(execute_tool_call(call=lift_call, robot=robot))
+        res4 = await execute_tool_call(call=lift_call, robot=robot)
         assert res4["status"] == "success"
         assert np.isclose(res4["target_xyz_m"][2], 0.05)
     finally:
         robot.close()
 
 
-def test_t4_scenario_horizontal_approach_traversal() -> None:
+@pytest.mark.asyncio
+async def test_t4_scenario_horizontal_approach_traversal() -> None:
     """Real-World Scenario 2: Approach target object horizontally across lateral span."""
-    import asyncio
-
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
@@ -454,21 +451,20 @@ def test_t4_scenario_horizontal_approach_traversal() -> None:
 
     try:
         for pt in targets:
-            call = SimpleNamespace(
+            call = DummyToolCall(
                 name="move_to_spatial_point",
                 args={"point": pt, "z_height_cm": 3.0, "approach": "horizontal"},
             )
-            result = asyncio.run(execute_tool_call(call=call, robot=robot))
+            result = await execute_tool_call(call=call, robot=robot)
             assert result["status"] == "success"
             assert result["approach"] == "horizontal"
     finally:
         robot.close()
 
 
-def test_t4_scenario_perimeter_survey_motion() -> None:
+@pytest.mark.asyncio
+async def test_t4_scenario_perimeter_survey_motion() -> None:
     """Real-World Scenario 3: Perimeter sweep across 4 quadrants without discontinuity."""
-    import asyncio
-
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
@@ -484,11 +480,11 @@ def test_t4_scenario_perimeter_survey_motion() -> None:
 
     try:
         for pt in survey_points:
-            call = SimpleNamespace(
+            call = DummyToolCall(
                 name="move_to_spatial_point",
                 args={"point": pt, "z_height_cm": 5.0, "approach": "top_down"},
             )
-            result = asyncio.run(execute_tool_call(call=call, robot=robot))
+            result = await execute_tool_call(call=call, robot=robot)
             assert result["status"] == "success"
             executed_qpos = result["executed_qpos_deg"]
             assert len(executed_qpos) == 6
