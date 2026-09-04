@@ -8,20 +8,24 @@ from ui.stream import (
     get_calibration_status_summary,
     get_default_camera_index,
     prepare_stream_switch,
-    save_workspace_calibration_file,
     set_calibration_overlay,
     set_target_overlay_enabled,
     stream_video,
 )
 
 
-def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blocks) -> None:
+def build_vision_interface(
+    robot: RobotInterface | None, mode: str, demo: gr.Blocks
+) -> tuple[gr.Button | None, gr.Textbox | None, gr.Timer | None]:
     """Build the vision stream interface within the current Gradio context.
 
     Args:
         robot: Initialized robot hardware or simulation controller instance.
         mode: Execution operational mode ('real', 'sim', or 'twin').
         demo: The parent Gradio Blocks app to attach load events to.
+
+    Returns:
+        Tuple of (save_calib_btn, calib_status_box, calib_timer).
     """
     viewer_iframe = (
         '<div style="width: 100%; height: 600px; border-radius: 12px; overflow: hidden; '
@@ -69,7 +73,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 inputs=[calib_chk_sim],
                 outputs=None,
             )
-        return
+        return None, None, None
 
     elif mode == "twin":
         with gr.Tabs():
@@ -140,12 +144,6 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                             scale=1,
                         )
 
-                    save_calib_btn_twin.click(
-                        fn=save_workspace_calibration_file,
-                        inputs=None,
-                        outputs=[calib_status_twin],
-                    )
-
                     calib_timer_twin = gr.Timer(value=1.5, active=True)
                     calib_timer_twin.tick(
                         fn=get_calibration_status_summary,
@@ -193,7 +191,7 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                     outputs=[video_feed],
                     concurrency_limit=None,
                 )
-        return
+        return save_calib_btn_twin, calib_status_twin, calib_timer_twin
 
     # Real mode
     video_feed = gr.Image(
@@ -259,12 +257,6 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
                 scale=1,
             )
 
-        save_calib_btn.click(
-            fn=save_workspace_calibration_file,
-            inputs=None,
-            outputs=[calib_status],
-        )
-
         calib_timer = gr.Timer(value=1.5, active=True)
         calib_timer.tick(
             fn=get_calibration_status_summary,
@@ -313,3 +305,4 @@ def build_vision_interface(robot: RobotInterface | None, mode: str, demo: gr.Blo
         outputs=[video_feed],
         concurrency_limit=None,
     )
+    return save_calib_btn, calib_status, calib_timer
