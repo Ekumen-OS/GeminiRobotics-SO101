@@ -96,10 +96,10 @@ class ArucoWorkspaceCalibrator:
         self.config = {
             "aruco_dictionary": "DICT_4X4_50",
             "marker_ids": {
-                "top_left": 0,
-                "top_right": 1,
-                "bottom_right": 2,
-                "bottom_left": 3,
+                "top_left": 1,
+                "top_right": 2,
+                "bottom_right": 3,
+                "bottom_left": 0,
             },
         }
 
@@ -168,10 +168,10 @@ class ArucoWorkspaceCalibrator:
         corners_cfg = self.config.get("workspace_corners_mm", {})
 
         expected_pairs: list[tuple[str, int]] = [
-            ("top_left", int(marker_ids.get("top_left", 0))),
-            ("top_right", int(marker_ids.get("top_right", 1))),
-            ("bottom_right", int(marker_ids.get("bottom_right", 2))),
-            ("bottom_left", int(marker_ids.get("bottom_left", 3))),
+            ("top_left", int(marker_ids.get("top_left", 1))),
+            ("top_right", int(marker_ids.get("top_right", 2))),
+            ("bottom_right", int(marker_ids.get("bottom_right", 3))),
+            ("bottom_left", int(marker_ids.get("bottom_left", 0))),
         ]
 
         src_pixels: list[list[float]] = []
@@ -369,10 +369,10 @@ class ArucoWorkspaceCalibrator:
         marker_ids = self.config.get("marker_ids", {})
         corners_cfg = self.config.get("workspace_corners_mm", {})
         id_order = [
-            int(marker_ids.get("top_left", 0)),
-            int(marker_ids.get("top_right", 1)),
-            int(marker_ids.get("bottom_right", 2)),
-            int(marker_ids.get("bottom_left", 3)),
+            int(marker_ids.get("top_left", 1)),
+            int(marker_ids.get("top_right", 2)),
+            int(marker_ids.get("bottom_right", 3)),
+            int(marker_ids.get("bottom_left", 0)),
         ]
 
         # Draw polygon: use detected corners if all 4 visible, or projected corners if calibrated
@@ -385,19 +385,19 @@ class ArucoWorkspaceCalibrator:
         elif self.is_calibrated:
             pt_tl = self.robot_mm_to_pixel(
                 float(corners_cfg.get("top_left", {}).get("x", 380)),
-                float(corners_cfg.get("top_left", {}).get("y", 130)),
+                float(corners_cfg.get("top_left", {}).get("y", -190)),
             )
             pt_tr = self.robot_mm_to_pixel(
-                float(corners_cfg.get("top_right", {}).get("x", 380)),
-                float(corners_cfg.get("top_right", {}).get("y", -250)),
+                float(corners_cfg.get("top_right", {}).get("x", 100)),
+                float(corners_cfg.get("top_right", {}).get("y", -190)),
             )
             pt_br = self.robot_mm_to_pixel(
-                float(corners_cfg.get("bottom_right", {}).get("x", 35)),
-                float(corners_cfg.get("bottom_right", {}).get("y", -250)),
+                float(corners_cfg.get("bottom_right", {}).get("x", 100)),
+                float(corners_cfg.get("bottom_right", {}).get("y", 190)),
             )
             pt_bl = self.robot_mm_to_pixel(
-                float(corners_cfg.get("bottom_left", {}).get("x", 35)),
-                float(corners_cfg.get("bottom_left", {}).get("y", 130)),
+                float(corners_cfg.get("bottom_left", {}).get("x", 380)),
+                float(corners_cfg.get("bottom_left", {}).get("y", 190)),
             )
             if all(p is not None for p in [pt_tl, pt_tr, pt_br, pt_bl]):
                 poly_pts = np.array([pt_tl, pt_tr, pt_br, pt_bl], dtype=np.int32).reshape(
@@ -420,17 +420,20 @@ class ArucoWorkspaceCalibrator:
             )
 
         # 3. Draw Robot coordinate axes using true homography projection
-        bl_id = int(marker_ids.get("bottom_left", 3))
-        bl_phys = corners_cfg.get("bottom_left", {"x": 35.0, "y": 130.0})
-        bl_x = float(bl_phys["x"])
-        bl_y = float(bl_phys["y"])
+        # Prefer origin near robot base (top_right, near ruler and robot base)
+        # so +X steps into the workspace (Left) and +Y steps towards front of table (Down)
+        axis_corner_key = "top_right" if "top_right" in corners_cfg else "bottom_left"
+        axis_id = int(marker_ids.get(axis_corner_key, 2))
+        axis_phys = corners_cfg.get(axis_corner_key, {"x": 100.0, "y": -190.0})
+        ox_mm = float(axis_phys["x"])
+        oy_mm = float(axis_phys["y"])
 
         origin: tuple[float, float] | None = None
-        if bl_id in detected_markers:
-            mean_pt = np.mean(detected_markers[bl_id], axis=0)
+        if axis_id in detected_markers:
+            mean_pt = np.mean(detected_markers[axis_id], axis=0)
             origin = (float(mean_pt[0]), float(mean_pt[1]))
         elif self.is_calibrated:
-            origin = self.robot_mm_to_pixel(bl_x, bl_y)
+            origin = self.robot_mm_to_pixel(ox_mm, oy_mm)
 
         if show_axes and origin is not None:
             axis_len_px = 65.0
@@ -439,8 +442,8 @@ class ArucoWorkspaceCalibrator:
 
             if self.is_calibrated and self.inverse_homography is not None:
                 # Step +80mm in physical robot space
-                px_x_step = self.robot_mm_to_pixel(bl_x + 80.0, bl_y)
-                px_y_step = self.robot_mm_to_pixel(bl_x, bl_y + 80.0)
+                px_x_step = self.robot_mm_to_pixel(ox_mm + 80.0, oy_mm)
+                px_y_step = self.robot_mm_to_pixel(ox_mm, oy_mm + 80.0)
 
                 if px_x_step is not None:
                     dx = px_x_step[0] - origin[0]
@@ -474,7 +477,7 @@ class ArucoWorkspaceCalibrator:
             cv2.arrowedLine(annotated, origin_pt, tip_x, (255, 50, 50), 2, tipLength=0.25)
             cv2.putText(
                 annotated,
-                "+X (Forward)",
+                "+X (Robot Fwd)",
                 (tip_x[0] + 5, tip_x[1] + 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
@@ -487,7 +490,7 @@ class ArucoWorkspaceCalibrator:
             cv2.arrowedLine(annotated, origin_pt, tip_y, (50, 255, 50), 2, tipLength=0.25)
             cv2.putText(
                 annotated,
-                "+Y (Left)",
+                "+Y (Robot Left)",
                 (tip_y[0] + 5, tip_y[1] - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
@@ -660,10 +663,10 @@ def generate_calibration_sheet(
     br_cfg = corners.get("bottom_right", {"x": 120, "y": -200})
     bl_cfg = corners.get("bottom_left", {"x": 120, "y": 280})
 
-    x_max = float(tl_cfg["x"])
-    x_min = float(bl_cfg["x"])
-    y_max = float(tl_cfg["y"])  # Left edge (positive)
-    y_min = float(tr_cfg["y"])  # Right edge (negative)
+    all_x = [float(c["x"]) for c in [tl_cfg, tr_cfg, br_cfg, bl_cfg]]
+    all_y = [float(c["y"]) for c in [tl_cfg, tr_cfg, br_cfg, bl_cfg]]
+    x_max, x_min = max(all_x), min(all_x)
+    y_max, y_min = max(all_y), min(all_y)
 
     delta_x = x_max - x_min
     delta_y = y_max - y_min
@@ -674,10 +677,10 @@ def generate_calibration_sheet(
     aruco_dict = cv2.aruco.getPredefinedDictionary(dict_attr)
 
     marker_ids = config_data.get("marker_ids", {})
-    id_tl = int(marker_ids.get("top_left", 0))
-    id_tr = int(marker_ids.get("top_right", 1))
-    id_br = int(marker_ids.get("bottom_right", 2))
-    id_bl = int(marker_ids.get("bottom_left", 3))
+    id_tl = int(marker_ids.get("top_left", 1))
+    id_tr = int(marker_ids.get("top_right", 2))
+    id_br = int(marker_ids.get("bottom_right", 3))
+    id_bl = int(marker_ids.get("bottom_left", 0))
 
     # Create crisp white canvas
     canvas = np.full((sheet_height_px, sheet_width_px, 3), 255, dtype=np.uint8)
@@ -1034,7 +1037,7 @@ def setup_workspace_interactive(
         "aruco_dictionary": cfg.get("aruco_dictionary", "DICT_4X4_50"),
         "marker_ids": cfg.get(
             "marker_ids",
-            {"top_left": 0, "top_right": 1, "bottom_right": 2, "bottom_left": 3},
+            {"top_left": 1, "top_right": 2, "bottom_right": 3, "bottom_left": 0},
         ),
         "marker_size_mm": marker_size,
         "workspace_corners_mm": {

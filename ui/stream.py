@@ -21,6 +21,8 @@ STREAM_TARGET_FPS = 30
 STREAM_FRAME_WIDTH = 640
 STREAM_FRAME_HEIGHT = 480
 
+_global_latest_raw_frame: np.ndarray | None = None
+_global_latest_annotated_frame: np.ndarray | None = None
 _global_latest_frame: np.ndarray | None = None
 _global_frame_lock = threading.Lock()
 
@@ -430,8 +432,12 @@ def get_calibration_status_summary() -> str:
     calib = get_calibrator()
     status = calib.get_calibration_status()
     if status["calibrated"]:
-        err = status["reprojection_error"]
-        err_str = f" (err: {err:.1f}mm)" if err is not None else ""
+        err = status.get("reprojection_error")
+        err_str = (
+            f" (err: {err:.1f}mm)"
+            if isinstance(err, (int, float)) and not isinstance(err, bool)
+            else ""
+        )
         return f"✅ Calibrated{err_str} — {status['markers_detected']}/4 markers visible"
     elif status["markers_detected"] > 0:
         return f"⚠️ Incomplete: {status['markers_detected']}/4 markers visible (need 4)"
@@ -449,10 +455,71 @@ def save_workspace_calibration_file() -> str:
     return calib.save_calibration()
 
 
-def get_latest_jpeg() -> bytes | None:
-    """Get the most recent camera frame from any active stream as a JPEG."""
+def generate_raw_sim_placeholder_pattern() -> np.ndarray:
+    """Generate a clean, un-annotated placeholder frame for MuJoCo sim mode.
+
+    Returns:
+        RGB image frame as a NumPy uint8 array of shape (480, 640, 3).
+    """
+    height, width = 480, 640
+    return np.full((height, width, 3), (20, 35, 45), dtype=np.uint8)
+
+
+def get_latest_raw_jpeg() -> bytes | None:
+    """Get the most recent camera frame as a 100% pristine, un-annotated JPEG.
+
+    Guaranteed free of UI bounding boxes, ArUco annotations, grids, crosshairs,
+    or label badge artifacts for Gemini Multimodal VLA ingestion.
+
+    Returns:
+        JPEG-encoded bytes of the raw RGB frame, or None if unavailable.
+    """
     with _global_frame_lock:
-        frame = _global_latest_frame
+        frame = _global_latest_raw_frame.copy() if _global_latest_raw_frame is not None else None
+
+    if frame is None:
+        from ui.state import get_active_robot
+
+        robot = get_active_robot()
+        if robot is not None and hasattr(robot, "render_rgb_frame"):
+            frame = _SIM_RUNTIME.get_latest_raw_frame(robot)
+
+    if frame is None:
+        frame = generate_raw_sim_placeholder_pattern()
+
+    if frame is None:
+        return None
+
+    # Convert RGB to BGR for standard OpenCV JPEG compression
+    bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    success, encoded = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+    if success:
+        return encoded.tobytes()
+    return None
+
+
+def get_latest_jpeg() -> bytes | None:
+    """Get the most recent camera frame from any active stream as a JPEG with UI overlays.
+
+    Used by Web UI endpoints (e.g. /api/sim_stream) and preview viewers.
+
+    Returns:
+        JPEG-encoded bytes of the annotated RGB frame, or None if unavailable.
+    """
+    with _global_frame_lock:
+        frame = (
+            _global_latest_annotated_frame.copy()
+            if _global_latest_annotated_frame is not None
+            else (
+                _global_latest_frame.copy()
+                if _global_latest_frame is not None
+                else (
+                    _global_latest_raw_frame.copy()
+                    if _global_latest_raw_frame is not None
+                    else None
+                )
+            )
+        )
 
     if frame is None:
         from ui.state import get_active_robot
@@ -473,7 +540,7 @@ def get_latest_jpeg() -> bytes | None:
             frame = draw_model_target_overlay(frame)
 
     bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    success, encoded = cv2.imencode(".jpg", bgr_frame)
+    success, encoded = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     if success:
         return encoded.tobytes()
     return None
@@ -491,53 +558,68 @@ class _SingletonSimRuntime:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._robot: Any | None = None
+        self._latest_raw_frame: np.ndarray | None = None
         self._latest_frame: np.ndarray | None = None
 
     def _loop(self) -> None:
-        global _global_latest_frame
+        global _global_latest_frame, _global_latest_raw_frame, _global_latest_annotated_frame
         frame_interval = 1.0 / STREAM_TARGET_FPS
 
         while not self._stop_event.is_set():
             start = time.time()
 
-            with self._lock:
-                robot = self._robot
+            try:
+                with self._lock:
+                    robot = self._robot
 
-            if robot is None:
-                frame = cv2.resize(
-                    generate_sim_placeholder_pattern(),
-                    (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-            else:
-                with _sim_frame_lock:
+                if robot is None:
+                    raw_frame = cv2.resize(
+                        generate_raw_sim_placeholder_pattern(),
+                        (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                else:
                     sim_steps = _estimate_sim_steps_per_frame(
                         robot=robot,
                         frame_interval=frame_interval,
                     )
                     if hasattr(robot, "step"):
-                        robot.step(sim_steps)
+                        try:
+                            robot.step(sim_steps)
+                        except Exception:
+                            pass
 
-                    frame = _sim_frame_with_fallback(
+                    raw_frame = _sim_frame_with_fallback(
                         robot=robot,
                         width=STREAM_FRAME_WIDTH,
                         height=STREAM_FRAME_HEIGHT,
                     )
 
-            with self._frame_lock:
-                self._latest_frame = frame
+                with self._frame_lock:
+                    self._latest_raw_frame = raw_frame
+                    self._latest_frame = raw_frame
 
-            with _global_frame_lock:
-                _global_latest_frame = frame.copy() if frame is not None else None
+                with _global_frame_lock:
+                    _global_latest_raw_frame = raw_frame.copy() if raw_frame is not None else None
+                    _global_latest_annotated_frame = (
+                        raw_frame.copy() if raw_frame is not None else None
+                    )
+                    _global_latest_frame = raw_frame.copy() if raw_frame is not None else None
+            except Exception:
+                pass
 
             elapsed = time.time() - start
             if elapsed < frame_interval:
-                time.sleep(frame_interval - elapsed)
+                self._stop_event.wait(timeout=max(0.0, frame_interval - elapsed))
 
     def ensure_started(self, robot: Any | None) -> None:
         """Start worker once and update active robot reference."""
         with self._lock:
-            self._robot = robot
+            if self._robot != robot:
+                self._robot = robot
+                with self._frame_lock:
+                    self._latest_raw_frame = None
+                    self._latest_frame = None
             if self._thread is not None and self._thread.is_alive():
                 return
 
@@ -549,13 +631,68 @@ class _SingletonSimRuntime:
             )
             self._thread.start()
 
+    def get_latest_raw_frame(self, robot: Any | None) -> np.ndarray:
+        """Return most recent un-annotated raw simulation frame, bootstrapping runtime if needed.
+
+        Args:
+            robot: Active simulation robot object.
+
+        Returns:
+            RGB frame as uint8 numpy array.
+        """
+        self.ensure_started(robot)
+
+        with self._frame_lock:
+            if self._latest_raw_frame is not None:
+                return self._latest_raw_frame.copy()
+            if self._latest_frame is not None:
+                return self._latest_frame.copy()
+
+        if robot is not None and hasattr(robot, "render_rgb_frame"):
+            frame = _sim_frame_with_fallback(
+                robot=robot,
+                width=STREAM_FRAME_WIDTH,
+                height=STREAM_FRAME_HEIGHT,
+            )
+            if frame is not None:
+                with self._frame_lock:
+                    self._latest_raw_frame = frame
+                    self._latest_frame = frame
+                return frame.copy()
+
+        # First frame race: return deterministic raw fallback until worker publishes one.
+        return cv2.resize(
+            generate_raw_sim_placeholder_pattern(),
+            (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
     def get_latest_frame(self, robot: Any | None) -> np.ndarray:
-        """Return most recent frame, bootstrapping runtime if needed."""
+        """Return most recent frame, bootstrapping runtime if needed.
+
+        Args:
+            robot: Active simulation robot object.
+
+        Returns:
+            RGB frame as uint8 numpy array.
+        """
         self.ensure_started(robot)
 
         with self._frame_lock:
             if self._latest_frame is not None:
                 return self._latest_frame.copy()
+
+        if robot is not None and hasattr(robot, "render_rgb_frame"):
+            frame = _sim_frame_with_fallback(
+                robot=robot,
+                width=STREAM_FRAME_WIDTH,
+                height=STREAM_FRAME_HEIGHT,
+            )
+            if frame is not None:
+                with self._frame_lock:
+                    self._latest_raw_frame = frame
+                    self._latest_frame = frame
+                return frame.copy()
 
         # First frame race: return deterministic fallback until worker publishes one.
         return cv2.resize(
@@ -564,6 +701,25 @@ class _SingletonSimRuntime:
             interpolation=cv2.INTER_LINEAR,
         )
 
+    def get_latest_raw_jpeg(self, robot: Any | None = None) -> bytes | None:
+        """Return the most recent un-annotated raw frame as JPEG encoded bytes.
+
+        Args:
+            robot: Active simulation robot object.
+
+        Returns:
+            Pristine JPEG bytes, or None if encoding fails.
+        """
+        frame = self.get_latest_raw_frame(robot)
+        if frame is None:
+            return None
+        # Convert RGB to BGR for cv2.imencode to produce correct JPEG colors.
+        bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        success, encoded = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+        if success:
+            return encoded.tobytes()
+        return None
+
     def get_latest_jpeg(self, robot: Any | None = None) -> bytes | None:
         """Return the most recent frame as JPEG encoded bytes."""
         frame = self.get_latest_frame(robot)
@@ -571,21 +727,25 @@ class _SingletonSimRuntime:
             return None
         # Convert RGB to BGR for cv2.imencode to produce correct JPEG colors.
         bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        success, encoded = cv2.imencode(".jpg", bgr_frame)
+        success, encoded = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         if success:
             return encoded.tobytes()
         return None
 
     def stop(self) -> None:
         """Stop worker thread cleanly."""
+        self._stop_event.set()
         with self._lock:
             thread = self._thread
             self._thread = None
             self._robot = None
 
-        self._stop_event.set()
         if thread is not None and thread.is_alive():
-            thread.join(timeout=1.0)
+            thread.join(timeout=2.0)
+
+        with self._frame_lock:
+            self._latest_raw_frame = None
+            self._latest_frame = None
 
 
 _SIM_RUNTIME = _SingletonSimRuntime()
@@ -1058,12 +1218,18 @@ def _estimate_sim_steps_per_frame(robot: Any | None, frame_interval: float) -> i
     if robot is None:
         return 1
 
-    model = getattr(robot, "model", None)
-    timestep = getattr(getattr(model, "opt", None), "timestep", None)
-    if timestep is None:
+    try:
+        model = getattr(robot, "model", None)
+        opt = getattr(model, "opt", None)
+        timestep = getattr(opt, "timestep", None)
+        if timestep is None:
+            return 1
+        ts_float = float(timestep)
+        if ts_float <= 0.0:
+            return 1
+        return max(1, int(round(frame_interval / ts_float)))
+    except Exception:
         return 1
-
-    return max(1, int(round(frame_interval / float(timestep))))
 
 
 def _sim_frame_with_fallback(
@@ -1140,7 +1306,7 @@ def stream_video(
     Yields:
         NumPy array of shape (H, W, 3) containing RGB video frames.
     """
-    global _global_latest_frame
+    global _global_latest_frame, _global_latest_raw_frame, _global_latest_annotated_frame
     global _current_stream_id
     my_stream_id = time.time_ns()
     _current_stream_id = my_stream_id
@@ -1154,14 +1320,23 @@ def stream_video(
         calib = get_calibrator(mode="sim")
         while _current_stream_id == my_stream_id:
             start = time.time()
-            frame = get_sim_video_frame(robot=robot)
-            if is_calibration_overlay_enabled() and calib.is_calibrated:
-                frame = calib.draw_workspace_overlay(frame, detected_markers={}, show_markers=False)
-            if is_target_overlay_enabled():
-                frame = draw_model_target_overlay(frame)
+            raw_frame = get_sim_video_frame(robot=robot)
             with _global_frame_lock:
-                _global_latest_frame = frame.copy()
-            yield frame
+                _global_latest_raw_frame = raw_frame.copy()
+
+            ui_frame = raw_frame.copy()
+            if is_calibration_overlay_enabled() and calib.is_calibrated:
+                ui_frame = calib.draw_workspace_overlay(
+                    ui_frame, detected_markers={}, show_markers=False
+                )
+            if is_target_overlay_enabled():
+                ui_frame = draw_model_target_overlay(ui_frame)
+
+            with _global_frame_lock:
+                _global_latest_annotated_frame = ui_frame.copy()
+                _global_latest_frame = ui_frame.copy()
+
+            yield ui_frame
             elapsed = time.time() - start
             if elapsed < frame_interval:
                 time.sleep(frame_interval - elapsed)
@@ -1182,7 +1357,15 @@ def stream_video(
                     (target_width, target_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
-                yield _compose_twin_frame(top_frame, bottom_frame)
+                with _global_frame_lock:
+                    _global_latest_raw_frame = top_frame.copy()
+
+                final_frame = _compose_twin_frame(top_frame, bottom_frame)
+                with _global_frame_lock:
+                    _global_latest_annotated_frame = final_frame.copy()
+                    _global_latest_frame = final_frame.copy()
+
+                yield final_frame
                 elapsed = time.time() - start
                 if elapsed < frame_interval:
                     time.sleep(frame_interval - elapsed)
@@ -1221,33 +1404,40 @@ def stream_video(
                 if camera_active and cap is not None:
                     ret, frame = cap.read()
                     if ret and frame is not None:
-                        bottom_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        bottom_raw = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     else:
                         camera_active = False
                         print("[WARN] Twin bottom camera read failed. Switching to mock fallback.")
-                        bottom_frame = generate_mock_test_pattern(camera_index)
+                        bottom_raw = generate_mock_test_pattern(camera_index)
                 else:
-                    bottom_frame = generate_mock_test_pattern(camera_index)
+                    bottom_raw = generate_mock_test_pattern(camera_index)
 
-                bottom_frame = cv2.resize(
-                    bottom_frame,
+                bottom_raw = cv2.resize(
+                    bottom_raw,
                     (target_width, target_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
+
+                with _global_frame_lock:
+                    _global_latest_raw_frame = bottom_raw.copy()
+
+                bottom_ui = bottom_raw.copy()
                 if camera_active:
                     calib = get_calibrator()
-                    detected = calib.detect_markers(bottom_frame)
+                    detected = calib.detect_markers(bottom_ui)
                     if len(detected) >= 4:
                         calib.update_homography(detected)
                     if is_calibration_overlay_enabled():
-                        bottom_frame = calib.draw_workspace_overlay(bottom_frame, detected)
+                        bottom_ui = calib.draw_workspace_overlay(bottom_ui, detected)
 
                 if is_target_overlay_enabled():
-                    bottom_frame = draw_model_target_overlay(bottom_frame)
+                    bottom_ui = draw_model_target_overlay(bottom_ui)
 
-                final_frame = _compose_twin_frame(top_frame, bottom_frame)
+                final_frame = _compose_twin_frame(top_frame, bottom_ui)
                 with _global_frame_lock:
+                    _global_latest_annotated_frame = final_frame.copy()
                     _global_latest_frame = final_frame.copy()
+
                 yield final_frame
 
                 elapsed = time.time() - start
@@ -1260,7 +1450,12 @@ def stream_video(
 
     # Mode REAL: Live UVC hardware streaming with OpenCV & MJPG codec
     if camera_index == -2:
-        yield generate_no_camera_pattern()
+        no_cam = generate_no_camera_pattern()
+        with _global_frame_lock:
+            _global_latest_raw_frame = generate_raw_sim_placeholder_pattern()
+            _global_latest_annotated_frame = no_cam.copy()
+            _global_latest_frame = no_cam.copy()
+        yield no_cam
         return
 
     yield generate_loading_pattern(camera_index, "Acquiring camera stream lock...")
@@ -1310,27 +1505,33 @@ def stream_video(
                 if not ret or frame is None:
                     print(f"[WARN] Read failed for index {camera_index}; using fallback.")
                     camera_active = False
-                    frame_rgb = generate_mock_test_pattern(camera_index)
+                    raw_frame = generate_mock_test_pattern(camera_index)
                 else:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    raw_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             else:
-                frame_rgb = generate_mock_test_pattern(camera_index)
+                raw_frame = generate_mock_test_pattern(camera_index)
+
+            with _global_frame_lock:
+                _global_latest_raw_frame = raw_frame.copy()
+
+            ui_frame = raw_frame.copy()
 
             if camera_active:
                 calib = get_calibrator()
-                detected = calib.detect_markers(frame_rgb)
+                detected = calib.detect_markers(ui_frame)
                 if len(detected) >= 4:
                     calib.update_homography(detected)
                 if is_calibration_overlay_enabled():
-                    frame_rgb = calib.draw_workspace_overlay(frame_rgb, detected)
+                    ui_frame = calib.draw_workspace_overlay(ui_frame, detected)
 
             if is_target_overlay_enabled():
-                frame_rgb = draw_model_target_overlay(frame_rgb)
+                ui_frame = draw_model_target_overlay(ui_frame)
 
             with _global_frame_lock:
-                _global_latest_frame = frame_rgb.copy()
+                _global_latest_annotated_frame = ui_frame.copy()
+                _global_latest_frame = ui_frame.copy()
 
-            yield frame_rgb
+            yield ui_frame
 
             elapsed = time.time() - start_time
             if elapsed < frame_interval:

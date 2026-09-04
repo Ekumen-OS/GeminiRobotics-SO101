@@ -1,6 +1,8 @@
 """Robot tool declarations and execution adapters for Gemini Live API."""
 
 import asyncio
+import datetime
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -9,6 +11,22 @@ import numpy as np
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.interface import RobotInterface
+
+
+def _log(module: str, tag: str, message: str, stream: Any = None) -> None:
+    """Format and print an ISO-timestamped diagnostic log entry.
+
+    Args:
+        module: Component name (e.g. 'Tools').
+        tag: Semantic tag (e.g. 'EXEC', 'WARN', 'ERROR').
+        message: Log message content.
+        stream: Output stream (defaults to sys.stderr for ERROR/WARN, sys.stdout otherwise).
+    """
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    if stream is None:
+        stream = sys.stderr if tag in ("ERROR", "WARN") else sys.stdout
+    print(f"[{now_str}] [{module}] [{tag}] {message}", file=stream, flush=True)
+
 
 # Gripper limits derived from JOINT_LIMITS in degrees
 GRIPPER_OPEN_DEG = JOINT_LIMITS["gripper"][1]
@@ -141,8 +159,17 @@ ROBOT_TOOL_DECLARATIONS = [
                         "Use 0 for grasping contact at table level, 3-5 for safe hover."
                     ),
                 },
+                "approach": {
+                    "type": "STRING",
+                    "description": (
+                        "Approach mode (REQUIRED): 'top_down' (vertical grasp perpendicular "
+                        "to table, MANDATORY for all tabletop pick-and-place, grasping, and "
+                        "table descends) or 'horizontal' (lateral approach)."
+                    ),
+                    "enum": ["top_down", "horizontal"],
+                },
             },
-            "required": ["point"],
+            "required": ["point", "approach"],
         },
     },
 ]
@@ -180,18 +207,19 @@ DEFAULT_HOVER_Z = 0.03  # 3 cm above table
 
 
 def image_point_to_xyz(
-    point: list[float] | np.ndarray,
-    hover_z: float = DEFAULT_HOVER_Z,
+    point: list[float],
+    hover_z: float = 0.03,
     img_shape: tuple[int, int] = (480, 640),
+    mode: str | None = None,
 ) -> np.ndarray:
-    """Map a normalized [y, x] image coordinate to a 3D robot-frame position.
-
-    Requires an active ArUco workspace calibration homography.
+    """Transform a normalized Gemini coordinate [y, x] to 3D robot base XYZ.
 
     Args:
-        point: Normalized [y, x] coordinate where each value is in 0-1000.
+        point: Normalized image point [y, x] where 0 <= y, x <= 1000.
         hover_z: Height above the table surface in metres.
         img_shape: Frame dimensions as (height, width).
+        mode: Optional operational mode ('real', 'sim', 'twin'). If None, resolved
+            automatically from active robot state.
 
     Returns:
         A (3,) numpy array [X, Y, Z] in the robot base frame (metres).
@@ -199,12 +227,42 @@ def image_point_to_xyz(
     Raises:
         RuntimeError: If the workspace is not calibrated.
     """
-    from robot.calibration import DEFAULT_SIM_SAVE_PATH
+    from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
+    from ui.state import get_active_robot
     from ui.stream import get_calibrator
 
-    calib = get_calibrator()
-    if calib is not None and not calib.is_calibrated and DEFAULT_SIM_SAVE_PATH.exists():
-        calib.load_calibration(DEFAULT_SIM_SAVE_PATH)
+    if mode is None:
+        active_robot = get_active_robot()
+        is_sim = False
+        if active_robot is not None:
+            mode_attr = getattr(active_robot, "mode", None)
+            if mode_attr == "sim":
+                is_sim = True
+            elif mode_attr == "real":
+                is_sim = False
+            elif hasattr(active_robot, "render_rgb_frame") or hasattr(active_robot, "model"):
+                is_sim = True
+        active_mode = "sim" if is_sim else "real"
+    else:
+        active_mode = mode
+        is_sim = active_mode == "sim"
+
+    calib = get_calibrator(mode=active_mode)
+    target_path = DEFAULT_SIM_SAVE_PATH if is_sim else DEFAULT_SAVE_PATH
+
+    if calib is not None:
+        if is_sim and (getattr(calib, "mode", None) != "sim" or not calib.is_calibrated):
+            if target_path.exists():
+                calib.load_calibration(target_path)
+                calib.mode = "sim"
+            else:
+                from simulation.sim_calibration import init_sim_workspace_calibration
+
+                calib = init_sim_workspace_calibration(calibrator=calib)
+        elif not is_sim and (getattr(calib, "mode", None) != "real" or not calib.is_calibrated):
+            if target_path.exists():
+                calib.load_calibration(target_path)
+                calib.mode = "real"
 
     if calib is None or not calib.is_calibrated:
         raise RuntimeError(
@@ -241,9 +299,11 @@ def validate_and_clamp_joints(qpos_deg: list[float]) -> tuple[list[float], list[
             min_val, max_val = JOINT_LIMITS[jname]
             clamped_val = min(max(angle, min_val), max_val)
             if clamped_val != angle:
-                warnings.append(
+                warn_msg = (
                     f"{jname} was clamped from {angle:.1f}° to {clamped_val:.1f}° (limit exceeded)"
                 )
+                warnings.append(warn_msg)
+                _log("Tools", "WARN", warn_msg)
             clamped_qpos_deg.append(clamped_val)
         else:
             clamped_qpos_deg.append(angle)
@@ -275,14 +335,26 @@ async def execute_tool_call(
         return {"status": "success", "message": message_text}
 
     if robot is None:
-        return {"error": "RobotInterface is not initialized or injected."}
+        err_msg = "RobotInterface is not initialized or injected."
+        _log("Tools", "ERROR", err_msg)
+        return {"error": err_msg}
+
+    try:
+        from ui.state import get_active_robot, set_active_robot
+
+        if get_active_robot() is None:
+            set_active_robot(robot)
+    except Exception:
+        pass
 
     try:
         if name == "move_to_pose":
             qpos_deg = args.get("qpos", [])
             duration_sec = args.get("duration_sec", 1.0)
             if len(qpos_deg) != 6:
-                return {"error": f"move_to_pose expects 6 joint angles, got {len(qpos_deg)}"}
+                err_msg = f"move_to_pose expects 6 joint angles, got {len(qpos_deg)}"
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             qpos_rad = np.radians(clamped_qpos)
             robot.move_to_pose(qpos_rad, duration_sec=duration_sec)
@@ -294,7 +366,9 @@ async def execute_tool_call(
         elif name == "set_joint_positions":
             qpos_deg = args.get("qpos", [])
             if len(qpos_deg) != 6:
-                return {"error": f"set_joint_positions expects 6 joint angles, got {len(qpos_deg)}"}
+                err_msg = f"set_joint_positions expects 6 joint angles, got {len(qpos_deg)}"
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             qpos_rad = np.radians(clamped_qpos)
             robot.set_joint_positions(qpos_rad)
@@ -318,7 +392,8 @@ async def execute_tool_call(
                 "status": "success",
                 "executed_qpos_deg": clamped_qpos,
                 "visual_hint": (
-                    "Gripper is now OPEN. Look at the camera frame to visually verify object state."
+                    "Gripper opened. Inspect camera frame to visually verify object release and "
+                    "clearance."
                 ),
             }
             if warnings:
@@ -335,7 +410,7 @@ async def execute_tool_call(
                 "status": "success",
                 "executed_qpos_deg": clamped_qpos,
                 "visual_hint": (
-                    "Gripper closed. Lift arm to hover (z=5cm) and inspect camera frame "
+                    "Gripper closed. Lift arm to hover (z_height_cm=5.0) and inspect camera frame "
                     "to visually confirm if object is held between jaws or still on table."
                 ),
             }
@@ -347,7 +422,9 @@ async def execute_tool_call(
             pose_name = args.get("pose_name", "HOME").upper()
             if pose_name not in PRESET_POSES:
                 available_poses = list(PRESET_POSES.keys())
-                return {"error": f"Unknown preset pose: {pose_name}. Available: {available_poses}"}
+                err_msg = f"Unknown preset pose: {pose_name}. Available: {available_poses}"
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
             target_rad = PRESET_POSES[pose_name]
             robot.move_to_pose(target_rad, duration_sec=1.0)
             target_deg = [float(v) for v in np.degrees(target_rad)]
@@ -358,14 +435,17 @@ async def execute_tool_call(
             }
             if pose_name == "HOME":
                 response["visual_hint"] = (
-                    "Arm is now at HOME pose with clear workspace view. "
-                    "Inspect the fresh camera frame to locate target object coordinates."
+                    "Arm is at HOME pose with clear workspace view. "
+                    "Inspect fresh camera frame to locate target object coordinates [y, x] at "
+                    "bottom contact center."
                 )
             return response
 
         elif name == "get_end_effector_pose":
             if not hasattr(robot, "get_end_effector_pose"):
-                return {"error": "End effector pose is not available in real physical mode."}
+                err_msg = "End effector pose is not available in real physical mode."
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
             pos, mat = robot.get_end_effector_pose()
             return {
                 "position": pos.tolist(),
@@ -375,26 +455,89 @@ async def execute_tool_call(
         elif name == "move_to_spatial_point":
             point = args.get("point", [])
             if len(point) != 2:
-                return {
-                    "error": f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
-                }
+                err_msg = f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
+
+            approach = (
+                str(args.get("approach", "")).strip().lower().replace("-", "_").replace(" ", "_")
+            )
+            if not approach or approach not in ("top_down", "horizontal"):
+                err_msg = (
+                    "move_to_spatial_point requires 'approach' parameter "
+                    "('top_down' or 'horizontal')"
+                )
+                _log("Tools", "ERROR", err_msg)
+                return {"error": err_msg}
+
+            # Visual refinement via OpenCV multi-color salient object detector
+            if get_latest_jpeg_fn:
+                try:
+                    raw_jpeg = get_latest_jpeg_fn()
+                    if raw_jpeg:
+                        import cv2
+
+                        from robot.vision_detector import refine_point_to_nearest_object
+
+                        nparr = np.frombuffer(raw_jpeg, np.uint8)
+                        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if frame_bgr is not None:
+                            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                            refined_pt, matched_obj = refine_point_to_nearest_object(
+                                point, frame_rgb
+                            )
+                            if matched_obj is not None and (
+                                abs(refined_pt[0] - point[0]) > 5
+                                or abs(refined_pt[1] - point[1]) > 5
+                            ):
+                                _log(
+                                    "Tools",
+                                    "EXEC",
+                                    f"Auto-refined coordinate [{point[0]:.0f}, {point[1]:.0f}] "
+                                    f"→ [{refined_pt[0]:.0f}, {refined_pt[1]:.0f}] "
+                                    f"(detected {matched_obj['color']} object)",
+                                )
+                                point = refined_pt
+                except Exception as e:
+                    _log("Tools", "WARN", f"Visual refinement skipped: {e}")
+
             z_height_cm = float(args.get("z_height_cm", 3.0))
             # Clamp height to reasonable safety bounds [0.0cm, 20.0cm]
             z_height_cm = max(0.0, min(20.0, z_height_cm))
             hover_z = z_height_cm / 100.0
-            target_xyz = image_point_to_xyz(point, hover_z=hover_z)
-            print(
-                f"[Tools] move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
-                f"(z={z_height_cm:.1f}cm) → XYZ "
-                f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]"
+            robot_is_sim = (
+                getattr(robot, "mode", None) == "sim"
+                or hasattr(robot, "render_rgb_frame")
+                or hasattr(robot, "model")
+            )
+            target_xyz = image_point_to_xyz(
+                point,
+                hover_z=hover_z,
+                mode="sim" if robot_is_sim else None,
+            )
+            _log(
+                "Tools",
+                "EXEC",
+                f"move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
+                f"(z={z_height_cm:.1f}cm, approach={approach}) → XYZ "
+                f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]",
             )
 
             # Update live visual target overlay on camera stream
             try:
                 from ui.stream import get_model_targets, set_model_targets
 
+                user_label = args.get("label")
+                if user_label and str(user_label).strip():
+                    badge_name = str(user_label).strip().upper()
+                elif "matched_obj" in locals() and matched_obj and "color" in matched_obj:
+                    badge_name = f"{matched_obj['color'].upper()} CUBE"
+                else:
+                    badge_name = "TARGET"
+
                 active_label = (
-                    f"🎯 ACTIVE [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)"
+                    f"[{badge_name}] [{int(point[0])}, {int(point[1])}] "
+                    f"(z={z_height_cm:.1f}cm, {approach})"
                 )
                 active_target = {
                     "point": (float(point[0]), float(point[1])),
@@ -427,6 +570,7 @@ async def execute_tool_call(
             solved_qpos = ik.solve_ik(
                 target_pos=target_xyz,
                 initial_qpos=current_rad,
+                approach=approach,
                 null_weight=1e-3,
             )
             # Retain current gripper joint angle (joint 5)
@@ -441,26 +585,51 @@ async def execute_tool_call(
                 "status": "success",
                 "target_xyz_m": target_xyz.tolist(),
                 "executed_qpos_deg": clamped_qpos,
+                "approach": approach,
             }
+            if get_latest_jpeg_fn:
+                try:
+                    import cv2
+
+                    from robot.perception import compute_visual_alignment
+
+                    raw_jpeg = get_latest_jpeg_fn()
+                    if raw_jpeg:
+                        nparr = np.frombuffer(raw_jpeg, np.uint8)
+                        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if frame_bgr is not None:
+                            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                            response["perception"] = compute_visual_alignment(
+                                frame_rgb=frame_rgb,
+                                target_point_1000=point,
+                            )
+                except Exception as e:
+                    _log("Tools", "WARN", f"Perception computation skipped: {e}")
             if z_height_cm >= 3.0:
                 response["visual_hint"] = (
-                    "Arm reached hover height (z>=3cm). Inspect the camera frame "
-                    "to visually verify object state before taking the next action."
+                    "Arm reached hover position (z>=3cm). "
+                    "Visual Verification Loop: Inspect the new camera frame, identify gripper "
+                    "position [y_g, x_g] vs target [y_t, x_t], state the relative error [dy, dx], "
+                    "and correct or confirm alignment before descending."
                 )
             else:
                 response["visual_hint"] = (
-                    f"Arm reached target height (z={z_height_cm}cm). Inspect the camera frame "
-                    "to visually verify object state and alignment before proceeding."
+                    f"Arm reached contact height (z={z_height_cm:.1f}cm). Visually verify gripper "
+                    "jaws surround the target contact center before closing."
                 )
             if warnings:
                 response["warnings"] = warnings
             return response
 
         else:
-            return {"error": f"Unknown tool called: {name}"}
+            err_msg = f"Unknown tool called: {name}"
+            _log("Tools", "ERROR", err_msg)
+            return {"error": err_msg}
 
     except Exception as e:
-        return {"error": f"Exception during execution of {name}: {e}"}
+        err_msg = f"Exception during execution of {name}: {e}"
+        _log("Tools", "ERROR", err_msg)
+        return {"error": err_msg}
 
 
 def execute_tool_call_sync(

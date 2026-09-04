@@ -1,28 +1,28 @@
 {
   "aruco_dictionary": "DICT_4X4_50",
   "marker_ids": {
-    "top_left": 0,
-    "top_right": 1,
-    "bottom_right": 2,
-    "bottom_left": 3
+    "top_left": 1,
+    "top_right": 2,
+    "bottom_right": 3,
+    "bottom_left": 0
   },
   "marker_size_mm": 40.0,
   "workspace_corners_mm": {
     "top_left": {
       "x": 380.0,
-      "y": 130.0
+      "y": -190.0
     },
     "top_right": {
-      "x": 380.0,
-      "y": -250.0
+      "x": 100.0,
+      "y": -190.0
     },
     "bottom_right": {
       "x": 100.0,
-      "y": -250.0
+      "y": 190.0
     },
     "bottom_left": {
-      "x": 100.0,
-      "y": 130.0
+      "x": 380.0,
+      "y": 190.0
     }
   },
   "default_hover_z_mm": 30.0,

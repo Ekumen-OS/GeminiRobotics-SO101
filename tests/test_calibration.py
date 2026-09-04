@@ -33,13 +33,18 @@ def test_homography_estimation_and_roundtrip() -> None:
     """Test homography computation from known pixel correspondences and roundtrip projection."""
     calibrator = ArucoWorkspaceCalibrator()
 
+    marker_ids = calibrator.config.get("marker_ids", {})
+    id_tl = int(marker_ids.get("top_left", 1))
+    id_tr = int(marker_ids.get("top_right", 2))
+    id_br = int(marker_ids.get("bottom_right", 3))
+    id_bl = int(marker_ids.get("bottom_left", 0))
+
     # Known pixel corners in a 640x480 image
-    # Top-Left (ID 0), Top-Right (ID 1), Bottom-Right (ID 2), Bottom-Left (ID 3)
     mock_detected = {
-        0: np.array([[100, 50], [140, 50], [140, 90], [100, 90]], dtype=np.float32),
-        1: np.array([[500, 50], [540, 50], [540, 90], [500, 90]], dtype=np.float32),
-        2: np.array([[500, 400], [540, 400], [540, 440], [500, 440]], dtype=np.float32),
-        3: np.array([[100, 400], [140, 400], [140, 440], [100, 440]], dtype=np.float32),
+        id_tl: np.array([[100, 50], [140, 50], [140, 90], [100, 90]], dtype=np.float32),
+        id_tr: np.array([[500, 50], [540, 50], [540, 90], [500, 90]], dtype=np.float32),
+        id_br: np.array([[500, 400], [540, 400], [540, 440], [500, 440]], dtype=np.float32),
+        id_bl: np.array([[100, 400], [140, 400], [140, 440], [100, 440]], dtype=np.float32),
     }
 
     success = calibrator.update_homography(mock_detected)
@@ -291,7 +296,7 @@ def test_sim_spatial_point_execution() -> None:
     try:
         call = SimpleNamespace(
             name="move_to_spatial_point",
-            args={"point": [500.0, 500.0], "z_height_cm": 3.0},
+            args={"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
         )
         result = asyncio.run(execute_tool_call(call=call, robot=robot))
         assert result.get("status") == "success"
@@ -302,3 +307,149 @@ def test_sim_spatial_point_execution() -> None:
         assert np.isclose(target_xyz[2], 0.03)
     finally:
         robot.close()
+
+
+def test_f1_marker_id_harmonization_across_subsystems() -> None:
+    """Validate ArUco marker ID standardization (1:TL, 2:TR, 3:BR, 0:BL).
+
+    Checks across config, code, and prompt.
+    """
+    import json
+
+    from agent.vla_controller import VLAController
+    from robot.calibration import DEFAULT_CONFIG_PATH
+
+    # 1. Check workspace_calibration.json
+    assert DEFAULT_CONFIG_PATH.exists()
+    cfg = json.loads(DEFAULT_CONFIG_PATH.read_text())
+    marker_ids = cfg.get("marker_ids", {})
+    assert marker_ids["top_left"] == 1
+    assert marker_ids["top_right"] == 2
+    assert marker_ids["bottom_right"] == 3
+    assert marker_ids["bottom_left"] == 0
+
+    # 2. Check calibrator fallback config
+    fallback_calib = ArucoWorkspaceCalibrator(config_path="/tmp/non_existent_calibration.json")
+    assert fallback_calib.config["marker_ids"]["top_left"] == 1
+    assert fallback_calib.config["marker_ids"]["top_right"] == 2
+    assert fallback_calib.config["marker_ids"]["bottom_right"] == 3
+    assert fallback_calib.config["marker_ids"]["bottom_left"] == 0
+
+    # 3. Check simulation scene.xml geoms & materials
+    scene_path = Path(__file__).resolve().parent.parent / "simulation" / "assets" / "scene.xml"
+    scene_text = scene_path.read_text()
+    assert 'name="aruco_tl_0"' in scene_text and 'material="mat_marker_1"' in scene_text
+    assert 'name="aruco_tr_1"' in scene_text and 'material="mat_marker_2"' in scene_text
+    assert 'name="aruco_br_2"' in scene_text and 'material="mat_marker_3"' in scene_text
+    assert 'name="aruco_bl_3"' in scene_text and 'material="mat_marker_0"' in scene_text
+
+    # 4. Check VLAController system prompt text
+    controller = VLAController(mode="sim")
+    sys_prompt = controller.history[0]["content"]
+    expected_str = "ID 1 (Top-Left), ID 2 (Top-Right), ID 3 (Bottom-Right), ID 0 (Bottom-Left)"
+    assert expected_str in sys_prompt
+
+
+def test_f2_homography_lateral_y_parity_and_red_cube_grounding() -> None:
+    """Validate positive lateral Y mapping and parity for benchmark [760, 484]."""
+    from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
+    from robot.cartesian_ik import CartesianIK
+
+    assert DEFAULT_SAVE_PATH.exists()
+    assert DEFAULT_SIM_SAVE_PATH.exists()
+
+    c_real = ArucoWorkspaceCalibrator(mode="real")
+    c_sim = ArucoWorkspaceCalibrator(mode="sim")
+
+    pt = [760.0, 484.0]
+    xyz_real = c_real.gemini_to_robot_xyz(pt, z_m=0.03)
+    xyz_sim = c_sim.gemini_to_robot_xyz(pt, z_m=0.03)
+
+    # Both must match with high accuracy
+    np.testing.assert_allclose(xyz_real, xyz_sim, atol=2e-3)
+
+    # Check Cartesian target values
+    assert 0.18 <= xyz_real[0] <= 0.22  # X ~ 0.197m
+    assert 0.12 <= xyz_real[1] <= 0.17  # Y ~ +0.15m (positive lateral sign)
+    assert np.isclose(xyz_real[2], 0.03)
+
+    # Solve IK and verify shoulder pan rotates towards the camera (negative pan, ~ -42 deg)
+    ik = CartesianIK()
+    q_real = ik.solve_ik(xyz_real)
+    pan_deg_real = float(np.degrees(q_real[0]))
+    assert -46.0 <= pan_deg_real <= -38.0, f"Pan angle out of expected range: {pan_deg_real} deg"
+
+    q_sim = ik.solve_ik(xyz_sim)
+    pan_deg_sim = float(np.degrees(q_sim[0]))
+    assert -46.0 <= pan_deg_sim <= -38.0, f"Sim pan angle out of expected range: {pan_deg_sim} deg"
+
+
+def test_f3_image_point_to_xyz_mode_routing() -> None:
+    """Validate active robot mode context routing in agent.tools.image_point_to_xyz."""
+    from agent.tools import image_point_to_xyz
+    from simulation.sim_robot import SO101Robot
+    from ui.state import set_active_robot
+
+    # 1. Explicit mode argument
+    pt = [760.0, 484.0]
+    xyz_sim = image_point_to_xyz(pt, hover_z=0.03, mode="sim")
+    xyz_real = image_point_to_xyz(pt, hover_z=0.03, mode="real")
+    assert 0.12 <= xyz_sim[1] <= 0.17
+    assert 0.12 <= xyz_real[1] <= 0.17
+    np.testing.assert_allclose(xyz_sim, xyz_real, atol=2e-3)
+
+    # 2. Dynamic resolution from active robot in simulation
+    sim_robot = SO101Robot(render_viewer=False)
+    try:
+        set_active_robot(sim_robot)
+        xyz_auto = image_point_to_xyz(pt, hover_z=0.03)
+        assert 0.12 <= xyz_auto[1] <= 0.17
+        np.testing.assert_allclose(xyz_auto, xyz_sim, atol=1e-4)
+    finally:
+        set_active_robot(None)
+        sim_robot.close()
+
+
+def test_f4_reachability_and_fov_coverage() -> None:
+    """Validate all reachable workspace coordinates (r <= 391mm) produce valid IK.
+
+    Also verifies target coordinates fall within camera FOV.
+    """
+    import mujoco
+
+    from agent.tools import validate_and_clamp_joints
+    from robot.cartesian_ik import CartesianIK
+    from robot.constants import PRESET_POSES
+
+    calib = ArucoWorkspaceCalibrator(mode="sim")
+    ik = CartesianIK()
+    neutral_seed = PRESET_POSES["HOME"].copy()
+
+    # Test 5x5 grid across physical workspace span
+    for x_m in np.linspace(0.14, 0.35, 5):
+        for y_m in np.linspace(-0.19, 0.19, 5):
+            r = np.hypot(x_m, y_m)
+            if r <= 0.391:
+                # 1. Project to pixel and verify FOV containment
+                px_py = calib.robot_mm_to_pixel(x_m * 1000.0, y_m * 1000.0)
+                assert px_py is not None
+                px, py = px_py
+                assert 0.0 <= px <= 640.0, f"Pixel X={px} outside FOV for ({x_m}, {y_m})"
+                assert 0.0 <= py <= 480.0, f"Pixel Y={py} outside FOV for ({x_m}, {y_m})"
+
+                # 2. Solve IK
+                target_xyz = np.array([x_m, y_m, 0.05])
+                solved_q = ik.solve_ik(target_xyz, initial_qpos=neutral_seed, null_weight=1e-3)
+                clamped_deg, warnings = validate_and_clamp_joints(list(np.degrees(solved_q)))
+                assert len(warnings) == 0
+
+                # 3. Evaluate FK in MuJoCo
+                for i, j_id in enumerate(ik.all_joint_ids):
+                    qadr = ik.model.jnt_qposadr[j_id]
+                    ik.data.qpos[qadr] = solved_q[i]
+                mujoco.mj_forward(ik.model, ik.data)
+                achieved = ik.data.site_xpos[ik.site_id].copy()
+                err = float(np.linalg.norm(target_xyz - achieved))
+                assert err < 0.015, (
+                    f"IK positioning error too large ({err * 1000:.1f}mm) at ({x_m}, {y_m})"
+                )

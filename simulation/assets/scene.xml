@@ -33,17 +33,17 @@
         <body name="workspace_center" pos="0.186 0.042 0.096" />
         <camera name="workspace_cam" pos="0.185 0.458 0.591" mode="targetbody" target="workspace_center" fovy="45" />
 
-        <!-- Workspace Boundary Lines (X: 100mm to 380mm, Y: -250mm to +130mm) -->
-        <geom name="bound_top" type="box" pos="0.380 -0.060 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
-        <geom name="bound_bottom" type="box" pos="0.100 -0.060 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
-        <geom name="bound_left" type="box" pos="0.240 0.130 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
-        <geom name="bound_right" type="box" pos="0.240 -0.250 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <!-- Workspace Boundary Lines (X: 100mm to 380mm, Y: -190mm to +190mm) -->
+        <geom name="bound_top" type="box" pos="0.380 0.000 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_bottom" type="box" pos="0.100 0.000 0.0005" size="0.0015 0.190 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_left" type="box" pos="0.240 0.190 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
+        <geom name="bound_right" type="box" pos="0.240 -0.190 0.0005" size="0.140 0.0015 0.0005" material="mat_boundary" contype="0" conaffinity="0" />
 
         <!-- ArUco Corner Markers (40mm x 40mm fiducials from config/workspace_calibration.json) -->
-        <geom name="aruco_tl_0" type="box" pos="0.380 0.130 0.0008" size="0.020 0.020 0.0005" material="mat_marker_0" contype="0" conaffinity="0" />
-        <geom name="aruco_tr_1" type="box" pos="0.380 -0.250 0.0008" size="0.020 0.020 0.0005" material="mat_marker_1" contype="0" conaffinity="0" />
-        <geom name="aruco_br_2" type="box" pos="0.100 -0.250 0.0008" size="0.020 0.020 0.0005" material="mat_marker_2" contype="0" conaffinity="0" />
-        <geom name="aruco_bl_3" type="box" pos="0.100 0.130 0.0008" size="0.020 0.020 0.0005" material="mat_marker_3" contype="0" conaffinity="0" />
+        <geom name="aruco_tl_0" type="box" pos="0.380 -0.190 0.0008" size="0.020 0.020 0.0005" material="mat_marker_1" contype="0" conaffinity="0" />
+        <geom name="aruco_tr_1" type="box" pos="0.100 -0.190 0.0008" size="0.020 0.020 0.0005" material="mat_marker_2" contype="0" conaffinity="0" />
+        <geom name="aruco_br_2" type="box" pos="0.100 0.190 0.0008" size="0.020 0.020 0.0005" material="mat_marker_3" contype="0" conaffinity="0" />
+        <geom name="aruco_bl_3" type="box" pos="0.380 0.190 0.0008" size="0.020 0.020 0.0005" material="mat_marker_0" contype="0" conaffinity="0" />
 
         <!-- Target manipulation object to pick -->
         <body name="target" pos="0.18 0.0 0.015">

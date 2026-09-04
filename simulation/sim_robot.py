@@ -364,8 +364,8 @@ class SO101Robot(RobotInterface):
             if cam_id < 0:
                 cam_to_use = None
 
-        with self._sim_lock:
-            with self._renderer_lock:
+        with self._renderer_lock:
+            with self._sim_lock:
                 target_size = (width, height)
                 if self._renderer is None or self._renderer_size != target_size:
                     if self._renderer is not None:
@@ -373,21 +373,22 @@ class SO101Robot(RobotInterface):
                     self._renderer = mujoco.Renderer(self.model, height=height, width=width)
                     self._renderer_size = target_size
 
-                try:
-                    if cam_to_use is not None:
-                        self._renderer.update_scene(self.data, camera=cam_to_use)
-                    else:
-                        self._renderer.update_scene(self.data)
-                    frame = self._renderer.render()
-                except Exception as err:
-                    raise RuntimeError(f"MuJoCo offscreen render failed: {err}") from err
+                if cam_to_use is not None:
+                    self._renderer.update_scene(self.data, camera=cam_to_use)
+                else:
+                    self._renderer.update_scene(self.data)
+
+            try:
+                frame = self._renderer.render()
+            except Exception as err:
+                raise RuntimeError(f"MuJoCo offscreen render failed: {err}") from err
 
         return np.asarray(frame, dtype=np.uint8)
 
     def _close_renderer(self) -> None:
         """Release MuJoCo renderer resources if currently allocated."""
-        with self._sim_lock:
-            with self._renderer_lock:
+        with self._renderer_lock:
+            with self._sim_lock:
                 if self._renderer is not None:
                     self._renderer.close()
                     self._renderer = None

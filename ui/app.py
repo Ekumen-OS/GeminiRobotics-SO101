@@ -19,6 +19,19 @@ from ui.components.vision import build_vision_interface
 from ui.state import get_robot_state_dict, set_active_robot
 
 CUSTOM_CSS = """
+#vla-status-banner {
+    padding: 6px 12px !important;
+    border-radius: 8px !important;
+    background: #161b22 !important;
+    border: 1px solid #30363d !important;
+    font-size: 13px !important;
+    margin-bottom: 6px !important;
+}
+#vla-status-banner p {
+    margin: 0 !important;
+    line-height: 1.4 !important;
+    font-size: 13px !important;
+}
 #vla-chatbot {
     font-size: 13px !important;
 }
@@ -172,10 +185,12 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
 
         with gr.Row():
             with gr.Column(scale=7):
-                build_vision_interface(robot, mode, demo)
+                save_calib_btn, calib_status, calib_timer = build_vision_interface(
+                    robot, mode, demo
+                )
 
             with gr.Column(scale=5):
-                prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn = (
+                prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn = (
                     build_chat_interface(
                         vla_controller, api_available=vla_controller.is_api_available
                     )
@@ -188,12 +203,80 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
             vla_controller,
             prompt_input,
             chatbot,
+            status_banner,
             exec_btn,
             home_btn,
             clear_btn,
             sliders,
             rand_btn=rand_btn,
         )
+
+        ready_placeholder = (
+            'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
+        )
+
+        # Live synchronization between workspace calibration and Chat interface
+        if save_calib_btn is not None and calib_status is not None:
+
+            def on_save_calibration(history: list) -> tuple:
+                from ui.stream import get_calibrator, save_workspace_calibration_file
+
+                msg = save_workspace_calibration_file()
+                calib = get_calibrator(mode=mode)
+                if calib.is_calibrated:
+                    ready_status = "🟢 **Status: Ready**"
+                    prompt_upd = gr.update(
+                        placeholder=ready_placeholder,
+                        interactive=vla_controller.is_api_available,
+                    )
+                    exec_upd = gr.update(interactive=vla_controller.is_api_available)
+                    new_hist = list(history) if history else []
+                    if new_hist and "Workspace Not Calibrated" in new_hist[0].get("content", ""):
+                        new_hist[0]["content"] = (
+                            f"🤖 **System Active**: Ready in `{mode.upper()}` mode with "
+                            "calibrated workspace. Type commands below to invoke spatial reasoning."
+                        )
+                    return msg, gr.update(value=ready_status), prompt_upd, exec_upd, new_hist
+                return msg, gr.skip(), gr.skip(), gr.skip(), gr.skip()
+
+            save_calib_btn.click(
+                fn=on_save_calibration,
+                inputs=[chatbot],
+                outputs=[calib_status, status_banner, prompt_input, exec_btn, chatbot],
+            )
+
+        if calib_timer is not None:
+
+            def sync_calibration_timer(history: list, current_status: str) -> tuple:
+                from ui.stream import get_calibrator
+
+                calib = get_calibrator(mode=mode)
+                if calib.is_calibrated and "Workspace Not Calibrated" in (current_status or ""):
+                    ready_status = "🟢 **Status: Ready**"
+                    prompt_upd = gr.update(
+                        placeholder=ready_placeholder,
+                        interactive=vla_controller.is_api_available,
+                    )
+                    exec_upd = gr.update(interactive=vla_controller.is_api_available)
+                    new_hist = list(history) if history else []
+                    if new_hist and "Workspace Not Calibrated" in new_hist[0].get("content", ""):
+                        new_hist[0]["content"] = (
+                            f"🤖 **System Active**: Ready in `{mode.upper()}` mode with "
+                            "calibrated workspace. Type commands below to invoke spatial reasoning."
+                        )
+                    return (
+                        gr.update(value=ready_status),
+                        prompt_upd,
+                        exec_upd,
+                        new_hist,
+                    )
+                return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+
+            calib_timer.tick(
+                fn=sync_calibration_timer,
+                inputs=[chatbot, status_banner],
+                outputs=[status_banner, prompt_input, exec_btn, chatbot],
+            )
 
     return demo
 

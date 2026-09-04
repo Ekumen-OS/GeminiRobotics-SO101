@@ -156,25 +156,46 @@ $$q(t) = (1 - \alpha(t)) \cdot q_{\text{start}} + \alpha(t) \cdot q_{\text{targe
 - **Mechanical Longevity**: Eliminates torque spikes and motor chatter on 3D-printed joints and servo gearboxes with zero initial and final velocity.
 - **Hardware Agnostic**: Seamlessly operates in real serial bus control (50 Hz) and physics simulation with physics sub-stepping and viewer synchronization.
 
-## 9. Model-Driven Closed-Loop Orchestration
+## 9. Model-Driven Closed-Loop Orchestration & "Move -> Look -> Correct" Loop
 
- **The Problem:**
- Traditional state machine pipelines (like rigid Sense-Plan-Act-Verify loops) add unnecessary code complexity, inflexible state transitions, and fragile retry heuristics that duplicate reasoning already capable within frontier vision-language-action models. Conversely, executing actions without post-action visual feedback blinds the model to execution state changes (such as gripper grasp verification or object slippage).
+**The Problem:**
+Traditional robotics manipulation systems often rely on either rigid finite-state machines (FSMs) or open-loop ballistic trajectories. Open-loop positioning assumes perfect calibration, zero mechanical backlash, and static environments. In reality, 3D-printed link flexure, gear compliance, camera mounting vibrations, and subtle perspective distortions cause open-loop pick attempts to miss targets by 5–15 mm. Conversely, rigid FSMs (Sense-Plan-Act-Verify pipelines) introduce brittle state transitions and duplicate spatial reasoning already possessed by frontier Vision-Language-Action (VLA) models.
 
- **The Solution:**
- We streamlined the architecture into a **pure model-as-orchestrator closed-loop paradigm** powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API:
+**The Solution:**
+We established a **closed-loop visual servoing control paradigm** powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API, centered on a mandatory 3-phase **"Move -> Look -> Correct"** verification loop:
 
-- **Continuous Background Video Stream**: Ingests video frames at ~1 FPS both during motion execution and continuously while the model reasons between tool calls.
-- **Post-Action Observation Frame Pattern**: Immediately after a blocking physical action completes, the controller waits 0.3s for actuator/camera stabilization, captures a fresh post-action frame, and sends it directly to the model prior to the `FunctionResponse`.
-- **Observation Nudges & Interleaved Narration**: Sends observation nudge prompts after tool responses to prompt the model to describe the updated visual scene and state its next step, ensuring rich, continuous conversational dialogue throughout multi-step robot tasks.
-- **Chain of Thought & Conversational Narration**: Configures Gemini Live thinking (`include_thoughts=True`) and renders reasoning thought traces (`> 💭 *...*`) alongside real-time natural language narration, conversational dialogue, and clarifying question asking in the Gradio chat viewport.
-- **Primitive Function Calling**: The model autonomously breaks down high-level user commands into sequences of primitive tool invocations (`move_to_spatial_point`, `open_gripper`, `close_gripper`, `move_to_pose`, `move_to_preset`).
-- **Closed-Loop Visual Verification & Self-Correction**: The model visually verifies post-action results (e.g. confirming whether an item is grasped between the jaws) and self-corrects by re-estimating spatial coordinates and retrying up to 3 times if needed.
+### Control Theory: The 3-Step "Move -> Look -> Correct" Loop
 
- **Why it matters:**
+1. **Step 1: Move (Coarse Ballistic Approach)**
+   The model initiates a spatial approach move to a safe hover elevation ($z \approx 3.0\,\text{cm}$) directly above the visually estimated target coordinates:
+   $$\mathbf{x}_{\text{hover}} = \mathcal{H}_{\text{calib}}([y_{\text{target}}, x_{\text{target}}], z=3.0\,\text{cm})$$
+   $$\mathbf{q}_{\text{hover}} = \text{IK}(\mathbf{x}_{\text{hover}}, \mathbf{q}_{\text{current}})$$
 
-- **Simplicity & Maintainability**: Eliminates monolithic state machines while unlocking dynamic, adaptive planning.
-- **True Closed-Loop Autonomy**: Ensures the model makes decisions grounded in the true post-action state of the physical or simulated environment.
+2. **Step 2: Look (Physical Settling & Image-Space Error Estimation)**
+   Immediately after the arm arrives at the hover pose, the controller executes a **0.3s vision settling delay** to allow servo ringing, gear oscillations, and camera sensor exposure to stabilize. A fresh high-resolution JPEG observation frame is captured and injected into the Gemini Live WebSocket session *prior* to returning the tool `FunctionResponse`.
+   
+   The model inspects the updated frame, localizes both the gripper end-effector $[y_{\text{gripper}}, x_{\text{gripper}}]$ and the target object $[y_{\text{target}}, x_{\text{target}}]$, and explicitly computes the 2D image-space error vector:
+   $$\Delta = \begin{bmatrix} dy \\ dx \end{bmatrix} = \begin{bmatrix} y_{\text{target}} - y_{\text{gripper}} \\ x_{\text{target}} - x_{\text{gripper}} \end{bmatrix}$$
+
+3. **Step 3: Correct (Visual Fine-Alignment & Descent)**
+   The model evaluates the error magnitude $\|\Delta\|_2$:
+   - If $\|\Delta\|_2 > \epsilon_{\text{align}}$ (visual misalignment detected), the model computes a corrective offset move before descending.
+   - If $\|\Delta\|_2 \le \epsilon_{\text{align}}$ (gripper accurately centered over target), the model proceeds to descend to grasp depth ($z \approx 0.5\,\text{cm}$), closes the gripper, and visually verifies the grasp in the post-action observation frame.
+
+### Key Architectural Elements:
+
+- **Continuous Background Video Perception**: Ingests video frames at ~1 FPS both during motion execution and continuously while the model reasons between tool calls.
+- **Post-Action Observation Frame Pattern**: Captures and injects settled post-action frames immediately after every blocking tool execution, giving the model ground-truth sensory feedback before each subsequent decision turn.
+- **Observation Nudges & Interleaved Narration**: Transmits conversational observation nudges after tool responses to prompt the model to narrate updated scene states and articulate next steps.
+- **Chain of Thought & Conversational Narration**: Enables Gemini Live thinking (`include_thoughts=True`) and renders reasoning thought traces (`> 💭 *...*`) alongside real-time natural language narration in the Gradio Chatbot viewport.
+- **Direct Primitive Function Calling**: The model breaks down high-level user commands into atomic primitive tool invocations (`move_to_spatial_point`, `open_gripper`, `close_gripper`, `move_to_pose`, `move_to_preset`).
+- **Autonomous Self-Correction**: If a grasp attempt fails (e.g. object not detected between jaws in post-action frame), the model autonomously re-evaluates coordinates and retries up to 3 times.
+
+**Why it matters:**
+
+- **High Precision Grasping**: Eliminates open-loop ballistic misses by visually verifying spatial alignment in the camera frame before descending.
+- **Robustness to Disturbances**: Adapts dynamically if an object shifts or rolls during approach.
+- **Zero State Machine Overhead**: Full closed-loop autonomy emerges directly from model vision-action reasoning.
 
 ## 10. Simulation Spatial Grounding & Synthetic Homography Calibration
 
@@ -191,11 +212,61 @@ We established parity between the simulation and physical setups through **Synth
 5. **Continuous Live ArUco Calibration Tracking**: In real and digital twin modes, the video stream continuously tracks visible ArUco fiducials and dynamically updates the perspective homography in real time, eliminating camera drift and ensuring millimeter-level accuracy across varying physical camera placements.
 6. **Minimalist Multi-Target Bounding Box Overlay (`ui/stream.py`)**: Dynamically overlays sleek, color-coded bounding boxes with corner notches and floating coordinate badges on the camera feed for multiple simultaneous objects identified by the Gemini Robotics ER Model.
 
+## 11. Multi-Channel Stream Separation & Diagnostic Telemetry
+
+**The Problem:**
+In conversational multimodal robotics, operators require clean natural-language explanations and thought traces in the web interface, while systems engineers require granular execution telemetry (e.g., exact tool payloads, joint targets, inverse kinematics convergence residuals, and WebSocket transport events). Dumping raw JSON traces, sensor arrays, or stack traces into the UI chat destroys readability; conversely, omitting low-level telemetry leaves developers blind when debugging hardware faults or communication drops.
+
+**The Solution:**
+We implemented strict **Multi-Channel Stream Separation**:
+
+1. **User Channel (Gradio Chatbot Viewport)**:
+   - Streams clean natural-language narration, conversational dialogue, and formatted markdown thought traces (`> 💭 *...*`).
+   - Renders visual attention cues via the dynamic bounding box overlay on the video stream.
+
+2. **Diagnostic Channel (Standard Terminal Streams)**:
+   - Formats every event with standardized ISO-8601 millisecond timestamps:
+     $$\texttt{[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message}$$
+   - Routes regular lifecycle events, model turn dispatches, tool arguments (`call.args`), and execution result payloads (`result_dict`) to `sys.stdout`.
+   - Routes all warnings, IK divergences, WebSocket reconnections, and tool exceptions to `sys.stderr`.
+
 **Why it matters:**
 
-- **Zero Sim-to-Real Cognitive Discrepancy**: Gemini sees the exact same spatial layout (robot on the right, +X pointing left, +Y pointing bottom) across both simulation and real hardware.
-- **Visual Attention Transparency**: The live minimalist bounding box enables operators to immediately confirm object localization and Cartesian grounding before and during physical manipulation.
-- **Identical Tool Pipeline**: The `move_to_spatial_point` tool executes flawlessly in both simulation ($< 10^{-12}\,\text{mm}$ error) and physical hardware with active real-time homography updating.
+- **Clean User Experience**: Chatbot remains conversational and accessible to non-technical users.
+- **Deterministic Observability**: Developers can pipe stdout/stderr to log analyzers or grep traces for exact millisecond latencies across every phase of the perception-action loop.
+
+## 12. UI Interactivity State Management & Turn Locking
+
+**The Problem:**
+Asynchronous VLA execution turns span multiple seconds (vision ingestion $\rightarrow$ thinking $\rightarrow$ IK solving $\rightarrow$ trajectory interpolation $\rightarrow$ visual verification). If an operator submits new instructions or clicks action buttons (e.g., "Home Arm" or "Randomize Target") mid-turn, overlapping commands create race conditions on the serial bus or corrupt the model's active WebSocket dialogue.
+
+**The Solution:**
+We implemented **Deterministic Interactivity State Locking** in `ui/components/chat.py`:
+
+- **Atomic Input Locking on Dispatch**: The instant an instruction is submitted, the event generator yields updates disabling all interactive controls (`prompt_input`, `exec_btn`, `home_btn`, `clear_btn`, and `rand_btn`) with `gr.update(interactive=False)` and switches the status banner to `⏳ Status: Working...`.
+- **Guaranteed `try...finally` Teardown**: Regardless of whether the turn completes normally, is interrupted, or raises an unexpected exception, the `finally` block deterministically re-enables all controls (`gr.update(interactive=True)`) and restores the banner to `🟢 Status: Ready`.
+
+**Why it matters:**
+
+- **Race Condition Prevention**: Guarantees mutually exclusive execution on physical actuators and simulation physics.
+
+## 13. Closed-Loop Grounded Perception & Anti-Hallucination Guardrails
+
+**The Problem:**
+VLA models operating in real-world environments are susceptible to "open-loop script parroting"—blindly asserting alignment ($dy=0, dx=0$) or claiming a successful grasp because of prompt few-shot patterns, even when kinematic calibration drifts, the arm moves out of the field of view, or jaws close in empty air. Without programmatic sensory feedback in tool responses, models cannot distinguish actual physical success from ungrounded hallucination.
+
+**The Solution:**
+We established a four-pillar anti-hallucination architecture documented in [`ARCHITECTURE.md`](ARCHITECTURE.md):
+
+1. **Homography & Lateral Axis Parity**: Reconciled physical and simulation homographies (`config/workspace_homography.npz` and `config/workspace_homography_sim.npz`) and canonical ArUco corner IDs (`1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`), ensuring targets map to inward shoulder pan motions inside the camera FOV.
+2. **Programmatic Perception Metrics Engine (`robot/perception.py`)**: Computes real-time OpenCV relative offsets $[dy, dx]$, Euclidean distance, and binary alignment flags (`is_aligned` within tolerance $\le 25$).
+3. **Enriched Tool Response Payloads (`agent/tools.py`)**: Automatically embeds measured `perception` dictionaries and actionable `visual_hint` instructions into `move_to_spatial_point` and gripper tool execution responses.
+4. **Hard Controller Descent & Transport Gates (`agent/vla_controller.py`)**: Enforces controller verification that blocks descent if measured offset exceeds tolerance ($|dy| > 25$ or $|dx| > 25$) and blocks transport if the object remains on the tabletop post-lift, executing an automated 3-attempt retry loop with graceful user escalation.
+
+**Why it matters:**
+
+- **Zero Hallucinated Success**: The model cannot advance through manipulation stages without verified physical evidence.
+- **Autonomous Error Recovery**: Transforms brittle open-loop trajectories into resilient, self-correcting closed-loop visual manipulation.
 
 ---
 

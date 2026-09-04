@@ -1,10 +1,12 @@
 """Chat component for VLA instruction integration."""
 
+from typing import Any
+
 import gradio as gr
 import numpy as np
 
 from agent.vla_controller import VLAController
-from ui.stream import get_latest_jpeg
+from ui.stream import get_latest_raw_jpeg
 
 
 def build_chat_interface(controller: VLAController, api_available: bool = True) -> tuple:
@@ -15,7 +17,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
         api_available: Whether the Gemini API is available.
 
     Returns:
-        Tuple of (prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn)
+        Tuple of (prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn)
     """
     from ui.stream import get_calibrator
 
@@ -51,6 +53,18 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     )
     if not api_available:
         gr.Markdown("⚠️ **Gemini API unavailable — manual control only.** Check your credentials.")
+
+    if not api_available:
+        initial_status = "⚠️ **Status: Gemini API Unavailable**"
+    elif not is_calibrated:
+        initial_status = "⚠️ **Status: Workspace Not Calibrated**"
+    else:
+        initial_status = "🟢 **Status: Ready**"
+
+    status_banner = gr.Markdown(
+        value=initial_status,
+        elem_id="vla-status-banner",
+    )
 
     prompt_input = gr.Textbox(
         label="Instruction Prompt",
@@ -96,41 +110,57 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
             elem_classes=["chat-action-btn"],
         )
 
-    return prompt_input, chatbot, exec_btn, home_btn, clear_btn, rand_btn
+    return prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn
 
 
 def wire_chat_events(
     controller: VLAController,
     prompt_input: gr.Textbox,
     chatbot: gr.Chatbot,
+    status_banner: gr.Markdown,
     exec_btn: gr.Button,
     home_btn: gr.Button,
     clear_btn: gr.Button,
     sliders: list[gr.Slider],
     rand_btn: gr.Button | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Wire up the event listeners for the chat interface.
 
     Args:
         controller: The VLAController instance.
         prompt_input: The Gradio Textbox for user prompts.
         chatbot: The Gradio Chatbot component.
+        status_banner: The Gradio Markdown component for status indication.
         exec_btn: The execute/send button.
         home_btn: The reset to home button.
         clear_btn: The clear chat button.
         sliders: The list of 6 Gradio joint sliders to update.
         rand_btn: Optional randomize target button for sim mode.
+
+    Returns:
+        Dictionary containing wired handler callbacks for testing and programmatic invocation.
     """
     from robot.constants import PRESET_POSES
+
+    action_buttons = [exec_btn, home_btn, clear_btn]
+    if rand_btn is not None:
+        action_buttons.append(rand_btn)
+    num_actions = len(action_buttons)
 
     def process_instruction(
         msg: str = "",
         history: list | None = None,
     ):
         msg = msg or ""
-        history = history or []
+        history = list(history) if history is not None else []
         if not msg.strip():
-            yield "", history, *[gr.skip()] * 6
+            yield (
+                gr.skip(),
+                history,
+                gr.skip(),
+                *[gr.skip()] * num_actions,
+                *[gr.skip()] * 6,
+            )
             return
 
         # Append the new user message to the UI history
@@ -138,24 +168,82 @@ def wire_chat_events(
 
         # Append empty assistant message that will be streamed into
         history.append({"role": "assistant", "content": ""})
-        yield "", history, *[gr.skip()] * 6
 
-        for partial_text in controller.process_instruction_stream(
-            instruction=msg, get_latest_jpeg_fn=get_latest_jpeg
-        ):
-            history[-1]["content"] = partial_text
-            yield "", history, *[gr.skip()] * 6
+        # Turn start: block all user inputs and show Working status
+        yield (
+            gr.update(
+                value="",
+                interactive=False,
+                placeholder="⏳ Executing instruction...",
+            ),
+            history,
+            gr.update(value="⏳ **Status: Working...**"),
+            *[gr.update(interactive=False) for _ in action_buttons],
+            *[gr.skip()] * 6,
+        )
 
-        # After execution completes, sync sliders with final robot state
-        final_deg = [gr.skip()] * 6
-        if controller.robot is not None and hasattr(controller.robot, "get_joint_positions"):
-            try:
-                curr_rad = controller.robot.get_joint_positions()
-                final_deg = [round(float(v), 1) for v in np.degrees(curr_rad)]
-            except Exception:
-                pass
+        try:
+            for partial_text in controller.process_instruction_stream(
+                instruction=msg, get_latest_jpeg_fn=get_latest_raw_jpeg
+            ):
+                history[-1]["content"] = partial_text
+                yield (
+                    gr.skip(),
+                    history,
+                    gr.skip(),
+                    *[gr.skip()] * num_actions,
+                    *[gr.skip()] * 6,
+                )
+        except Exception as exc:
+            err_msg = f"\n\n⚠️ **Runtime Error**: `{exc}`"
+            history[-1]["content"] = (history[-1]["content"] or "") + err_msg
+        finally:
+            # After execution completes or errors, sync sliders with final robot state
+            final_deg = [gr.skip()] * 6
+            if controller.robot is not None and hasattr(controller.robot, "get_joint_positions"):
+                try:
+                    curr_rad = controller.robot.get_joint_positions()
+                    final_deg = [round(float(v), 1) for v in np.degrees(curr_rad)]
+                except Exception:
+                    pass
 
-        yield "", history, *final_deg
+            from ui.stream import get_calibrator
+
+            calib = get_calibrator()
+            is_calibrated = (
+                calib is not None and calib.is_calibrated
+                if controller.mode in ("real", "twin")
+                else True
+            )
+
+            if not controller.is_api_available:
+                ready_status = "⚠️ **Status: Gemini API Unavailable**"
+                default_placeholder = "⚠️ Gemini API Unavailable..."
+            elif not is_calibrated:
+                ready_status = "⚠️ **Status: Workspace Not Calibrated**"
+                default_placeholder = "⚠️ Calibrate workspace before issuing commands..."
+            else:
+                ready_status = "🟢 **Status: Ready**"
+                default_placeholder = (
+                    'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
+                )
+
+            # Re-enable inputs on completion / finally
+            btn_updates = [
+                gr.update(interactive=controller.is_api_available if btn is exec_btn else True)
+                for btn in action_buttons
+            ]
+
+            yield (
+                gr.update(
+                    interactive=controller.is_api_available,
+                    placeholder=default_placeholder,
+                ),
+                history,
+                gr.update(value=ready_status),
+                *btn_updates,
+                *final_deg,
+            )
 
     def reset_to_home() -> list[float]:
         if controller.robot is not None:
@@ -172,7 +260,7 @@ def wire_chat_events(
             new_pos = controller.robot.randomize_target()
             print(f"[UI] Random target placed at XYZ: {[round(v, 3) for v in new_pos]}")
 
-    def clear_chat() -> list:
+    def clear_chat() -> tuple[list, dict]:
         controller.clear_history()
         from ui.stream import get_calibrator
 
@@ -182,6 +270,13 @@ def wire_chat_events(
             if controller.mode in ("real", "twin")
             else True
         )
+
+        if not controller.is_api_available:
+            status = "⚠️ **Status: Gemini API Unavailable**"
+        elif not is_calibrated:
+            status = "⚠️ **Status: Workspace Not Calibrated**"
+        else:
+            status = "🟢 **Status: Ready**"
 
         if not is_calibrated:
             msg = (
@@ -197,19 +292,28 @@ def wire_chat_events(
                 "workspace. Type commands below to invoke spatial reasoning."
             )
 
-        return [{"role": "assistant", "content": msg}]
+        return [{"role": "assistant", "content": msg}], gr.update(value=status)
+
+    outputs = [prompt_input, chatbot, status_banner, *action_buttons, *sliders]
 
     exec_btn.click(
         fn=process_instruction,
         inputs=[prompt_input, chatbot],
-        outputs=[prompt_input, chatbot, *sliders],
+        outputs=outputs,
     )
     prompt_input.submit(
         fn=process_instruction,
         inputs=[prompt_input, chatbot],
-        outputs=[prompt_input, chatbot, *sliders],
+        outputs=outputs,
     )
     home_btn.click(fn=reset_to_home, inputs=None, outputs=sliders)
     if rand_btn is not None:
         rand_btn.click(fn=randomize_cube, inputs=None, outputs=None)
-    clear_btn.click(fn=clear_chat, inputs=None, outputs=[chatbot])
+    clear_btn.click(fn=clear_chat, inputs=None, outputs=[chatbot, status_banner])
+
+    return {
+        "process_instruction": process_instruction,
+        "reset_to_home": reset_to_home,
+        "randomize_cube": randomize_cube,
+        "clear_chat": clear_chat,
+    }
