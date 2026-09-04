@@ -2,33 +2,11 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
 from google.genai import types
 
 from agent.vla_controller import VLAController
-from robot.interface import RobotInterface
-
-
-class MockRobot(RobotInterface):
-    """Mock robot for testing VLAController."""
-
-    def __init__(self) -> None:
-        """Initialize mock robot."""
-        self.qpos = np.zeros(6, dtype=np.float32)
-        self._stop_requested = False
-
-    def set_joint_positions(self, qpos: np.ndarray) -> None:
-        """Set joint positions."""
-        self.qpos = np.asarray(qpos, dtype=np.float32)
-
-    def get_joint_positions(self) -> np.ndarray:
-        """Get current joint positions."""
-        return self.qpos.copy()
-
-    def interrupt(self) -> None:
-        """Set stop requested flag."""
-        self._stop_requested = True
+from tests.conftest import MockRobot
 
 
 def test_vla_controller_init() -> None:

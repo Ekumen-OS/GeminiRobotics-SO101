@@ -8,11 +8,9 @@ Covers:
 - F9: Clean Diagnostic Logging & UI Separation (ISO-8601 millisecond logs, stdout/stderr routing)
 """
 
-import importlib.util
 import math
 import re
 from io import StringIO
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
@@ -20,103 +18,14 @@ import numpy as np
 import pytest
 from google.genai import types
 
-from agent.tools import (
-    execute_tool_call,
-)
+from agent.tools import execute_tool_call
 from agent.vla_controller import VLAController, parse_targets_from_text
-from robot.interface import RobotInterface
+from robot.perception import compute_visual_alignment, verify_grasp_elevation
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
 )
-
-# Check if robot.perception is available from Milestone M2
-HAS_PERCEPTION_MODULE = importlib.util.find_spec("robot.perception") is not None
-
-
-# ==============================================================================
-# REFERENCE IMPLEMENTATIONS & CONTRACT FIXTURES (For progressive testability)
-# ==============================================================================
-
-
-def reference_compute_visual_alignment(
-    gripper_point_1000: list[float],
-    target_point_1000: list[float],
-    tolerance: float = 25.0,
-) -> dict:
-    """Reference specification for visual alignment metric computation.
-
-    Args:
-        gripper_point_1000: Normalized [y, x] coordinate of the gripper.
-        target_point_1000: Normalized [y, x] coordinate of the target object.
-        tolerance: Maximum pixel error in normalized units to declare alignment.
-
-    Returns:
-        Dictionary adhering strictly to ARCHITECTURE.md §Interface Contracts.
-    """
-    dy = float(target_point_1000[0] - gripper_point_1000[0])
-    dx = float(target_point_1000[1] - gripper_point_1000[1])
-    distance = float(math.hypot(dy, dx))
-    is_aligned = abs(dy) <= tolerance and abs(dx) <= tolerance
-
-    return {
-        "gripper_point_1000": [float(gripper_point_1000[0]), float(gripper_point_1000[1])],
-        "target_point_1000": [float(target_point_1000[0]), float(target_point_1000[1])],
-        "measured_offset": {"dy": dy, "dx": dx, "distance": distance},
-        "is_aligned": is_aligned,
-        "alignment_tolerance": float(tolerance),
-    }
-
-
-def reference_verify_grasp_elevation(
-    object_detected_pre_lift: bool,
-    object_detected_post_lift: bool,
-) -> dict:
-    """Reference specification for grasp elevation verification.
-
-    Args:
-        object_detected_pre_lift: Whether object was detected at rest on the table pre-lift.
-        object_detected_post_lift: Whether object was detected at rest on the table post-lift.
-
-    Returns:
-        Dictionary adhering strictly to ARCHITECTURE.md §Interface Contracts.
-    """
-    object_elevated = object_detected_pre_lift and not object_detected_post_lift
-    return {
-        "object_elevated": object_elevated,
-        "object_detected_on_table": object_detected_post_lift,
-        "grasped": object_elevated,
-        "confidence": 0.95 if object_elevated else 0.85,
-    }
-
-
-class GuardrailMockRobot(RobotInterface):
-    """Mock robot tracking trajectories and emergency stop requests."""
-
-    def __init__(self) -> None:
-        """Initialize mock robot."""
-        self.qpos = np.zeros(6, dtype=np.float32)
-        self.move_history: list[tuple[np.ndarray, float]] = []
-        self._stop_requested = False
-
-    def set_joint_positions(self, qpos: np.ndarray) -> None:
-        """Set joint positions."""
-        self.qpos = np.asarray(qpos, dtype=np.float32)
-
-    def get_joint_positions(self) -> np.ndarray:
-        """Get current joint positions."""
-        return self.qpos.copy()
-
-    def move_to_pose(
-        self, target_qpos: np.ndarray, duration_sec: float = 1.0, dt: float = 0.002
-    ) -> None:
-        """Simulate moving to pose."""
-        self.qpos = np.asarray(target_qpos, dtype=np.float32)
-        self.move_history.append((self.qpos.copy(), duration_sec))
-
-    def interrupt(self) -> None:
-        """Set stop requested flag."""
-        self._stop_requested = True
+from tests.conftest import DummyToolCall, MockRobot
 
 
 def make_synthetic_red_cube_frame(
@@ -162,7 +71,12 @@ def test_t1_f5_perception_offset_calculation_contract() -> None:
     gripper = [600.0, 400.0]
     target = [620.0, 385.0]
 
-    result = reference_compute_visual_alignment(gripper, target, tolerance=25.0)
+    result = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=target,
+        gripper_point_1000=gripper,
+        tolerance=25.0,
+    )
 
     assert result["measured_offset"]["dy"] == 20.0
     assert result["measured_offset"]["dx"] == -15.0
@@ -182,17 +96,20 @@ def test_t1_f5_perception_detection_on_synthetic_frame() -> None:
     assert red_obj is not None
     assert "bottom_contact_1000" in red_obj
     bot_y, bot_x = red_obj["bottom_contact_1000"]
-    # Check within 10 normalized units of target
+    # Check within 15 normalized units of target
     assert abs(bot_y - 760.0) <= 15.0
     assert abs(bot_x - 484.0) <= 15.0
 
 
 def test_t1_f5_grasp_elevation_verification_contract() -> None:
     """Validate grasp elevation verification schema and confidence assignment."""
+    pre_frame = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
+    post_frame = np.full((480, 640, 3), 180, dtype=np.uint8)  # Empty table
     # Successful grasp: object present pre-lift, absent post-lift
-    res_success = reference_verify_grasp_elevation(
-        object_detected_pre_lift=True,
-        object_detected_post_lift=False,
+    res_success = verify_grasp_elevation(
+        pre_lift_frame_rgb=pre_frame,
+        post_lift_frame_rgb=post_frame,
+        target_point_1000=[760.0, 484.0],
     )
     assert res_success["object_elevated"] is True
     assert res_success["object_detected_on_table"] is False
@@ -200,61 +117,60 @@ def test_t1_f5_grasp_elevation_verification_contract() -> None:
     assert res_success["confidence"] >= 0.90
 
     # Failed grasp: object still resting on the table post-lift
-    res_failed = reference_verify_grasp_elevation(
-        object_detected_pre_lift=True,
-        object_detected_post_lift=True,
+    res_failed = verify_grasp_elevation(
+        pre_lift_frame_rgb=pre_frame,
+        post_lift_frame_rgb=pre_frame,
+        target_point_1000=[760.0, 484.0],
     )
     assert res_failed["object_elevated"] is False
     assert res_failed["object_detected_on_table"] is True
     assert res_failed["grasped"] is False
 
 
-def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
+@pytest.mark.asyncio
+async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     """Validate move_to_spatial_point returns appropriate visual verification hint."""
-    import asyncio
-
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
 
     # Case 1: Hover height (z_height_cm = 4.0 >= 3.0)
-    call_hover = SimpleNamespace(
-        name="move_to_spatial_point",
-        args={"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
+    call_hover = DummyToolCall(
+        "move_to_spatial_point",
+        {"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
     )
-    res_hover = asyncio.run(execute_tool_call(call=call_hover, robot=robot))
+    res_hover = await execute_tool_call(call=call_hover, robot=robot)
     assert res_hover["status"] == "success"
     hint = res_hover.get("visual_hint", "")
     assert "Visual Verification Loop" in hint
     assert "[dy, dx]" in hint
 
     # Case 2: Contact height (z_height_cm = 0.0 < 3.0)
-    call_contact = SimpleNamespace(
-        name="move_to_spatial_point",
-        args={"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"},
+    call_contact = DummyToolCall(
+        "move_to_spatial_point",
+        {"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"},
     )
-    res_contact = asyncio.run(execute_tool_call(call=call_contact, robot=robot))
+    res_contact = await execute_tool_call(call=call_contact, robot=robot)
     assert res_contact["status"] == "success"
     contact_hint = res_contact.get("visual_hint", "")
     assert "Arm reached contact height" in contact_hint
     assert "gripper jaws surround the target" in contact_hint
 
 
-def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
+@pytest.mark.asyncio
+async def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
     """Validate close_gripper and open_gripper visual hints instruct verification."""
-    import asyncio
-
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
 
     # close_gripper hint instructs post-lift inspection
-    call_close = SimpleNamespace(name="close_gripper", args={})
-    res_close = asyncio.run(execute_tool_call(call=call_close, robot=robot))
+    call_close = DummyToolCall("close_gripper", {})
+    res_close = await execute_tool_call(call=call_close, robot=robot)
     assert res_close["status"] == "success"
     hint_close = res_close.get("visual_hint", "")
     assert "Lift arm to hover" in hint_close
     assert "visually confirm if object is held between jaws" in hint_close
 
     # open_gripper hint instructs release inspection
-    call_open = SimpleNamespace(name="open_gripper", args={})
-    res_open = asyncio.run(execute_tool_call(call=call_open, robot=robot))
+    call_open = DummyToolCall("open_gripper", {})
+    res_open = await execute_tool_call(call=call_open, robot=robot)
     assert res_open["status"] == "success"
     hint_open = res_open.get("visual_hint", "")
     assert "verify object release and clearance" in hint_open
@@ -299,17 +215,28 @@ def test_t1_f9_clean_diagnostic_logging_format_and_routing() -> None:
 def test_t2_f5_exact_alignment_tolerance_boundary_matrix() -> None:
     """Validate exact boundary behavior at tolerance threshold |dy|=25.0 and |dx|=25.0."""
     # Exact boundary: 25.0 should PASS
-    res_exact = reference_compute_visual_alignment([500.0, 500.0], [525.0, 475.0], tolerance=25.0)
+    res_exact = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[525.0, 475.0],
+        gripper_point_1000=[500.0, 500.0],
+        tolerance=25.0,
+    )
     assert res_exact["is_aligned"] is True
 
     # Off-by-fraction: 25.01 should FAIL
-    res_dy_fail = reference_compute_visual_alignment(
-        [500.0, 500.0], [525.01, 500.0], tolerance=25.0
+    res_dy_fail = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[525.01, 500.0],
+        gripper_point_1000=[500.0, 500.0],
+        tolerance=25.0,
     )
     assert res_dy_fail["is_aligned"] is False
 
-    res_dx_fail = reference_compute_visual_alignment(
-        [500.0, 500.0], [500.0, 525.01], tolerance=25.0
+    res_dx_fail = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[500.0, 525.01],
+        gripper_point_1000=[500.0, 500.0],
+        tolerance=25.0,
     )
     assert res_dx_fail["is_aligned"] is False
 
@@ -373,14 +300,14 @@ def test_t2_f8_simulated_retry_count_bounds() -> None:
 @pytest.mark.asyncio
 async def test_t3_cross_feature_perception_enrichment_and_tool_dispatch() -> None:
     """Validate that executing move_to_spatial_point with camera frame triggers refinement."""
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
     frame_rgb = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
 
     # Encode to JPEG
     _, encoded_jpg = cv2.imencode(".jpg", cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
     raw_jpeg = encoded_jpg.tobytes()
 
-    call = SimpleNamespace(
+    call = DummyToolCall(
         name="move_to_spatial_point",
         # Intentionally offset by a small distance from the cube bottom contact center
         args={"point": [755.0, 480.0], "z_height_cm": 4.0, "approach": "top_down"},
@@ -424,7 +351,7 @@ def test_t3_cross_feature_chat_separation_from_diagnostic_traces() -> None:
 @pytest.mark.asyncio
 async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> None:
     """Real-World Scenario 1: Misalignment detected at hover, corrected, then descended."""
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
     controller._api_available = True
 
@@ -543,7 +470,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
 @pytest.mark.asyncio
 async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
     """Real-World Scenario 2: Missed grasp detected post-lift triggering successful retry."""
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
     controller._api_available = True
 
@@ -677,7 +604,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
 @pytest.mark.asyncio
 async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() -> None:
     """Real-World Scenario 3: 3 consecutive failed grasps leads to user escalation."""
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
     controller._api_available = True
 
@@ -772,7 +699,12 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
 def test_t1_f7_anti_hallucination_gate_rejects_descent_on_large_misalignment() -> None:
     """Validate that alignment contract rejects descent when |dy| > 25 or |dx| > 25."""
     # Large misalignment: dy = 45, dx = 30
-    alignment = reference_compute_visual_alignment([700.0, 450.0], [745.0, 480.0], tolerance=25.0)
+    alignment = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[745.0, 480.0],
+        gripper_point_1000=[700.0, 450.0],
+        tolerance=25.0,
+    )
     assert alignment["is_aligned"] is False
     assert alignment["measured_offset"]["dy"] == 45.0
     assert alignment["measured_offset"]["dx"] == 30.0
@@ -782,33 +714,39 @@ def test_t1_f7_anti_hallucination_gate_rejects_descent_on_large_misalignment() -
 
 def test_t1_f8_anti_hallucination_transport_gate_blocks_motion_when_object_on_table() -> None:
     """Validate that grasp verification marks grasp as unverified if object is on table."""
-    verify_result = reference_verify_grasp_elevation(
-        object_detected_pre_lift=True,
-        object_detected_post_lift=True,  # Object still resting on table surface
+    frame_with_cube = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
+    verify_result = verify_grasp_elevation(
+        pre_lift_frame_rgb=frame_with_cube,
+        post_lift_frame_rgb=frame_with_cube,  # Object still resting on table surface
+        target_point_1000=[760.0, 484.0],
     )
     assert verify_result["object_elevated"] is False
     assert verify_result["grasped"] is False
     assert verify_result["object_detected_on_table"] is True
 
 
-def test_t2_f6_missing_camera_frame_graceful_tool_execution() -> None:
+@pytest.mark.asyncio
+async def test_t2_f6_missing_camera_frame_graceful_tool_execution() -> None:
     """Validate that move_to_spatial_point executes smoothly when get_latest_jpeg_fn is None."""
-    import asyncio
-
-    robot = GuardrailMockRobot()
-    call = SimpleNamespace(
-        name="move_to_spatial_point",
-        args={"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
+    robot = MockRobot()
+    call = DummyToolCall(
+        "move_to_spatial_point",
+        {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
     )
     with patch("agent.tools.image_point_to_xyz", return_value=np.array([0.20, 0.0, 0.03])):
-        result = asyncio.run(execute_tool_call(call=call, robot=robot, get_latest_jpeg_fn=None))
+        result = await execute_tool_call(call=call, robot=robot, get_latest_jpeg_fn=None)
     assert result["status"] == "success"
     assert "target_xyz_m" in result
 
 
 def test_t2_f7_extreme_visual_misalignment_boundary() -> None:
     """Validate perception metrics with extreme coordinate spread (corner to corner)."""
-    alignment = reference_compute_visual_alignment([0.0, 0.0], [1000.0, 1000.0], tolerance=25.0)
+    alignment = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[1000.0, 1000.0],
+        gripper_point_1000=[0.0, 0.0],
+        tolerance=25.0,
+    )
     assert alignment["is_aligned"] is False
     assert alignment["measured_offset"]["dy"] == 1000.0
     assert alignment["measured_offset"]["dx"] == 1000.0
@@ -819,13 +757,23 @@ def test_t2_f7_extreme_visual_misalignment_boundary() -> None:
 async def test_t3_cross_feature_multi_turn_two_step_alignment() -> None:
     """Validate multi-turn alignment transitions from misaligned to aligned state."""
     # Step 1: Pre-correction (misaligned)
-    step1 = reference_compute_visual_alignment([720.0, 484.0], [760.0, 484.0], tolerance=25.0)
+    step1 = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[760.0, 484.0],
+        gripper_point_1000=[720.0, 484.0],
+        tolerance=25.0,
+    )
     assert step1["is_aligned"] is False
     assert step1["measured_offset"]["dy"] == 40.0
 
     # Step 2: Post-correction (aligned)
     corrected_gripper = [720.0 + step1["measured_offset"]["dy"], 484.0]
-    step2 = reference_compute_visual_alignment(corrected_gripper, [760.0, 484.0], tolerance=25.0)
+    step2 = compute_visual_alignment(
+        frame_rgb=None,
+        target_point_1000=[760.0, 484.0],
+        gripper_point_1000=corrected_gripper,
+        tolerance=25.0,
+    )
     assert step2["is_aligned"] is True
     assert step2["measured_offset"]["dy"] == 0.0
 
@@ -833,7 +781,7 @@ async def test_t3_cross_feature_multi_turn_two_step_alignment() -> None:
 @pytest.mark.asyncio
 async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     """Real-World Scenario 4: Full pick, lift, transport and release sequence."""
-    robot = GuardrailMockRobot()
+    robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
     controller._api_available = True
 

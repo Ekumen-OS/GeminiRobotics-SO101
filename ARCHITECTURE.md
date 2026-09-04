@@ -70,8 +70,8 @@ To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **
 | **F8** | Anti-Hallucination Transport Gate & Retry Loop | `agent/vla_controller.py` | Blocks transport if target object remains detected on tabletop post-lift. Enforces an automated retry loop (up to 3 attempts) before escalating to the user. |
 | **F9** | Clean Diagnostic Logging & UI Separation | `agent/vla_controller.py`, `agent/tools.py`, `ui/components/chat.py` | Standardized ISO-8601 millisecond logs routed to `sys.stdout`/`sys.stderr`. Raw JSON payloads, IK solver iterations, and tracebacks are excluded from Chatbot viewport. |
 | **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
-| **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness running 211 tests with zero external network dependencies and 100% pass rate. |
-| **F12**| Adversarial Hardening | `tests/test_adversarial_*.py`, `tests/test_challenger_*.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
+| **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness running 157 tests with zero external network dependencies and 100% pass rate. |
+| **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
 
 ---
 
@@ -196,7 +196,7 @@ When implementing changes or verifying project health, execute:
 # 0. Install pre-commit hooks (one-time setup)
 uv run pre-commit install
 
-# 1. Run complete automated test suite (all 211 tests)
+# 1. Run complete automated test suite
 uv run pytest tests/ -v
 
 # 2. Run focused spatial grounding E2E tests
