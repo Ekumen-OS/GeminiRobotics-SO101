@@ -50,12 +50,30 @@ def check_environment() -> None:
     except Exception as e:
         print(f"[FAIL] Inverse Kinematics check failed: {e}")
 
-    # 4. LeRobot Hardware Bus Check
+    # 4. LeRobot Hardware Bus & Serial Port Check
     try:
+        import os
+        from pathlib import Path
+
+        from robot.constants import DEFAULT_SERIAL_PORT
         from robot.real_robot import LEROBOT_AVAILABLE
 
         if LEROBOT_AVAILABLE:
             print("[OK] LeRobot package and FeetechMotorsBus import verified.")
+            port_path = Path(DEFAULT_SERIAL_PORT)
+            if port_path.exists():
+                has_rw = os.access(port_path, os.R_OK) and os.access(port_path, os.W_OK)
+                if has_rw:
+                    print(f"[OK] Port '{DEFAULT_SERIAL_PORT}' exists and is accessible (rw).")
+                else:
+                    print(
+                        f"[WARN] Serial port '{DEFAULT_SERIAL_PORT}' exists but lacks read/write "
+                        "permissions for current user.\n"
+                        f"       Immediate fix: sudo chmod 666 {DEFAULT_SERIAL_PORT}\n"
+                        "       Permanent fix: sudo usermod -a -G dialout $USER"
+                    )
+            else:
+                print(f"[INFO] Serial port '{DEFAULT_SERIAL_PORT}' not found on system.")
         else:
             print(
                 "[INFO] LeRobot package not detected. Physical robot control will be unavailable."

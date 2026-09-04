@@ -1,6 +1,11 @@
 """Constants and configuration for the SO-101 robot arm."""
 
+import os
+
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Preset target joint angles (in radians) for standard arm poses
 PRESET_POSES: dict[str, np.ndarray] = {
@@ -37,4 +42,8 @@ JOINT_LIMITS = {
     "gripper": (-75.0, 75.0),
 }
 
-DEFAULT_SERIAL_PORT = "/dev/tty.usbmodem5B415332861"
+# Serial communication configuration (can be overridden via ROBOT_PORT or SO101_PORT env var)
+DEFAULT_SERIAL_PORT = os.environ.get(
+    "ROBOT_PORT",
+    os.environ.get("SO101_PORT", "/dev/tty.usbmodem5B415332861"),
+)

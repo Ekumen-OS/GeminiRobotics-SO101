@@ -36,12 +36,18 @@ JOINT_LIMITS = {
     "shoulder_pan": (-100.0, 100.0),
     # ...
 }
+
+# Serial communication port from environment or fallback
+DEFAULT_SERIAL_PORT = os.environ.get(
+    "ROBOT_PORT",
+    os.environ.get("SO101_PORT", "/dev/tty.usbmodem5B415332861"),
+)
 ```
 
 **Why it matters:**
 
 - **Safety:** Hardware limits are strictly defined in the hardware module, not the UI layer.
-- **Maintainability:** Updating a calibration or limit requires changing exactly one line of code.
+- **Maintainability:** Updating a calibration, servo limit, or serial port requires changing exactly one source or local `.env` entry without hardcoding host-specific paths across files.
 
 ## 3. UI Component Modularity (Separation of Concerns)
 

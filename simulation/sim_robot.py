@@ -1,9 +1,19 @@
 """SO101Robot helper controller class for MuJoCo simulation."""
 
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
+
+# On headless Linux systems without an active display server, default to EGL offscreen rendering
+if (
+    sys.platform.startswith("linux")
+    and "DISPLAY" not in os.environ
+    and "WAYLAND_DISPLAY" not in os.environ
+):
+    os.environ.setdefault("MUJOCO_GL", "egl")
 
 import mujoco
 import mujoco.viewer

@@ -1,6 +1,7 @@
 """RealSO101Robot interface to communicate with physical SO-101 arm via Feetech servos."""
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -103,9 +104,20 @@ class RealSO101Robot(RobotInterface):
             self.connected = True
             print(f"Successfully connected to real SO-101 arm on port {self.port}.")
         except Exception as e:
-            raise ConnectionError(
-                f"Could not connect to physical robot on port {self.port}: {e}"
-            ) from e
+            port_path = Path(self.port)
+            err_details = [f"Could not connect to physical robot on port {self.port}: {e}"]
+            if port_path.exists() and not (
+                os.access(port_path, os.R_OK) and os.access(port_path, os.W_OK)
+            ):
+                err_details.append(
+                    f"\n[PERMISSION DENIED] Port '{self.port}' exists but lacks read/write "
+                    "permissions for the current user.\n"
+                    "Grant access on Linux with:\n"
+                    f"  1. Immediate fix: sudo chmod 666 {self.port}\n"
+                    "  2. Permanent fix: sudo usermod -a -G dialout $USER "
+                    "(then log out & back in)"
+                )
+            raise ConnectionError("\n".join(err_details)) from e
 
         self._last_qpos = np.zeros(6, dtype=np.float32)
         # Initialize _last_qpos with actual current positions if possible

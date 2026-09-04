@@ -84,6 +84,9 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 # Option B: Google Cloud Vertex AI
 # GOOGLE_CLOUD_PROJECT=your_project_id
 # GOOGLE_CLOUD_LOCATION=us-central1
+
+# Physical SO-101 Serial Port (optional, defaults to /dev/tty.usbmodem5B415332861)
+# ROBOT_PORT=/dev/ttyACM0
 ```
 
 - If using physical hardware, use the LeRobot package to find the serial port of your SO-101 robotic arm and calibrate it ([LeRobot SO-101 Guide](https://huggingface.co/docs/lerobot/so101)).
@@ -98,19 +101,21 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 # Open your browser at http://localhost:7860/
 uv run python main.py
 
-# Launch Web UI specifying an explicit physical serial port
-uv run python main.py --mode real --port /dev/tty.usbmodem5B415332861
+# Launch Web UI specifying an explicit physical serial port (or set ROBOT_PORT in .env)
+uv run python main.py --mode real --port /dev/ttyACM0
 
 # Launch Web UI with interactive 3D simulation viewer (sim) or digital twin split view (twin)
 uv run python main.py --mode sim
-uv run python main.py --mode twin --port /dev/tty.usbmodem5B415332861
+uv run python main.py --mode twin --port /dev/ttyACM0
 
 # Development auto-reload (restarts server when Python files change)
 uv run python main.py --mode sim --reload
 ```
 
 > [!NOTE]
-> The `--port` argument defaults to `/dev/tty.usbmodem5B415332861`. If your serial adapter differs, replace it with the actual device path of your SO-101 arm. You can find your hardware port using the `lerobot-find-port` utility.
+> The `--port` argument defaults to the value set in `ROBOT_PORT` (or `SO101_PORT`) in your `.env` file, falling back to `/dev/tty.usbmodem5B415332861`. If your serial adapter differs, configure `ROBOT_PORT` in `.env` or pass `--port <path>` (e.g., `/dev/ttyACM0` on Linux or `/dev/tty.usbmodem...` on macOS).
+>
+> **Linux Serial Permissions**: On Linux, ensure your user has read/write permissions for the serial port device (e.g., `/dev/ttyACM0`). You can grant immediate access with `sudo chmod 666 /dev/ttyACM0` or permanent access with `sudo usermod -a -G dialout $USER` (requires logout or `newgrp dialout`). You can run `uv run python main.py --task check_environment` to verify port access.
 
 ## Gemini Live API & Robot Tool Capabilities
 
