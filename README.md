@@ -186,6 +186,9 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 Verify system health, MuJoCo simulation physics, inverse kinematics, and unit test suites:
 
 ```bash
+# 0. Install pre-commit hooks for automated code formatting and lint checks
+uv run pre-commit install
+
 # 1. Run complete automated unit test suite (Workspace Calibration, Tool Adapters, VLA Controller, UI)
 uv run pytest tests/ -v
 

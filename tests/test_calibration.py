@@ -350,16 +350,18 @@ def test_f1_marker_id_harmonization_across_subsystems() -> None:
     assert expected_str in sys_prompt
 
 
-def test_f2_homography_lateral_y_parity_and_red_cube_grounding() -> None:
+def test_f2_homography_lateral_y_parity_and_red_cube_grounding(
+    real_homography_path: Path,
+    sim_homography_path: Path,
+) -> None:
     """Validate positive lateral Y mapping and parity for benchmark [760, 484]."""
-    from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
     from robot.cartesian_ik import CartesianIK
 
-    assert DEFAULT_SAVE_PATH.exists()
-    assert DEFAULT_SIM_SAVE_PATH.exists()
+    c_real = ArucoWorkspaceCalibrator(mode="real", save_path=real_homography_path)
+    c_sim = ArucoWorkspaceCalibrator(mode="sim", save_path=sim_homography_path)
 
-    c_real = ArucoWorkspaceCalibrator(mode="real")
-    c_sim = ArucoWorkspaceCalibrator(mode="sim")
+    assert c_real.is_calibrated
+    assert c_sim.is_calibrated
 
     pt = [760.0, 484.0]
     xyz_real = c_real.gemini_to_robot_xyz(pt, z_m=0.03)
