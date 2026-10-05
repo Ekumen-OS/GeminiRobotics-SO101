@@ -12,8 +12,7 @@ repos:
         entry: uv run mypy
         language: system
         types: [python]
-        files: ^(robot/contracts\.py|agent/contracts\.py|robot/perception\.py|agent/tools\.py)$
-        pass_filenames: true
+        pass_filenames: false
       - id: pytest
         name: pytest
         entry: uv run pytest -q

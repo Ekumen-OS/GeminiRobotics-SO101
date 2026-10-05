@@ -1,13 +1,13 @@
-"""TwinSO101Robot interface — mirror MuJoCo simulation state directly to physical SO-101 arm."""
-
+import logging
 import time
 
 import numpy as np
 
-from robot.constants import DEFAULT_SERIAL_PORT
 from robot.interface import RobotInterface
 from robot.real_robot import RealSO101Robot
 from simulation.sim_robot import SO101Robot
+
+logger = logging.getLogger(__name__)
 
 
 class TwinSO101Robot(RobotInterface):
@@ -19,7 +19,7 @@ class TwinSO101Robot(RobotInterface):
 
     def __init__(
         self,
-        port: str = DEFAULT_SERIAL_PORT,
+        port: str | None = None,
         xml_path=None,
         render_viewer: bool = True,
     ):
@@ -27,6 +27,7 @@ class TwinSO101Robot(RobotInterface):
 
         Args:
             port: Serial port device path for physical SO-101 arm.
+                Defaults to get_settings().serial_port.
             xml_path: Optional path to MuJoCo scene XML file.
             render_viewer: Whether to launch a passive 3D MuJoCo viewer by default.
 
@@ -36,7 +37,7 @@ class TwinSO101Robot(RobotInterface):
             RuntimeError: If loading the robot calibration profile fails.
             ConnectionError: If connection to the physical robot hardware fails.
         """
-        print("Initializing Digital Twin Mode (MuJoCo Simulation + Real Hardware Mirror)...")
+        logger.info("Initializing Digital Twin Mode (MuJoCo Simulation + Real Hardware Mirror)...")
         self.sim = SO101Robot(xml_path=xml_path, render_viewer=render_viewer)
         self.real = RealSO101Robot(port=port)
 

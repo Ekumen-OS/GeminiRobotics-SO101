@@ -13,7 +13,11 @@ import pytest
 import robot.calibration
 import simulation.sim_calibration
 from robot.interface import RobotInterface
+from robot.logger import setup_logging
+from robot.settings import Settings, set_settings
 from simulation.sim_calibration import compute_sim_calibration
+
+setup_logging()
 
 if sys.platform.startswith("linux") and "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
@@ -22,6 +26,12 @@ if sys.platform.startswith("linux") and "MUJOCO_GL" not in os.environ:
 _TEST_CALIB_DIR = tempfile.TemporaryDirectory()
 _ISOLATED_SIM_PATH = Path(_TEST_CALIB_DIR.name) / "workspace_homography_sim.npz"
 _ISOLATED_REAL_PATH = Path(_TEST_CALIB_DIR.name) / "workspace_homography.npz"
+
+_isolated_settings = Settings.from_env(
+    calibration_save_path=_ISOLATED_REAL_PATH,
+    calibration_sim_save_path=_ISOLATED_SIM_PATH,
+)
+set_settings(_isolated_settings)
 
 # Pre-populate isolated calibration matrices so calibrators initialize cleanly
 compute_sim_calibration(save_path=_ISOLATED_SIM_PATH)

@@ -1,6 +1,5 @@
-"""SO101Robot helper controller class for MuJoCo simulation."""
-
 import json
+import logging
 import os
 import sys
 import threading
@@ -15,16 +14,28 @@ if (
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
+from typing import Any
+
 import mujoco
 import mujoco.viewer
 import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
+from robot.settings import get_settings
 
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "workspace_calibration.json"
-)
+logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    """Dynamically resolve configuration defaults from central Settings."""
+    if name == "DEFAULT_CONFIG_PATH":
+        return get_settings().calibration_config_path
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def _get_default_config_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_CONFIG_PATH")
 
 
 class SO101Robot(RobotInterface):
@@ -93,7 +104,7 @@ class SO101Robot(RobotInterface):
                 self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
                 self.viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
             except Exception as err:
-                print(f"Notice: Could not launch MuJoCo viewer ({err}). Running in headless mode.")
+                logger.warning(f"Could not launch MuJoCo viewer ({err}). Running in headless mode.")
                 self.viewer = None
 
     def apply_workspace_calibration_config(self, config_path: str | Path | None = None) -> None:
@@ -102,7 +113,7 @@ class SO101Robot(RobotInterface):
         Args:
             config_path: Path to workspace calibration JSON.
         """
-        cfg_file = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        cfg_file = Path(config_path) if config_path else _get_default_config_path()
         if not cfg_file.exists():
             return
 
@@ -164,7 +175,7 @@ class SO101Robot(RobotInterface):
 
                 mujoco.mj_forward(self.model, self.data)
         except Exception as e:
-            print(f"[SO101Robot] Warning updating workspace geoms from config: {e}")
+            logger.warning(f"[SO101Robot] Warning updating workspace geoms from config: {e}")
 
     def reset(self, pose: str = "HOME") -> None:
         """Reset the robot to a specified preset pose.
@@ -217,7 +228,7 @@ class SO101Robot(RobotInterface):
                     self.viewer.sync()
                 return new_pos
             except (KeyError, AttributeError) as e:
-                print(f"[SO101Robot] Could not randomize target: {e}")
+                logger.warning(f"[SO101Robot] Could not randomize target: {e}")
                 return np.zeros(3)
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
@@ -351,7 +362,7 @@ class SO101Robot(RobotInterface):
         height = min(req_height, max_height)
 
         if (width != req_width or height != req_height) and not self._offscreen_warned:
-            print(
+            logger.warning(
                 "[WARN] Requested sim render resolution "
                 f"{req_width}x{req_height} exceeds MuJoCo offscreen limit "
                 f"{max_width}x{max_height}. Clamping to supported size."

@@ -1,5 +1,6 @@
 """Chat component for VLA instruction integration."""
 
+import logging
 from typing import Any
 
 import gradio as gr
@@ -7,6 +8,8 @@ import numpy as np
 
 from agent.vla_controller import VLAController
 from ui.stream import get_latest_raw_jpeg
+
+logger = logging.getLogger(__name__)
 
 
 def build_chat_interface(controller: VLAController, api_available: bool = True) -> tuple:
@@ -258,7 +261,7 @@ def wire_chat_events(
     def randomize_cube() -> None:
         if controller.robot is not None and hasattr(controller.robot, "randomize_target"):
             new_pos = controller.robot.randomize_target()
-            print(f"[UI] Random target placed at XYZ: {[round(v, 3) for v in new_pos]}")
+            logger.info(f"Random target placed at XYZ: {[round(v, 3) for v in new_pos]}")
 
     def clear_chat() -> tuple[list, dict]:
         controller.clear_history()

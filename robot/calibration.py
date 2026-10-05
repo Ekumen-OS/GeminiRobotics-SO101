@@ -7,6 +7,7 @@ directly to physical millimeter/meter coordinates in the robot base frame.
 
 import argparse
 import json
+import logging
 import sys
 import warnings
 from pathlib import Path
@@ -15,13 +16,32 @@ from typing import Any
 import cv2
 import numpy as np
 
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "workspace_calibration.json"
-)
-DEFAULT_SAVE_PATH = Path(__file__).resolve().parent.parent / "config" / "workspace_homography.npz"
-DEFAULT_SIM_SAVE_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "workspace_homography_sim.npz"
-)
+from robot.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    """Dynamically resolve configuration defaults from central Settings."""
+    if name == "DEFAULT_CONFIG_PATH":
+        return get_settings().calibration_config_path
+    if name == "DEFAULT_SAVE_PATH":
+        return get_settings().calibration_save_path
+    if name == "DEFAULT_SIM_SAVE_PATH":
+        return get_settings().calibration_sim_save_path
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def _get_default_config_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_CONFIG_PATH")
+
+
+def _get_default_save_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_SAVE_PATH")
+
+
+def _get_default_sim_save_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_SIM_SAVE_PATH")
 
 
 class ArucoWorkspaceCalibrator:
@@ -43,7 +63,7 @@ class ArucoWorkspaceCalibrator:
             save_path: Optional path to saved homography (.npz) file.
             mode: Operating mode ('real', 'sim', 'twin').
         """
-        self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        self.config_path = Path(config_path) if config_path else _get_default_config_path()
         self.mode = mode
         self.config: dict[str, Any] = {}
         self.homography_matrix: np.ndarray | None = None
@@ -58,7 +78,7 @@ class ArucoWorkspaceCalibrator:
         target_save_path = (
             Path(save_path)
             if save_path
-            else (DEFAULT_SIM_SAVE_PATH if mode == "sim" else DEFAULT_SAVE_PATH)
+            else (_get_default_sim_save_path() if mode == "sim" else _get_default_save_path())
         )
 
         # Try to load existing saved homography if available
@@ -209,7 +229,7 @@ class ArucoWorkspaceCalibrator:
                 self.reprojection_error = err
                 return True
         except Exception as e:
-            print(f"[ArucoCalibrator] Homography computation error: {e}")
+            logger.error(f"[ArucoCalibrator] Homography computation error: {e}")
 
         return False
 
@@ -525,7 +545,9 @@ class ArucoWorkspaceCalibrator:
         if self.homography_matrix is None:
             return "Cannot save: calibrator has not computed a valid homography."
 
-        default_path = DEFAULT_SIM_SAVE_PATH if self.mode == "sim" else DEFAULT_SAVE_PATH
+        default_path = (
+            _get_default_sim_save_path() if self.mode == "sim" else _get_default_save_path()
+        )
         save_p = Path(path) if path else default_path
         save_p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -546,7 +568,7 @@ class ArucoWorkspaceCalibrator:
         Returns:
             True if successfully loaded, False otherwise.
         """
-        load_p = Path(path) if path else DEFAULT_SAVE_PATH
+        load_p = Path(path) if path else _get_default_save_path()
         if not load_p.exists():
             return False
 
@@ -559,7 +581,7 @@ class ArucoWorkspaceCalibrator:
             self.reprojection_error = float(data.get("reprojection_error", 0.0))
             return True
         except Exception as e:
-            print(f"[ArucoCalibrator] Error loading calibration from {load_p}: {e}")
+            logger.error(f"[ArucoCalibrator] Error loading calibration from {load_p}: {e}")
             return False
 
     def get_calibration_status(self) -> dict[str, Any]:
@@ -621,7 +643,7 @@ def generate_aruco_markers(
         file_path = out_path / f"marker_{mid}.png"
         cv2.imwrite(str(file_path), bordered)
         created_files.append(file_path)
-        print(f"[ArUco] Generated {file_path}")
+        logger.info(f"[ArUco] Generated {file_path}")
 
     return created_files
 
@@ -648,7 +670,7 @@ def generate_calibration_sheet(
         Path to the generated calibration sheet PNG file.
     """
     if config_data is None:
-        cfg_file = DEFAULT_CONFIG_PATH
+        cfg_file = _get_default_config_path()
         if cfg_file.exists():
             try:
                 config_data = json.loads(cfg_file.read_text())
@@ -913,7 +935,7 @@ def generate_calibration_sheet(
     out_p.mkdir(parents=True, exist_ok=True)
     sheet_file = out_p / "workspace_calibration_sheet.png"
     cv2.imwrite(str(sheet_file), canvas)
-    print(f"[ArUco] Generated true-to-scale calibration sheet: {sheet_file}")
+    logger.info(f"[ArUco] Generated true-to-scale calibration sheet: {sheet_file}")
     return sheet_file
 
 
@@ -941,7 +963,7 @@ def setup_workspace_interactive(
     Returns:
         Updated configuration dictionary.
     """
-    cfg_file = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    cfg_file = Path(config_path) if config_path else _get_default_config_path()
     calibrator = ArucoWorkspaceCalibrator(config_path=cfg_file)
     cfg = dict(calibrator.config)
     out_path = Path(output_dir)

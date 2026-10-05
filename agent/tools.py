@@ -1,31 +1,67 @@
 """Robot tool declarations and execution adapters for Gemini Live API."""
 
 import asyncio
-import datetime
-import sys
+import logging
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
+from agent.contracts import GripperToolResponse, MoveToSpatialPointResponse
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS, PRESET_POSES
+from robot.contracts import VisualAlignmentResponse
 from robot.interface import RobotInterface
+from robot.logger import log_compat, log_with_tag
+from robot.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Retain _log alias for backwards compatibility with tests importing _log from agent.tools
+_log = log_compat
 
 
-def _log(module: str, tag: str, message: str, stream: Any = None) -> None:
-    """Format and print an ISO-timestamped diagnostic log entry.
+def build_move_spatial_response(
+    target_xyz_m: list[float],
+    executed_qpos_deg: list[float],
+    approach: str,
+    visual_hint: str,
+    perception: VisualAlignmentResponse | dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> MoveToSpatialPointResponse:
+    """Build a typed response payload for move_to_spatial_point tool execution."""
+    resp: MoveToSpatialPointResponse = {
+        "status": "success",
+        "target_xyz_m": target_xyz_m,
+        "executed_qpos_deg": executed_qpos_deg,
+        "approach": approach,
+        "visual_hint": visual_hint,
+    }
+    if perception is not None:
+        resp["perception"] = perception
+    if warnings:
+        resp["warnings"] = warnings
+    return resp
 
-    Args:
-        module: Component name (e.g. 'Tools').
-        tag: Semantic tag (e.g. 'EXEC', 'WARN', 'ERROR').
-        message: Log message content.
-        stream: Output stream (defaults to sys.stderr for ERROR/WARN, sys.stdout otherwise).
-    """
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    if stream is None:
-        stream = sys.stderr if tag in ("ERROR", "WARN") else sys.stdout
-    print(f"[{now_str}] [{module}] [{tag}] {message}", file=stream, flush=True)
+
+def build_gripper_response(
+    gripper_state: str,
+    gripper_deg: float,
+    executed_qpos_deg: list[float],
+    visual_hint: str,
+    warnings: list[str] | None = None,
+) -> GripperToolResponse:
+    """Build a typed response payload for open_gripper / close_gripper tool execution."""
+    resp: GripperToolResponse = {
+        "status": "success",
+        "gripper_state": gripper_state,
+        "gripper_deg": gripper_deg,
+        "executed_qpos_deg": executed_qpos_deg,
+        "visual_hint": visual_hint,
+    }
+    if warnings:
+        resp["warnings"] = warnings
+    return resp
 
 
 # Gripper limits derived from JOINT_LIMITS in degrees
@@ -303,7 +339,7 @@ def validate_and_clamp_joints(qpos_deg: list[float]) -> tuple[list[float], list[
                     f"{jname} was clamped from {angle:.1f}° to {clamped_val:.1f}° (limit exceeded)"
                 )
                 warnings.append(warn_msg)
-                _log("Tools", "WARN", warn_msg)
+                log_with_tag(logger, "WARN", warn_msg)
             clamped_qpos_deg.append(clamped_val)
         else:
             clamped_qpos_deg.append(angle)
@@ -315,7 +351,7 @@ async def execute_tool_call(
     robot: RobotInterface | None,
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
-) -> dict:
+) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Dispatch tool call to the RobotInterface asynchronously.
 
     Args:
@@ -336,7 +372,7 @@ async def execute_tool_call(
 
     if robot is None:
         err_msg = "RobotInterface is not initialized or injected."
-        _log("Tools", "ERROR", err_msg)
+        log_with_tag(logger, "ERROR", err_msg)
         return {"error": err_msg}
 
     try:
@@ -353,7 +389,7 @@ async def execute_tool_call(
             duration_sec = args.get("duration_sec", 1.0)
             if len(qpos_deg) != 6:
                 err_msg = f"move_to_pose expects 6 joint angles, got {len(qpos_deg)}"
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             qpos_rad = np.radians(clamped_qpos)
@@ -367,7 +403,7 @@ async def execute_tool_call(
             qpos_deg = args.get("qpos", [])
             if len(qpos_deg) != 6:
                 err_msg = f"set_joint_positions expects 6 joint angles, got {len(qpos_deg)}"
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             qpos_rad = np.radians(clamped_qpos)
@@ -388,17 +424,16 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_OPEN_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
-            response = {
-                "status": "success",
-                "executed_qpos_deg": clamped_qpos,
-                "visual_hint": (
+            return build_gripper_response(
+                gripper_state="open",
+                gripper_deg=float(GRIPPER_OPEN_DEG),
+                executed_qpos_deg=clamped_qpos,
+                visual_hint=(
                     "Gripper opened. Inspect camera frame to visually verify object release and "
                     "clearance."
                 ),
-            }
-            if warnings:
-                response["warnings"] = warnings
-            return response
+                warnings=warnings if warnings else None,
+            )
 
         elif name == "close_gripper":
             qpos_rad = robot.get_joint_positions()
@@ -406,24 +441,23 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_CLOSE_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
-            response = {
-                "status": "success",
-                "executed_qpos_deg": clamped_qpos,
-                "visual_hint": (
+            return build_gripper_response(
+                gripper_state="closed",
+                gripper_deg=float(GRIPPER_CLOSE_DEG),
+                executed_qpos_deg=clamped_qpos,
+                visual_hint=(
                     "Gripper closed. Lift arm to hover (z_height_cm=5.0) and inspect camera frame "
                     "to visually confirm if object is held between jaws or still on table."
                 ),
-            }
-            if warnings:
-                response["warnings"] = warnings
-            return response
+                warnings=warnings if warnings else None,
+            )
 
         elif name == "move_to_preset":
             pose_name = args.get("pose_name", "HOME").upper()
             if pose_name not in PRESET_POSES:
                 available_poses = list(PRESET_POSES.keys())
                 err_msg = f"Unknown preset pose: {pose_name}. Available: {available_poses}"
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
             target_rad = PRESET_POSES[pose_name]
             robot.move_to_pose(target_rad, duration_sec=1.0)
@@ -444,7 +478,7 @@ async def execute_tool_call(
         elif name == "get_end_effector_pose":
             if not hasattr(robot, "get_end_effector_pose"):
                 err_msg = "End effector pose is not available in real physical mode."
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
             pos, mat = robot.get_end_effector_pose()
             return {
@@ -456,7 +490,7 @@ async def execute_tool_call(
             point = args.get("point", [])
             if len(point) != 2:
                 err_msg = f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
 
             approach = (
@@ -467,7 +501,7 @@ async def execute_tool_call(
                     "move_to_spatial_point requires 'approach' parameter "
                     "('top_down' or 'horizontal')"
                 )
-                _log("Tools", "ERROR", err_msg)
+                log_with_tag(logger, "ERROR", err_msg)
                 return {"error": err_msg}
 
             # Visual refinement via OpenCV multi-color salient object detector
@@ -490,8 +524,8 @@ async def execute_tool_call(
                                 abs(refined_pt[0] - point[0]) > 5
                                 or abs(refined_pt[1] - point[1]) > 5
                             ):
-                                _log(
-                                    "Tools",
+                                log_with_tag(
+                                    logger,
                                     "EXEC",
                                     f"Auto-refined coordinate [{point[0]:.0f}, {point[1]:.0f}] "
                                     f"→ [{refined_pt[0]:.0f}, {refined_pt[1]:.0f}] "
@@ -499,7 +533,7 @@ async def execute_tool_call(
                                 )
                                 point = refined_pt
                 except Exception as e:
-                    _log("Tools", "WARN", f"Visual refinement skipped: {e}")
+                    log_with_tag(logger, "WARN", f"Visual refinement skipped: {e}")
 
             z_height_cm = float(args.get("z_height_cm", 3.0))
             # Clamp height to reasonable safety bounds [0.0cm, 20.0cm]
@@ -515,8 +549,8 @@ async def execute_tool_call(
                 hover_z=hover_z,
                 mode="sim" if robot_is_sim else None,
             )
-            _log(
-                "Tools",
+            log_with_tag(
+                logger,
                 "EXEC",
                 f"move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
                 f"(z={z_height_cm:.1f}cm, approach={approach}) → XYZ "
@@ -539,21 +573,24 @@ async def execute_tool_call(
                     f"[{badge_name}] [{int(point[0])}, {int(point[1])}] "
                     f"(z={z_height_cm:.1f}cm, {approach})"
                 )
-                active_target = {
+                active_target: dict[str, Any] = {
                     "point": (float(point[0]), float(point[1])),
                     "label": active_label,
                     "color": (0, 225, 255),
                 }
                 existing = get_model_targets()
                 if existing:
-                    updated = []
+                    updated: list[dict[str, Any] | tuple[float, float] | list[float]] = []
                     matched = False
                     for tgt in existing:
-                        dy = abs(tgt["point"][0] - point[0])
-                        dx = abs(tgt["point"][1] - point[1])
-                        if dy < 35 and dx < 35 and not matched:
-                            updated.append(active_target)
-                            matched = True
+                        if isinstance(tgt, dict) and "point" in tgt:
+                            dy = abs(tgt["point"][0] - point[0])
+                            dx = abs(tgt["point"][1] - point[1])
+                            if dy < 35 and dx < 35 and not matched:
+                                updated.append(active_target)
+                                matched = True
+                            else:
+                                updated.append(tgt)
                         else:
                             updated.append(tgt)
                     if not matched:
@@ -581,12 +618,8 @@ async def execute_tool_call(
             clamped_qpos, warnings = validate_and_clamp_joints(solved_deg)
             qpos_rad = np.radians(clamped_qpos)
             robot.move_to_pose(qpos_rad, duration_sec=1.5)
-            response = {
-                "status": "success",
-                "target_xyz_m": target_xyz.tolist(),
-                "executed_qpos_deg": clamped_qpos,
-                "approach": approach,
-            }
+
+            perception_res: VisualAlignmentResponse | None = None
             if get_latest_jpeg_fn:
                 try:
                     import cv2
@@ -599,36 +632,44 @@ async def execute_tool_call(
                         frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if frame_bgr is not None:
                             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                            response["perception"] = compute_visual_alignment(
+                            perception_res = compute_visual_alignment(
                                 frame_rgb=frame_rgb,
                                 target_point_1000=point,
+                                tolerance=get_settings().alignment_tolerance_px,
                             )
                 except Exception as e:
-                    _log("Tools", "WARN", f"Perception computation skipped: {e}")
+                    log_with_tag(logger, "WARN", f"Perception computation skipped: {e}")
+
             if z_height_cm >= 3.0:
-                response["visual_hint"] = (
+                visual_hint = (
                     "Arm reached hover position (z>=3cm). "
                     "Visual Verification Loop: Inspect the new camera frame, identify gripper "
                     "position [y_g, x_g] vs target [y_t, x_t], state the relative error [dy, dx], "
                     "and correct or confirm alignment before descending."
                 )
             else:
-                response["visual_hint"] = (
+                visual_hint = (
                     f"Arm reached contact height (z={z_height_cm:.1f}cm). Visually verify gripper "
                     "jaws surround the target contact center before closing."
                 )
-            if warnings:
-                response["warnings"] = warnings
-            return response
+
+            return build_move_spatial_response(
+                target_xyz_m=target_xyz.tolist(),
+                executed_qpos_deg=clamped_qpos,
+                approach=approach,
+                visual_hint=visual_hint,
+                perception=perception_res,
+                warnings=warnings if warnings else None,
+            )
 
         else:
             err_msg = f"Unknown tool called: {name}"
-            _log("Tools", "ERROR", err_msg)
+            log_with_tag(logger, "ERROR", err_msg)
             return {"error": err_msg}
 
     except Exception as e:
         err_msg = f"Exception during execution of {name}: {e}"
-        _log("Tools", "ERROR", err_msg)
+        log_with_tag(logger, "ERROR", err_msg)
         return {"error": err_msg}
 
 
@@ -637,7 +678,7 @@ def execute_tool_call_sync(
     robot: RobotInterface | None,
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
-) -> dict:
+) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Synchronous convenience wrapper for execute_tool_call."""
     try:
         loop = asyncio.get_running_loop()

@@ -26,28 +26,26 @@ By adhering to the **Dependency Inversion Principle (DIP)** from SOLID, the UI n
 ## 2. Centralized Configuration (Single Source of Truth)
 
 **The Problem:**
-Physical constraints, such as the minimum and maximum rotation angles for the robot's servos (e.g., Shoulder Pan -100° to 100°), were hardcoded directly into UI sliders. This is known as using **Magic Numbers**. If the hardware changes, developers would have to hunt down these numbers across the codebase, risking physical damage to the robot if they miss one.
+Physical constraints, such as servo rotation angles, serial ports, tolerance thresholds, and model parameters, were previously scattered across modules. Furthermore, reading `os.environ` directly at import time caused brittleness, side effects during testing, and made runtime overrides difficult.
 
 **The Solution:**
-We centralized all constants into `robot/constants.py`.
+We established a frozen, type-safe `Settings` dataclass in `robot/settings.py`, resolved once at application startup or via `get_settings()`, alongside physical kinematics limits in `robot/constants.py`.
 
 ```python
-JOINT_LIMITS = {
-    "shoulder_pan": (-100.0, 100.0),
+@dataclass(frozen=True)
+class Settings:
+    serial_port: str
+    gemini_model_id: str
+    alignment_tolerance_px: int = 25
     # ...
-}
-
-# Serial communication port from environment or fallback
-DEFAULT_SERIAL_PORT = os.environ.get(
-    "ROBOT_PORT",
-    os.environ.get("SO101_PORT", "/dev/tty.usbmodem5B415332861"),
-)
 ```
+
+`DEFAULT_SERIAL_PORT` and other configuration constants dynamically defer to `get_settings()` via module `__getattr__`, preventing premature environment evaluation during imports while maintaining backwards compatibility.
 
 **Why it matters:**
 
-- **Safety:** Hardware limits are strictly defined in the hardware module, not the UI layer.
-- **Maintainability:** Updating a calibration, servo limit, or serial port requires changing exactly one source or local `.env` entry without hardcoding host-specific paths across files.
+- **Safety & Hermeticity:** Configuration is decoupled from import time; tests can isolate paths and parameters deterministically without touching disk or environment variables.
+- **Maintainability:** Changing ports, models, or tolerances happens in exactly one place (`Settings.from_env()`).
 
 ## 3. UI Component Modularity (Separation of Concerns)
 

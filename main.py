@@ -9,11 +9,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from robot import DEFAULT_SERIAL_PORT, PRESET_POSES, RealSO101Robot
+from robot.constants import PRESET_POSES
+from robot.logger import setup_logging
+from robot.real_robot import RealSO101Robot
+from robot.settings import Settings, get_settings, set_settings
 from robot.twin_robot import TwinSO101Robot
 from simulation.sim_robot import SO101Robot
-
-load_dotenv()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,11 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip interactive prompts during setup tasks and use default/existing config.",
     )
+    from robot.settings import _get_platform_serial_port
+
+    default_port = _get_platform_serial_port()
     parser.add_argument(
         "--port",
-        default=DEFAULT_SERIAL_PORT,
+        default=None,
         help=(
-            f"Serial port for physical arm (default: {DEFAULT_SERIAL_PORT}). "
+            f"Serial port for physical arm (default: {default_port}). "
             "Can also be configured via ROBOT_PORT or SO101_PORT environment variable."
         ),
     )
@@ -191,6 +195,8 @@ def _run_with_reload(forward_args: list[str]) -> None:
 
 def _run_once(args: argparse.Namespace) -> None:
     """Execute a single run of the selected mode/task."""
+    setup_logging()
+
     # On macOS, switch to mjpython before headers only if opening GLFW window in test_simulation
     if args.task == "test_simulation":
         from simulation.simulate import ensure_mjpython
@@ -231,23 +237,31 @@ def _run_once(args: argparse.Namespace) -> None:
 
     # 2. Initialize Robot based on mode for Web UI operation without native window popups
     robot = None
+    settings = get_settings()
+    port = args.port or settings.serial_port
+
     if args.mode == "sim":
         print("Initializing MuJoCo simulation robot arm in headless UI mode...")
         robot = SO101Robot(render_viewer=False)
         robot.reset("HOME")
     elif args.mode == "twin":
-        print(f"Initializing Twin (Sim + Real on port {args.port}) without viewer...")
-        robot = TwinSO101Robot(port=args.port, render_viewer=False)
+        print(f"Initializing Twin (Sim + Real on port {port}) without viewer...")
+        robot = TwinSO101Robot(port=port, render_viewer=False)
         robot.reset("HOME")
     else:
-        print(f"Connecting real SO-101 arm on port {args.port} for Real Mode VLA UI...")
-        robot = RealSO101Robot(port=args.port)
+        print(f"Connecting real SO-101 arm on port {port} for Real Mode VLA UI...")
+        robot = RealSO101Robot(port=port)
 
     # 3. Execute Unified Gradio VLA Web UI server
     try:
         from ui.app import launch_web_ui
 
-        launch_web_ui(robot=robot, mode=args.mode, server_name="0.0.0.0", server_port=7860)
+        launch_web_ui(
+            robot=robot,
+            mode=args.mode,
+            server_name=settings.server_host,
+            server_port=settings.server_port,
+        )
     except KeyboardInterrupt:
         print("\nExecution interrupted by user.")
     finally:
@@ -267,9 +281,17 @@ def _run_once(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Execute main CLI for GeminiRobotics-SO101 (Simulation & Physical Hardware)."""
+    load_dotenv()
+    setup_logging()
     argv = sys.argv[1:]
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    settings = Settings.from_env(
+        serial_port=args.port if args.port is not None else None,
+    )
+    set_settings(settings)
+    args.port = settings.serial_port
 
     if args.reload:
         if args.task is not None:
