@@ -1,11 +1,6 @@
 """Constants and configuration for the SO-101 robot arm."""
 
-import os
-
 import numpy as np
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # Preset target joint angles (in radians) for standard arm poses
 PRESET_POSES: dict[str, np.ndarray] = {
@@ -42,8 +37,16 @@ JOINT_LIMITS = {
     "gripper": (-75.0, 75.0),
 }
 
-# Serial communication configuration (can be overridden via ROBOT_PORT or SO101_PORT env var)
-DEFAULT_SERIAL_PORT = os.environ.get(
-    "ROBOT_PORT",
-    os.environ.get("SO101_PORT", "/dev/tty.usbmodem5B415332861"),
-)
+
+def __getattr__(name: str) -> str:
+    """Dynamically resolve configuration constants from the central Settings singleton."""
+    if name == "DEFAULT_SERIAL_PORT":
+        from robot.settings import get_settings
+
+        return get_settings().serial_port
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def __dir__() -> list[str]:
+    """Include dynamic attributes in module dir()."""
+    return [*globals().keys(), "DEFAULT_SERIAL_PORT"]

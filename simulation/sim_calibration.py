@@ -5,21 +5,38 @@ by projecting 3D workspace corner coordinates through the virtual MuJoCo camera.
 """
 
 import json
+import logging
+import sys
 from pathlib import Path
+from typing import Any
 
 import cv2
 import mujoco
 import numpy as np
 
 from robot.calibration import ArucoWorkspaceCalibrator
+from robot.settings import get_settings
 
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "workspace_calibration.json"
-)
-DEFAULT_SIM_SAVE_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "workspace_homography_sim.npz"
-)
+logger = logging.getLogger(__name__)
+
 DEFAULT_SCENE_PATH = Path(__file__).resolve().parent / "assets" / "scene.xml"
+
+
+def __getattr__(name: str) -> Any:
+    """Dynamically resolve configuration defaults from central Settings."""
+    if name == "DEFAULT_CONFIG_PATH":
+        return get_settings().calibration_config_path
+    if name == "DEFAULT_SIM_SAVE_PATH":
+        return get_settings().calibration_sim_save_path
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def _get_default_config_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_CONFIG_PATH")
+
+
+def _get_default_sim_save_path() -> Path:
+    return getattr(sys.modules[__name__], "DEFAULT_SIM_SAVE_PATH")
 
 
 def project_world_to_pixel(
@@ -106,7 +123,7 @@ def compute_sim_calibration(
     cam_mat = data.cam_xmat[cam_id].reshape(3, 3).copy()
     fovy_deg = float(model.cam_fovy[cam_id])
 
-    cfg_file = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    cfg_file = Path(config_path) if config_path else _get_default_config_path()
     if not cfg_file.exists():
         raise FileNotFoundError(f"Workspace calibration config not found at '{cfg_file}'.")
 
@@ -150,7 +167,7 @@ def compute_sim_calibration(
     reprojection_error = float(np.mean(np.linalg.norm(proj_xy - dst_arr, axis=1)))
 
     # Persist to disk
-    target_save_path = Path(save_path) if save_path else DEFAULT_SIM_SAVE_PATH
+    target_save_path = Path(save_path) if save_path else _get_default_sim_save_path()
     target_save_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         target_save_path,
@@ -158,7 +175,7 @@ def compute_sim_calibration(
         inverse_homography=inverse_homography,
         reprojection_error=reprojection_error,
     )
-    print(
+    logger.info(
         f"[SimCalibration] Computed synthetic homography (err: {reprojection_error:.6f}mm) "
         f"and saved to {target_save_path}"
     )
@@ -185,7 +202,7 @@ def init_sim_workspace_calibration(
     Returns:
         The calibrated ArucoWorkspaceCalibrator instance.
     """
-    target_save_path = Path(save_path) if save_path else DEFAULT_SIM_SAVE_PATH
+    target_save_path = Path(save_path) if save_path else _get_default_sim_save_path()
 
     # Compute and save synthetic homography
     h_mat, inv_h, err = compute_sim_calibration(

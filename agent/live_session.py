@@ -1,33 +1,20 @@
 """Live API WebSocket session manager for Gemini."""
 
 import asyncio
-import datetime
-import os
-import sys
-from typing import Any, AsyncIterator
+import logging
+from typing import AsyncIterator
 
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from robot.logger import log_with_tag
+from robot.settings import get_settings
 
-def _log(module: str, tag: str, message: str, stream: Any = None) -> None:
-    """Format and print an ISO-timestamped diagnostic log entry.
-
-    Args:
-        module: Component name (e.g. 'LiveSession').
-        tag: Semantic tag (e.g. 'INFO', 'STREAM', 'ERROR', 'WARN').
-        message: Log message content.
-        stream: Output stream (defaults to sys.stderr for ERROR/WARN, sys.stdout otherwise).
-    """
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    if stream is None:
-        stream = sys.stderr if tag in ("ERROR", "WARN") else sys.stdout
-    print(f"[{now_str}] [{module}] [{tag}] {message}", file=stream, flush=True)
+logger = logging.getLogger(__name__)
 
 
 def create_genai_client() -> genai.Client:
-    """Create a genai Client with dual auth support.
+    """Create a genai Client with dual auth support based on Settings.
 
     Prioritizes GOOGLE_API_KEY for Google AI Studio.
     Falls back to Vertex AI ADC if GOOGLE_CLOUD_PROJECT is set.
@@ -35,14 +22,15 @@ def create_genai_client() -> genai.Client:
     Raises:
         ConnectionError: If neither authentication method is configured.
     """
-    load_dotenv()
-    if "GOOGLE_API_KEY" in os.environ:
-        return genai.Client()
-
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    if project:
-        return genai.Client(vertexai=True, project=project, location=location)
+    settings = get_settings()
+    if settings.credentials_mode == "api_key" and settings.google_api_key:
+        return genai.Client(api_key=settings.google_api_key)
+    if settings.credentials_mode == "vertex" and settings.google_cloud_project:
+        return genai.Client(
+            vertexai=True,
+            project=settings.google_cloud_project,
+            location=settings.google_cloud_location,
+        )
 
     raise ConnectionError(
         "Missing authentication credentials for Gemini Live API. "
@@ -94,24 +82,24 @@ class GeminiLiveSession:
             if self._session is not None:
                 return
 
-            _log("LiveSession", "INFO", f"Connecting to {self.model}...")
-            _log("LiveSession", "INFO", f"Config: {self.config}")
+            log_with_tag(logger, "INFO", f"Connecting to {self.model}...")
+            log_with_tag(logger, "INFO", f"Config: {self.config}")
             self._session_cm = self.client.aio.live.connect(model=self.model, config=self.config)
             self._session = await self._session_cm.__aenter__()
-            _log("LiveSession", "INFO", "Connected successfully.")
+            log_with_tag(logger, "INFO", "Connected successfully.")
 
     async def disconnect(self) -> None:
         """Close the live WebSocket connection."""
-        _log("LiveSession", "INFO", "Disconnecting...")
+        log_with_tag(logger, "INFO", "Disconnecting...")
         async with self._lock:
             if self._session_cm is not None:
                 try:
                     await self._session_cm.__aexit__(None, None, None)
                 except Exception as e:
-                    _log("LiveSession", "ERROR", f"Error during disconnect: {e}")
+                    log_with_tag(logger, "ERROR", f"Error during disconnect: {e}")
                 self._session_cm = None
             self._session = None
-        _log("LiveSession", "INFO", "Disconnected.")
+        log_with_tag(logger, "INFO", "Disconnected.")
 
     async def send_instruction(self, text: str, frame_jpeg: bytes | None) -> None:
         """Send user instruction with an optional JPEG frame."""
@@ -120,8 +108,8 @@ class GeminiLiveSession:
 
         async with self._ws_lock:
             if frame_jpeg:
-                _log(
-                    "LiveSession",
+                log_with_tag(
+                    logger,
                     "STREAM",
                     f"📸 Sent initial observation frame ({len(frame_jpeg)} bytes)",
                 )
@@ -129,7 +117,7 @@ class GeminiLiveSession:
                     video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
                 )
 
-            _log("LiveSession", "INFO", f"Sending text: {text!r}")
+            log_with_tag(logger, "INFO", f"Sending text: {text!r}")
             await self._session.send_realtime_input(text=text)
 
     async def send_text(self, text: str) -> None:
@@ -137,7 +125,7 @@ class GeminiLiveSession:
         if not self._session:
             return
         async with self._ws_lock:
-            _log("LiveSession", "INFO", f"Sending text: {text!r}")
+            log_with_tag(logger, "INFO", f"Sending text: {text!r}")
             await self._session.send_realtime_input(text=text)
 
     async def send_frame(self, jpeg_bytes: bytes) -> None:
@@ -145,7 +133,7 @@ class GeminiLiveSession:
         if not self._session:
             return
         async with self._ws_lock:
-            _log("LiveSession", "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
+            log_with_tag(logger, "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
             await self._session.send_realtime_input(
                 video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
             )
@@ -156,7 +144,7 @@ class GeminiLiveSession:
             return
 
         async with self._ws_lock:
-            _log("LiveSession", "INFO", f"Sending tool responses: {function_responses}")
+            log_with_tag(logger, "INFO", f"Sending tool responses: {function_responses}")
             await self._session.send_tool_response(function_responses=function_responses)
 
     async def receive(self) -> AsyncIterator[types.LiveServerMessage]:

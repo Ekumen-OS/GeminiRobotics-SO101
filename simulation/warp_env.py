@@ -1,8 +1,9 @@
-"""SO-101 MuJoCo Warp GPU/CPU Batched Simulation Environment Interface."""
-
+import logging
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     import mujoco
@@ -39,12 +40,14 @@ class SO101WarpEnv:
         self.xml_path = xml_path
 
         if not WARP_AVAILABLE:
-            print("Notice: 'mujoco_warp' or 'warp' package not found in current environment.")
+            logger.warning(
+                "Notice: 'mujoco_warp' or 'warp' package not found in current environment."
+            )
             self.mjw_model = None
             self.mjw_data = None
             return
 
-        print(f"Initializing MuJoCo Warp with {num_envs} parallel environments...")
+        logger.info(f"Initializing MuJoCo Warp with {num_envs} parallel environments...")
         wp.init()
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
