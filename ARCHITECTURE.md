@@ -91,53 +91,21 @@ Any agent modifying the codebase MUST preserve the following schemas and functio
 
 ### 3.2. Perception Engine (`robot/perception.py`) ↔ Tools & VLA Controller
 
-- **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=25.0) -> dict`**:
-  - **Returns:**
-  
-    ```python
-    {
-        "gripper_point_1000": [float, float],
-        "target_point_1000": [float, float],
-        "measured_offset": {
-            "dy": float,  # target_y - gripper_y
-            "dx": float,  # target_x - gripper_x
-            "distance": float,  # hypot(dy, dx)
-        },
-        "is_aligned": bool,  # abs(dy) <= tolerance and abs(dx) <= tolerance
-        "alignment_tolerance": float,
-    }
-    ```
+Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py`](robot/contracts.py):
 
-- **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0) -> dict`**:
-  - **Returns:**
-  
-    ```python
-    {
-        "object_elevated": bool,  # True if present pre-lift and absent post-lift
-        "object_detected_on_table": bool,  # True if object still detected on table
-        "grasped": bool,  # Confirmed grasp
-        "confidence": float,  # Confidence score [0.0, 1.0]
-    }
-    ```
+- **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=None) -> VisualAlignmentResponse`**:
+  - **Typed contract:** [`VisualAlignmentResponse`](robot/contracts.py) (incorporates [`MeasuredOffset`](robot/contracts.py)).
+- **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0) -> GraspElevationResponse`**:
+  - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
 
 ### 3.3. Tool Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
 
-- **`move_to_spatial_point` Return Payload**:
-  
-  ```python
-  {
-      "status": "success",
-      "target_xyz_m": [float, float, float],
-      "executed_qpos_deg": [float, float, float, float, float, float],
-      "approach": "top_down" | "horizontal",
-      "perception": dict,  # Output from compute_visual_alignment (when camera available)
-      "visual_hint": str,  # Actionable instruction for the model's next turn
-      "warnings": list[str],  # Optional joint limit warnings
-  }
-  ```
+Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py`](agent/contracts.py):
 
+- **`move_to_spatial_point` Return Payload**:
+  - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`VisualAlignmentResponse`](robot/contracts.py) under `perception`).
 - **`close_gripper` / `open_gripper` Return Payload**:
-  Must include `visual_hint` guiding the model to perform immediate post-action visual inspection before chaining further commands.
+  - **Typed contract:** [`GripperToolResponse`](agent/contracts.py).
 
 ---
 
@@ -208,6 +176,9 @@ uv run pytest tests/test_e2e_perception_guardrails.py -v
 # 4. Run static lint and code formatting check
 uv run ruff check .
 uv run ruff format --check .
+
+# 5. Run static type checking (scope is defined in [tool.mypy] `files` in pyproject.toml)
+uv run mypy
 ```
 
 ---
@@ -226,6 +197,9 @@ GeminiRobotics-SO101/
 │   ├── workspace_homography.npz      # Calibrated real physical homography matrix (local artifact, gitignored)
 │   └── workspace_homography_sim.npz  # Calibrated simulation synthetic homography matrix (local artifact, gitignored)
 ├── robot/
+│   ├── settings.py                   # Central Settings dataclass and environment configuration
+│   ├── logger.py                     # ISO-8601 millisecond logger and stream router
+│   ├── contracts.py                  # Subsystem TypedDict contracts for perception payloads
 │   ├── calibration.py                # ArUco detection, homography & coordinate transformations
 │   ├── perception.py                 # Visual alignment [dy, dx] & grasp elevation metrics
 │   ├── vision_detector.py            # HSV salient color segmentation & contour detection
@@ -236,6 +210,9 @@ GeminiRobotics-SO101/
 │   ├── constants.py                  # Joint limits, home poses, and serial port defaults
 │   └── theory.md                     # Mathematical derivations for kinematics and homography
 ├── agent/
+│   ├── contracts.py                  # Subsystem TypedDict contracts for tool responses
+│   ├── prompts/
+│   │   └── vla_system.md             # Externalized VLA system prompt template
 │   ├── live_session.py               # Gemini Live WebSocket session manager
 │   ├── tools.py                      # Primitive robot tool declarations & execution adapters
 │   └── vla_controller.py             # Closed-loop visual verification loop & guardrails

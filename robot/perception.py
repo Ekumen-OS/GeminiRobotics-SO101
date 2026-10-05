@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from robot.contracts import GraspElevationResponse, VisualAlignmentResponse
+from robot.settings import get_settings
 from robot.vision_detector import detect_workspace_objects, refine_point_to_nearest_object
 
 
@@ -13,8 +15,8 @@ def compute_visual_alignment(
     target_point_1000: list[float] | tuple[float, float] | np.ndarray,
     gripper_point_1000: list[float] | tuple[float, float] | np.ndarray | None = None,
     robot_state: dict[str, Any] | None = None,
-    tolerance: float = 25.0,
-) -> dict[str, Any]:
+    tolerance: float | None = None,
+) -> VisualAlignmentResponse:
     """Calculate measured visual alignment offset between gripper and target object.
 
     Args:
@@ -22,7 +24,8 @@ def compute_visual_alignment(
         target_point_1000: Normalized [y, x] coordinate of target in [0, 1000].
         gripper_point_1000: Optional explicitly specified normalized [y, x] gripper position.
         robot_state: Optional dictionary containing robot telemetry or joint angles.
-        tolerance: Maximum pixel error threshold in normalized [0, 1000] space (default: 25.0).
+        tolerance: Maximum pixel error threshold in normalized [0, 1000] space.
+            Defaults to settings alignment_tolerance_px.
 
     Returns:
         Dictionary adhering to ARCHITECTURE.md perception contract:
@@ -32,6 +35,10 @@ def compute_visual_alignment(
             - is_aligned: bool
             - alignment_tolerance: float
     """
+    if tolerance is None:
+        tolerance = float(get_settings().alignment_tolerance_px)
+    else:
+        tolerance = float(tolerance)
     target_y = float(target_point_1000[0])
     target_x = float(target_point_1000[1])
 
@@ -82,7 +89,7 @@ def verify_grasp_elevation(
     post_lift_frame_rgb: np.ndarray | None,
     target_point_1000: list[float] | tuple[float, float] | np.ndarray | None = None,
     max_table_presence_dist: float = 80.0,
-) -> dict[str, Any]:
+) -> GraspElevationResponse:
     """Verify whether an object was lifted or remains resting on the table surface.
 
     Args:

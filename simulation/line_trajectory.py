@@ -1,10 +1,11 @@
-"""Line trajectory generator for linear axis sweeps in the air with the end effector."""
-
+import logging
 import time
 
 import numpy as np
 
 from robot.cartesian_ik import CartesianIK
+
+logger = logging.getLogger(__name__)
 
 
 class LineTrajectoryGenerator:
@@ -101,7 +102,7 @@ class LineTrajectoryGenerator:
         )
 
         dist_cm = distance * 100
-        print(f"Executing line sweep along {axis.upper()}-axis ({dist_cm:.1f} cm)...")
+        logger.info(f"Executing line sweep along {axis.upper()}-axis ({dist_cm:.1f} cm)...")
         current_qpos = self.robot.get_joint_positions()
         nominal_anchor = current_qpos.copy()
 
@@ -139,4 +140,4 @@ class LineTrajectoryGenerator:
             current_qpos = target_qpos
             time.sleep(step_delay)
 
-        print(f"Line sweep along {axis.upper()}-axis completed successfully.")
+        logger.info(f"Line sweep along {axis.upper()}-axis completed successfully.")

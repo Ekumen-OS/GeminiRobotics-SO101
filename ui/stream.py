@@ -1,6 +1,7 @@
 """Unified Vision Streamer handling OpenCV hardware cameras and multi-mode placeholders."""
 
 import atexit
+import logging
 import sys
 import threading
 import time
@@ -11,15 +12,26 @@ import cv2
 import numpy as np
 
 from robot.calibration import ArucoWorkspaceCalibrator
+from robot.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 # Synchronization lock and atomic token for instant, zero-latency video source transitions
 _stream_lock = threading.Lock()
 _current_stream_id = 0
 _device_names: dict[int, str] = {}
-_sim_frame_lock = threading.Lock()
-STREAM_TARGET_FPS = 30
-STREAM_FRAME_WIDTH = 640
-STREAM_FRAME_HEIGHT = 480
+
+
+def __getattr__(name: str) -> Any:
+    """Dynamically resolve stream constants from central Settings."""
+    if name == "STREAM_TARGET_FPS":
+        return get_settings().stream_fps
+    if name == "STREAM_FRAME_WIDTH":
+        return get_settings().stream_width
+    if name == "STREAM_FRAME_HEIGHT":
+        return get_settings().stream_height
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 _global_latest_raw_frame: np.ndarray | None = None
 _global_latest_annotated_frame: np.ndarray | None = None
@@ -563,7 +575,10 @@ class _SingletonSimRuntime:
 
     def _loop(self) -> None:
         global _global_latest_frame, _global_latest_raw_frame, _global_latest_annotated_frame
-        frame_interval = 1.0 / STREAM_TARGET_FPS
+        settings = get_settings()
+        frame_interval = 1.0 / settings.stream_fps
+        stream_width = settings.stream_width
+        stream_height = settings.stream_height
 
         while not self._stop_event.is_set():
             start = time.time()
@@ -575,7 +590,7 @@ class _SingletonSimRuntime:
                 if robot is None:
                     raw_frame = cv2.resize(
                         generate_raw_sim_placeholder_pattern(),
-                        (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+                        (stream_width, stream_height),
                         interpolation=cv2.INTER_LINEAR,
                     )
                 else:
@@ -591,8 +606,8 @@ class _SingletonSimRuntime:
 
                     raw_frame = _sim_frame_with_fallback(
                         robot=robot,
-                        width=STREAM_FRAME_WIDTH,
-                        height=STREAM_FRAME_HEIGHT,
+                        width=stream_width,
+                        height=stream_height,
                     )
 
                 with self._frame_lock:
@@ -648,11 +663,15 @@ class _SingletonSimRuntime:
             if self._latest_frame is not None:
                 return self._latest_frame.copy()
 
+        settings = get_settings()
+        stream_width = settings.stream_width
+        stream_height = settings.stream_height
+
         if robot is not None and hasattr(robot, "render_rgb_frame"):
             frame = _sim_frame_with_fallback(
                 robot=robot,
-                width=STREAM_FRAME_WIDTH,
-                height=STREAM_FRAME_HEIGHT,
+                width=stream_width,
+                height=stream_height,
             )
             if frame is not None:
                 with self._frame_lock:
@@ -663,7 +682,7 @@ class _SingletonSimRuntime:
         # First frame race: return deterministic raw fallback until worker publishes one.
         return cv2.resize(
             generate_raw_sim_placeholder_pattern(),
-            (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+            (stream_width, stream_height),
             interpolation=cv2.INTER_LINEAR,
         )
 
@@ -682,11 +701,15 @@ class _SingletonSimRuntime:
             if self._latest_frame is not None:
                 return self._latest_frame.copy()
 
+        settings = get_settings()
+        stream_width = settings.stream_width
+        stream_height = settings.stream_height
+
         if robot is not None and hasattr(robot, "render_rgb_frame"):
             frame = _sim_frame_with_fallback(
                 robot=robot,
-                width=STREAM_FRAME_WIDTH,
-                height=STREAM_FRAME_HEIGHT,
+                width=stream_width,
+                height=stream_height,
             )
             if frame is not None:
                 with self._frame_lock:
@@ -697,7 +720,7 @@ class _SingletonSimRuntime:
         # First frame race: return deterministic fallback until worker publishes one.
         return cv2.resize(
             generate_sim_placeholder_pattern(),
-            (STREAM_FRAME_WIDTH, STREAM_FRAME_HEIGHT),
+            (stream_width, stream_height),
             interpolation=cv2.INTER_LINEAR,
         )
 
@@ -772,7 +795,7 @@ def _enumerate_cameras_macos() -> list[tuple[str, int]]:
             _device_names[idx] = name
             choices.append((f"{name} (Index {idx})", idx))
     except (ImportError, AttributeError, RuntimeError, OSError) as e:
-        print(f"[INFO] AVFoundation enumeration unavailable ({e}). Fallback to active probe...")
+        logger.info(f"AVFoundation enumeration unavailable ({e}). Fallback to active probe...")
         return _enumerate_cameras_fallback()
     return choices
 
@@ -809,7 +832,7 @@ def _enumerate_cameras_linux() -> list[tuple[str, int]]:
                         choices.append((f"{name} (Index {idx})", idx))
                         cap.release()
     except (OSError, RuntimeError, AttributeError, ValueError, PermissionError) as e:
-        print(f"[INFO] Linux V4L2 sysfs enumeration error ({e}). Fallback to active probe...")
+        logger.info(f"Linux V4L2 sysfs enumeration error ({e}). Fallback to active probe...")
     if not choices:
         return _enumerate_cameras_fallback()
     return choices
@@ -1251,7 +1274,7 @@ def _sim_frame_with_fallback(
         try:
             return robot.render_rgb_frame(width=width, height=height)
         except Exception as err:
-            print(f"[WARN] Sim render failed. Falling back to placeholder. Cause: {err}")
+            logger.warning(f"Sim render failed. Falling back to placeholder. Cause: {err}")
 
     fallback = generate_sim_placeholder_pattern()
     return cv2.resize(fallback, (width, height), interpolation=cv2.INTER_LINEAR)
@@ -1311,9 +1334,11 @@ def stream_video(
     my_stream_id = time.time_ns()
     _current_stream_id = my_stream_id
 
-    frame_interval = 1.0 / STREAM_TARGET_FPS
-    target_width = STREAM_FRAME_WIDTH
-    target_height = STREAM_FRAME_HEIGHT
+    settings = get_settings()
+    frame_interval = 1.0 / settings.stream_fps
+    target_width = settings.stream_width
+    target_height = settings.stream_height
+    target_fps = settings.stream_fps
 
     # Mode SIM: live MuJoCo render without hardware camera dependencies
     if mode == "sim":
@@ -1379,18 +1404,16 @@ def stream_video(
 
             cam_name = get_camera_name(camera_index)
             if camera_index >= 0:
-                print(
-                    f"[INFO] Initializing twin bottom camera {cam_name} (Index {camera_index})..."
-                )
+                logger.info(f"Initializing twin bottom camera {cam_name} (Index {camera_index})...")
                 cap = cv2.VideoCapture(camera_index)
                 camera_active = cap.isOpened()
                 if camera_active:
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
-                    cap.set(cv2.CAP_PROP_FPS, STREAM_TARGET_FPS)
+                    cap.set(cv2.CAP_PROP_FPS, target_fps)
                 else:
-                    print("[WARN] Twin bottom camera unavailable. Using mock fallback.")
+                    logger.warning("Twin bottom camera unavailable. Using mock fallback.")
 
         try:
             while _current_stream_id == my_stream_id:
@@ -1407,7 +1430,9 @@ def stream_video(
                         bottom_raw = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     else:
                         camera_active = False
-                        print("[WARN] Twin bottom camera read failed. Switching to mock fallback.")
+                        logger.warning(
+                            "Twin bottom camera read failed. Switching to mock fallback."
+                        )
                         bottom_raw = generate_mock_test_pattern(camera_index)
                 else:
                     bottom_raw = generate_mock_test_pattern(camera_index)
@@ -1472,30 +1497,30 @@ def stream_video(
         if camera_index >= 0:
             msg = f"Connecting to OpenCV index {camera_index}..."
             yield generate_loading_pattern(camera_index, msg)
-            print(f"[INFO] Initializing {cam_name} (Index {camera_index})...")
+            logger.info(f"Initializing {cam_name} (Index {camera_index})...")
             cap = cv2.VideoCapture(camera_index)
             camera_active = cap.isOpened()
 
             if not camera_active:
-                print(f"[WARN] Failed to open {cam_name}. Falling back to synthetic mock feed.")
+                logger.warning(f"Failed to open {cam_name}. Falling back to synthetic mock feed.")
             else:
                 # Enable MJPG hardware video codec to prevent USB firmware FPS throttling
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
 
-                cap.set(cv2.CAP_PROP_FPS, STREAM_TARGET_FPS)
+                cap.set(cv2.CAP_PROP_FPS, target_fps)
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 real_fps = cap.get(cv2.CAP_PROP_FPS)
-                print(f"[INFO] Connected to {cam_name} at {w}x{h} (~{real_fps:.0f} FPS).")
+                logger.info(f"Connected to {cam_name} at {w}x{h} (~{real_fps:.0f} FPS).")
         else:
-            print("[INFO] Synthetic mock video feed selected.")
+            logger.info("Synthetic mock video feed selected.")
 
     try:
         while True:
             if _current_stream_id != my_stream_id:
-                print(f"[INFO] Stopping stream for camera {camera_index} due to source transition.")
+                logger.info(f"Stopping stream for camera {camera_index} due to source transition.")
                 break
 
             start_time = time.time()
@@ -1503,7 +1528,7 @@ def stream_video(
             if camera_active and cap is not None:
                 ret, frame = cap.read()
                 if not ret or frame is None:
-                    print(f"[WARN] Read failed for index {camera_index}; using fallback.")
+                    logger.warning(f"Read failed for index {camera_index}; using fallback.")
                     camera_active = False
                     raw_frame = generate_mock_test_pattern(camera_index)
                 else:
@@ -1539,4 +1564,4 @@ def stream_video(
     finally:
         if cap is not None and cap.isOpened():
             cap.release()
-            print(f"[INFO] Released camera resource for index {camera_index}.")
+            logger.info(f"Released camera resource for index {camera_index}.")

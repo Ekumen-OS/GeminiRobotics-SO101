@@ -1,6 +1,7 @@
 """Main Gradio Web UI constructor for GeminiRobotics-SO101 VLA interaction."""
 
 import json
+import logging
 from pathlib import Path
 
 import gradio as gr
@@ -13,10 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from agent.vla_controller import VLAController
 from robot.constants import JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
+from robot.settings import get_settings
 from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.vision import build_vision_interface
 from ui.state import get_robot_state_dict, set_active_robot
+
+logger = logging.getLogger(__name__)
 
 CUSTOM_CSS = """
 #vla-status-banner {
@@ -139,19 +143,19 @@ def get_cached_or_hub_theme(theme_id: str = "YTheme/TehnoX") -> gr.Theme:
 
     if cache_file.exists():
         try:
-            print(f"[INFO] Loading cached Gradio theme from {cache_file}...")
+            logger.info(f"Loading cached Gradio theme from {cache_file}...")
             return gr.Theme.load(str(cache_file))
         except (AttributeError, ValueError, OSError, RuntimeError) as e:
-            print(f"[WARN] Failed loading cached theme ({e}). Downloading from Hub...")
+            logger.warning(f"Failed loading cached theme ({e}). Downloading from Hub...")
 
-    print(f"[INFO] Downloading theme '{theme_id}' from Gradio Hub and saving to cache...")
+    logger.info(f"Downloading theme '{theme_id}' from Gradio Hub and saving to cache...")
     theme = gr.Theme.from_hub(theme_id)
     try:
         if hasattr(theme, "dump"):
             theme.dump(str(cache_file))
-            print(f"[INFO] Cached theme locally to {cache_file}.")
+            logger.info(f"Cached theme locally to {cache_file}.")
     except (OSError, RuntimeError, AttributeError) as e:
-        print(f"[WARN] Could not save local theme cache ({e}).")
+        logger.warning(f"Could not save local theme cache ({e}).")
 
     return theme
 
@@ -371,17 +375,22 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
 def launch_web_ui(
     robot: RobotInterface | None = None,
     mode: str = "real",
-    server_name: str = "0.0.0.0",
-    server_port: int = 7860,
+    server_name: str | None = None,
+    server_port: int | None = None,
 ) -> None:
     """Launch the Gradio VLA Web UI server.
 
     Args:
         robot: Initialized robot controller instance.
         mode: Target execution operational mode ('real', 'sim', 'twin').
-        server_name: Host binding address (default: 0.0.0.0).
-        server_port: Port number for web application (default: 7860).
+        server_name: Host binding address (default: from settings).
+        server_port: Port number for web application (default: from settings).
     """
+    settings = get_settings()
+    if server_name is None:
+        server_name = settings.server_host
+    if server_port is None:
+        server_port = settings.server_port
     app = create_app(robot=robot, mode=mode)
     print("=" * 60)
     print(f"Starting GeminiRobotics SO-101 Unified Gradio Web UI [{mode.upper()} MODE]...")

@@ -58,8 +58,14 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.13"
+# Single source of truth for the type-checked scope (hook and docs both use bare `mypy`).
+# Start permissive: add modules here as they get annotated.
+files = [
+  "robot/contracts.py",
+  "agent/contracts.py",
+  "robot/perception.py",
+  "agent/tools.py",
+]
 follow_imports = "silent"
 ignore_missing_imports = true
 check_untyped_defs = true
-
-
