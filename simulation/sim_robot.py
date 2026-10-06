@@ -49,6 +49,8 @@ class SO101Robot(RobotInterface):
         site_id: MuJoCo site ID for the end effector or gripper frame.
     """
 
+    mode = "sim"
+
     def __init__(
         self,
         xml_path: str | Path | None = None,

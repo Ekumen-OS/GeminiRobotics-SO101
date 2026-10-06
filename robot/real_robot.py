@@ -44,6 +44,8 @@ def resolve_calibration_path() -> Path | None:
 class RealSO101Robot(RobotInterface):
     """Wrapper class for physical SO-101 robot arm using Feetech STS3215 servos."""
 
+    mode = "real"
+
     def __init__(
         self,
         port: str | None = None,

@@ -63,7 +63,7 @@ To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **
 | --- | --- | --- | --- |
 | **F1** | ArUco Marker ID & Corner Harmonization | `robot/calibration.py`, `config/workspace_calibration.json`, `simulation/assets/scene.xml` | Canonical fiducial corner IDs (`1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`) harmonized across physical config, simulation XML, and prompts. |
 | **F2** | Homography & Lateral Axis Parity | `config/workspace_homography.npz`, `config/workspace_homography_sim.npz`, `robot/calibration.py` | Lateral $Y$-axis parity guaranteed between real and simulation frames. Target `[760, 484]` maps to $X \approx 0.197$ m, $Y \approx +0.145$ m, yielding inward shoulder pan ($\approx -42^\circ$) inside camera FOV. |
-| **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `ui/stream.py`, `ui/state.py` | `image_point_to_xyz` queries active robot runtime mode (`sim` vs `real`) dynamically, loading the corresponding homography without hardcoded assumptions. |
+| **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `ui/stream.py`, `ui/state.py` | `execute_tool_call` receives the controller's `mode` explicitly and otherwise reads `robot.mode` (`resolve_robot_mode`); `image_point_to_xyz` then loads the matching homography. No duck-typing on rendering methods. |
 | **F4** | Reachability & FOV Kinematic Grounding | `robot/cartesian_ik.py`, `robot/calibration.py` | All normalized coordinates $[y, x] \in [0, 1000]$ within the calibrated mat map to collision-free Cartesian poses ($r \le 391$ mm) contained within the camera FOV. |
 | **F5** | Programmatic Perception Metrics Engine | `robot/perception.py`, `robot/vision_detector.py` | Programmatic extraction of measured gripper $[y_g, x_g]$, target $[y_t, x_t]$, relative offset $[dy, dx]$, Euclidean distance, alignment status, and post-lift elevation check. |
 | **F6** | Tool Execution Feedback Enrichment | `agent/tools.py` | `move_to_spatial_point`, `close_gripper`, and `open_gripper` return payloads enriched with verified perceptual measurements and context-sensitive visual hints. |
@@ -71,7 +71,7 @@ To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **
 | **F8** | Anti-Hallucination Transport Gate & Retry Loop | `agent/vla_controller.py` | Blocks transport if target object remains detected on tabletop post-lift. Enforces an automated retry loop (up to 3 attempts) before escalating to the user. |
 | **F9** | Clean Diagnostic Logging & UI Separation | `agent/vla_controller.py`, `agent/tools.py`, `ui/components/chat.py` | Standardized ISO-8601 millisecond logs routed to `sys.stdout`/`sys.stderr`. Raw JSON payloads, IK solver iterations, and tracebacks are excluded from Chatbot viewport. |
 | **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
-| **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness running 157 tests with zero external network dependencies and 100% pass rate. |
+| **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
 
 ---
@@ -139,7 +139,7 @@ All automated tests in `tests/` adhere to an **opaque-box, requirement-driven ve
 │                   TIER 1: ISOLATED FEATURE COVERAGE (UNIT MECHANICS)        │
 │  - ArUco Marker ID & Corner Definitions (1:TL, 2:TR, 3:BR, 0:BL)            │
 │  - Homography Forward (Gemini→Base XYZ) & Inverse (Base XYZ→Pixel) Mapping  │
-│  - Mode-Aware Calibrator Context Routing (Sim vs Real vs Twin)              │
+│  - Mode-Aware Calibrator Context Routing (Sim vs Real)                      │
 │  - Red Cube [760, 484] Canonical Grounding & Shoulder Pan Sign Verification │
 │  - Visual Alignment Metrics Calculation (dy, dx, distance, is_aligned)      │
 │  - Grasp Elevation Verification (object_elevated, object_detected_on_table) │
@@ -206,7 +206,6 @@ GeminiRobotics-SO101/
 │   ├── vision_detector.py            # HSV salient color segmentation & contour detection
 │   ├── cartesian_ik.py               # Numerical damped least-squares inverse kinematics
 │   ├── real_robot.py                 # Physical SO-101 Feetech servo driver (via LeRobot)
-│   ├── twin_robot.py                 # Digital twin synchronizer
 │   ├── interface.py                  # Abstract base RobotInterface contract
 │   ├── constants.py                  # Joint limits, home poses, and serial port defaults
 │   └── theory.md                     # Mathematical derivations for kinematics and homography

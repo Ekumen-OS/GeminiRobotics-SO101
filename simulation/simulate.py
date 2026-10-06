@@ -35,7 +35,7 @@ def main(robot: SO101Robot | None = None) -> None:
     """Launch interactive 3D simulation viewer where users can control joints via MuJoCo UI.
 
     Args:
-        robot: Optional robot instance (SO101Robot or TwinSO101Robot).
+        robot: Optional robot instance (SO101Robot).
     """
     ensure_mjpython()
 
