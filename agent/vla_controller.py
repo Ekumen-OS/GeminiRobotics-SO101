@@ -35,7 +35,7 @@ def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
     """Load and render the VLA system instruction prompt.
 
     Args:
-        mode: Operational mode ('real', 'sim', 'twin').
+        mode: Operational mode ('real' or 'sim').
         tolerance: Pixel alignment tolerance. Defaults to settings value.
 
     Returns:
@@ -142,7 +142,7 @@ class VLAController:
         """Initialize the VLA Controller.
 
         Args:
-            mode: The operational mode of the robot ('real', 'sim', 'twin').
+            mode: The operational mode of the robot ('real' or 'sim').
             robot: The initialized robot instance to execute commands against.
         """
         self.mode = mode
@@ -403,6 +403,7 @@ class VLAController:
                                     robot=self.robot,
                                     get_latest_jpeg_fn=get_latest_jpeg_fn,
                                     status_callback=tool_status_callback,
+                                    mode=self.mode,
                                 )
 
                                 if is_blocking:
@@ -530,8 +531,8 @@ class VLAController:
             yield msg
             return
 
-        # In real or twin mode, block execution if workspace calibration is missing
-        if self.mode in ("real", "twin"):
+        # In real mode, block execution if workspace calibration is missing
+        if self.mode == "real":
             from ui.stream import get_calibrator
 
             calib = get_calibrator()

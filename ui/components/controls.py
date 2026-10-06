@@ -16,7 +16,7 @@ def build_controls_interface(
 
     Args:
         robot: Initialized robot hardware or simulation controller instance.
-        mode: Execution operational mode ('real', 'sim', or 'twin').
+        mode: Execution operational mode ('real' or 'sim').
         init_deg: Initial joint angles in degrees.
 
     Returns:

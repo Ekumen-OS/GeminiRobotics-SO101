@@ -162,8 +162,7 @@ ROBOT_TOOL_DECLARATIONS = [
     {
         "name": "get_end_effector_pose",
         "description": (
-            "Read current end-effector XYZ position and rotation matrix. "
-            "Available in sim or twin mode."
+            "Read current end-effector XYZ position and rotation matrix. Available in sim mode."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -242,6 +241,26 @@ def _get_ik_solver() -> CartesianIK:
 DEFAULT_HOVER_Z = 0.03  # 3 cm above table
 
 
+def resolve_robot_mode(robot: RobotInterface | None, mode: str | None = None) -> str:
+    """Return the operational mode ('real' or 'sim') a tool call should use.
+
+    An explicit ``mode`` wins. Otherwise the robot's own ``mode`` attribute decides, and no
+    robot means 'real'. Duck-typing on ``render_rgb_frame`` is deliberately avoided:
+    ``RobotInterface`` defines that method, so ``hasattr`` is true for every robot, physical
+    arms included, which used to route real-mode moves through the simulation homography.
+
+    Args:
+        robot: Active robot controller, or None.
+        mode: Explicit mode override ('real' or 'sim').
+
+    Returns:
+        'sim' or 'real'.
+    """
+    if mode in ("real", "sim"):
+        return mode
+    return "sim" if getattr(robot, "mode", None) == "sim" else "real"
+
+
 def image_point_to_xyz(
     point: list[float],
     hover_z: float = 0.03,
@@ -254,8 +273,8 @@ def image_point_to_xyz(
         point: Normalized image point [y, x] where 0 <= y, x <= 1000.
         hover_z: Height above the table surface in metres.
         img_shape: Frame dimensions as (height, width).
-        mode: Optional operational mode ('real', 'sim', 'twin'). If None, resolved
-            automatically from active robot state.
+        mode: Optional operational mode ('real' or 'sim'). If None, resolved from the
+            active robot's ``mode`` attribute (see :func:`resolve_robot_mode`).
 
     Returns:
         A (3,) numpy array [X, Y, Z] in the robot base frame (metres).
@@ -267,21 +286,8 @@ def image_point_to_xyz(
     from ui.state import get_active_robot
     from ui.stream import get_calibrator
 
-    if mode is None:
-        active_robot = get_active_robot()
-        is_sim = False
-        if active_robot is not None:
-            mode_attr = getattr(active_robot, "mode", None)
-            if mode_attr == "sim":
-                is_sim = True
-            elif mode_attr == "real":
-                is_sim = False
-            elif hasattr(active_robot, "render_rgb_frame") or hasattr(active_robot, "model"):
-                is_sim = True
-        active_mode = "sim" if is_sim else "real"
-    else:
-        active_mode = mode
-        is_sim = active_mode == "sim"
+    active_mode = resolve_robot_mode(get_active_robot(), mode)
+    is_sim = active_mode == "sim"
 
     calib = get_calibrator(mode=active_mode)
     target_path = DEFAULT_SIM_SAVE_PATH if is_sim else DEFAULT_SAVE_PATH
@@ -351,6 +357,7 @@ async def execute_tool_call(
     robot: RobotInterface | None,
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Dispatch tool call to the RobotInterface asynchronously.
 
@@ -359,6 +366,8 @@ async def execute_tool_call(
         robot: The initialized RobotInterface instance.
         get_latest_jpeg_fn: Optional callable returning latest camera frame JPEG bytes.
         status_callback: Optional callable for streaming status messages to UI.
+        mode: Operational mode ('real' or 'sim') selecting the workspace calibration. When
+            None it is taken from ``robot.mode``.
 
     Returns:
         A dictionary containing the response result to be sent back to Gemini.
@@ -539,15 +548,10 @@ async def execute_tool_call(
             # Clamp height to reasonable safety bounds [0.0cm, 20.0cm]
             z_height_cm = max(0.0, min(20.0, z_height_cm))
             hover_z = z_height_cm / 100.0
-            robot_is_sim = (
-                getattr(robot, "mode", None) == "sim"
-                or hasattr(robot, "render_rgb_frame")
-                or hasattr(robot, "model")
-            )
             target_xyz = image_point_to_xyz(
                 point,
                 hover_z=hover_z,
-                mode="sim" if robot_is_sim else None,
+                mode=resolve_robot_mode(robot, mode),
             )
             log_with_tag(
                 logger,
@@ -678,6 +682,7 @@ def execute_tool_call_sync(
     robot: RobotInterface | None,
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Synchronous convenience wrapper for execute_tool_call."""
     try:
@@ -696,6 +701,7 @@ def execute_tool_call_sync(
                     robot=robot,
                     get_latest_jpeg_fn=get_latest_jpeg_fn,
                     status_callback=status_callback,
+                    mode=mode,
                 ),
             ).result()
     else:
@@ -705,5 +711,6 @@ def execute_tool_call_sync(
                 robot=robot,
                 get_latest_jpeg_fn=get_latest_jpeg_fn,
                 status_callback=status_callback,
+                mode=mode,
             )
         )

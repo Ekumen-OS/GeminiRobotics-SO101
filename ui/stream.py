@@ -172,7 +172,7 @@ def get_calibrator(mode: str = "real") -> ArucoWorkspaceCalibrator:
     """Return the shared ArucoWorkspaceCalibrator singleton instance.
 
     Args:
-        mode: Operational mode ('real', 'sim', 'twin').
+        mode: Operational mode ('real' or 'sim').
 
     Returns:
         The active ArucoWorkspaceCalibrator instance.
@@ -589,7 +589,7 @@ def _robot_can_render(robot: Any | None) -> bool:
 
     ``RobotInterface`` defines ``render_rgb_frame`` as a method that raises
     ``NotImplementedError`` (physical arms inherit it), so ``hasattr`` alone is true for every
-    robot. Only a subclass that overrides it (simulation, twin) can render a frame.
+    robot. Only a subclass that overrides it (simulation) can render a frame.
 
     Args:
         robot: Active robot instance, or None.
@@ -1319,80 +1319,6 @@ def generate_sim_placeholder_pattern() -> np.ndarray:
     return frame
 
 
-def generate_twin_placeholder_pattern() -> np.ndarray:
-    """Generate a split-screen placeholder frame for Digital Twin comparison mode.
-
-    Returns:
-        RGB image frame as a NumPy uint8 array of shape (600, 640, 3).
-    """
-    height, width = 600, 640
-    t = time.time()
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-    # Top half: Simulation mirror
-    frame[0 : height // 2, :, :] = (25, 35, 50)
-    frame[0:40, :, :] = (40, 70, 100)
-    cv2.putText(
-        frame,
-        "TOP: MUJOCO DIGITAL TWIN RENDER",
-        (20, 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (220, 240, 255),
-        2,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        frame,
-        "[Sim Mirror Feed Placeholder — Next Session]",
-        (40, 160),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (150, 220, 255),
-        2,
-        cv2.LINE_AA,
-    )
-
-    # Divider line
-    frame[height // 2 - 2 : height // 2 + 2, :, :] = (255, 255, 255)
-
-    # Bottom half: Real physical webcam
-    frame[height // 2 :, :, :] = (45, 30, 35)
-    frame[height // 2 : height // 2 + 40, :, :] = (90, 45, 60)
-    cv2.putText(
-        frame,
-        "BOTTOM: REAL HARDWARE CAMERA FEED",
-        (20, height // 2 + 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 220, 230),
-        2,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        frame,
-        "[Physical Camera Feed — Active in Real Mode]",
-        (40, height // 2 + 160),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 180, 190),
-        2,
-        cv2.LINE_AA,
-    )
-
-    cv2.putText(
-        frame,
-        f"Twin Synchronize Timestamp: {t:.2f}s",
-        (20, height - 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (200, 200, 200),
-        1,
-        cv2.LINE_AA,
-    )
-    return frame
-
-
 def prepare_stream_switch() -> None:
     """Invalidate atomic stream session token to trigger immediate generator teardown."""
     global _current_stream_id
@@ -1451,28 +1377,6 @@ def _sim_frame_with_fallback(
     return cv2.resize(fallback, (width, height), interpolation=cv2.INTER_LINEAR)
 
 
-def _compose_twin_frame(top_rgb: np.ndarray, bottom_rgb: np.ndarray) -> np.ndarray:
-    """Compose a twin frame from top simulation and bottom camera streams.
-
-    Args:
-        top_rgb: Simulation RGB frame.
-        bottom_rgb: Camera RGB frame.
-
-    Returns:
-        Combined RGB frame with a thin separator line between views.
-    """
-    target_width = max(top_rgb.shape[1], bottom_rgb.shape[1])
-    half_height = max(top_rgb.shape[0], bottom_rgb.shape[0])
-
-    top_resized = cv2.resize(top_rgb, (target_width, half_height), interpolation=cv2.INTER_LINEAR)
-    bottom_resized = cv2.resize(
-        bottom_rgb, (target_width, half_height), interpolation=cv2.INTER_LINEAR
-    )
-
-    divider = np.full((2, target_width, 3), 255, dtype=np.uint8)
-    return np.vstack([top_resized, divider, bottom_resized])
-
-
 def get_sim_video_frame(robot: Any | None = None) -> np.ndarray:
     """Return a single live simulation frame for timer-driven UI updates.
 
@@ -1497,8 +1401,8 @@ def stream_video(
 
     Args:
         camera_index: Integer index of target hardware capture device.
-        mode: Operation mode ('real', 'sim', or 'twin').
-        robot: Active robot controller object used for MuJoCo rendering in sim/twin modes.
+        mode: Operation mode ('real' or 'sim').
+        robot: Active robot controller object used for MuJoCo rendering in sim mode.
 
     Yields:
         NumPy array of shape (H, W, 3) containing RGB video frames.
@@ -1557,114 +1461,6 @@ def _stream_video_impl(
             elapsed = time.time() - start
             if elapsed < frame_interval:
                 time.sleep(frame_interval - elapsed)
-        return
-
-    # Mode TWIN: top half MuJoCo sim + bottom half real/mock camera feed
-    if mode == "twin":
-        if camera_index == -2:
-            while _current_stream_id == my_stream_id:
-                start = time.time()
-                top_frame = _sim_frame_with_fallback(
-                    robot=robot,
-                    width=target_width,
-                    height=target_height,
-                )
-                bottom_frame = cv2.resize(
-                    generate_no_camera_pattern(),
-                    (target_width, target_height),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-                with _global_frame_lock:
-                    _global_latest_raw_frame = top_frame.copy()
-
-                final_frame = _compose_twin_frame(top_frame, bottom_frame)
-                with _global_frame_lock:
-                    _global_latest_annotated_frame = final_frame.copy()
-                    _global_latest_frame = final_frame.copy()
-
-                yield final_frame
-                elapsed = time.time() - start
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
-            return
-
-        cap = None
-        camera_active = False
-        if camera_index >= 0:
-            _wait_for_previous_stream_release(prev_done)
-        with _stream_lock:
-            if _current_stream_id != my_stream_id:
-                return
-
-            cam_name = get_camera_name(camera_index)
-            if camera_index >= 0:
-                logger.info(f"Initializing twin bottom camera {cam_name} (Index {camera_index})...")
-                cap = _open_capture(camera_index)
-                camera_active = cap.isOpened()
-                if camera_active:
-                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
-                    cap.set(cv2.CAP_PROP_FPS, target_fps)
-                else:
-                    logger.warning("Twin bottom camera unavailable. Using mock fallback.")
-
-        try:
-            while _current_stream_id == my_stream_id:
-                start = time.time()
-                top_frame = _sim_frame_with_fallback(
-                    robot=robot,
-                    width=target_width,
-                    height=target_height,
-                )
-
-                if camera_active and cap is not None:
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        bottom_raw = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    else:
-                        camera_active = False
-                        logger.warning(
-                            "Twin bottom camera read failed. Switching to mock fallback."
-                        )
-                        bottom_raw = generate_mock_test_pattern(camera_index)
-                else:
-                    bottom_raw = generate_mock_test_pattern(camera_index)
-
-                bottom_raw = cv2.resize(
-                    bottom_raw,
-                    (target_width, target_height),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-
-                with _global_frame_lock:
-                    _global_latest_raw_frame = bottom_raw.copy()
-
-                bottom_ui = bottom_raw.copy()
-                if camera_active:
-                    calib = get_calibrator()
-                    detected = calib.detect_markers(bottom_ui)
-                    if len(detected) >= 4:
-                        calib.update_homography(detected)
-                    if is_calibration_overlay_enabled():
-                        bottom_ui = calib.draw_workspace_overlay(bottom_ui, detected)
-
-                if is_target_overlay_enabled():
-                    bottom_ui = draw_model_target_overlay(bottom_ui)
-
-                final_frame = _compose_twin_frame(top_frame, bottom_ui)
-                with _global_frame_lock:
-                    _global_latest_annotated_frame = final_frame.copy()
-                    _global_latest_frame = final_frame.copy()
-
-                yield final_frame
-
-                elapsed = time.time() - start
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
-        finally:
-            if cap is not None and cap.isOpened():
-                cap.release()
         return
 
     # Mode REAL: Live UVC hardware streaming with OpenCV & MJPG codec
@@ -1809,6 +1605,29 @@ def _start_capture_locked(camera_index: int, mode: str, robot: Any | None) -> No
     _capture_thread.start()
 
 
+def stop_camera_capture(timeout_s: float = _PREVIOUS_STREAM_RELEASE_TIMEOUT_S) -> None:
+    """Stop the shared capture thread and wait for it to release its camera.
+
+    Registered with ``atexit``: a daemon thread still blocked inside a V4L2 read while the
+    interpreter tears down aborts the process (glibc "FATAL: exception not rethrown").
+
+    Args:
+        timeout_s: Maximum time to wait for the capture generator to exit.
+    """
+    global _capture_thread, _capture_key
+    with _capture_lock:
+        thread = _capture_thread
+        _capture_thread = None
+        _capture_key = None
+    if thread is None or not thread.is_alive():
+        return
+    prepare_stream_switch()
+    thread.join(timeout=timeout_s)
+
+
+atexit.register(stop_camera_capture)
+
+
 def ensure_camera_capture(camera_index: int, mode: str, robot: Any | None = None) -> int:
     """Start shared capture if it is not running; never steal it from a running capture.
 
@@ -1816,8 +1635,8 @@ def ensure_camera_capture(camera_index: int, mode: str, robot: Any | None = None
 
     Args:
         camera_index: Camera to open when nothing is capturing yet.
-        mode: Operation mode ('real' or 'twin').
-        robot: Optional robot used by twin mode to compose frames.
+        mode: Operation mode ('real' or 'sim').
+        robot: Optional active robot controller.
 
     Returns:
         The camera index that is actually being captured.
@@ -1835,8 +1654,8 @@ def switch_camera_capture(
 
     Args:
         camera_index: Requested camera index (-1 selects the synthetic feed).
-        mode: Operation mode ('real' or 'twin').
-        robot: Optional robot used by twin mode to compose frames.
+        mode: Operation mode ('real' or 'sim').
+        robot: Optional active robot controller.
         force: Restart even when this camera is already active (e.g. after a replug).
 
     Returns:
