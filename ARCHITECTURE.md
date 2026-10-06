@@ -52,7 +52,8 @@ The GeminiRobotics-SO101 platform integrates a 6-DOF robotic arm with Google Gem
 To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **Dual-Buffer Stream Engine**:
 
 1. **Model Vision Channel (`get_latest_raw_jpeg`)**: Supplies pristine, untouched RGB camera frames to the Gemini Live session and OpenCV perception detectors. It is guaranteed to be free of bounding boxes, text overlays, crosshairs, or UI annotations.
-2. **Operator Display Channel (`/api/stream`, `/api/sim_stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and model target focus badges for human operator inspection.
+2. **Operator Display Channel (`/api/stream`, `/api/sim_stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and model target focus badges for human operator inspection. Both are long-lived `multipart/x-mixed-replace` MJPEG responses rendered by a plain `<img>`, so delivery needs throughput, not a per-frame round trip (per-frame Gradio image delivery froze on any link whose round-trip time exceeded the frame interval, e.g. Tailscale/WAN). Browser quality and rate are `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
+3. **Shared capture**: camera capture is one background thread (`ensure_camera_capture` / `switch_camera_capture` in `ui/stream.py`), independent of any browser session. Every tab reads the same frame buffers, so opening a second tab joins the running capture instead of replacing it.
 
 ---
 

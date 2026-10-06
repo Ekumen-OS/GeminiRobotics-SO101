@@ -63,6 +63,12 @@ class Settings:
     stream_fps: int = 30
     stream_width: int = 640
     stream_height: int = 480
+    # Browser MJPEG stream (/api/stream) only; the model path always gets full-quality frames.
+    web_stream_fps: int = 15
+    web_jpeg_quality: int = 75
+    # Preferred hardware camera: explicit /dev/video index, or case-insensitive device-name match
+    camera_index: int | None = None
+    camera_name: str | None = None
 
     @property
     def credentials_mode(self) -> str:
@@ -247,6 +253,27 @@ class Settings:
             cls.stream_height,
         )
 
+        web_stream_fps = _resolve_int(
+            overrides.get("web_stream_fps"),
+            ("WEB_STREAM_FPS",),
+            cls.web_stream_fps,
+        )
+        web_jpeg_quality = _resolve_int(
+            overrides.get("web_jpeg_quality"),
+            ("WEB_JPEG_QUALITY",),
+            cls.web_jpeg_quality,
+        )
+
+        camera_index_raw = _resolve_opt_str(overrides.get("camera_index"), ("CAMERA_INDEX",))
+        camera_index: int | None = None
+        if camera_index_raw is not None:
+            try:
+                camera_index = int(camera_index_raw)
+            except (ValueError, TypeError):
+                camera_index = None
+
+        camera_name = _resolve_opt_str(overrides.get("camera_name"), ("CAMERA_NAME",))
+
         return cls(
             serial_port=serial_port,
             gemini_model_id=gemini_model_id,
@@ -264,6 +291,10 @@ class Settings:
             stream_fps=stream_fps,
             stream_width=stream_width,
             stream_height=stream_height,
+            web_stream_fps=web_stream_fps,
+            web_jpeg_quality=web_jpeg_quality,
+            camera_index=camera_index,
+            camera_name=camera_name,
         )
 
 

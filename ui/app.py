@@ -285,6 +285,34 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
     return demo
 
 
+async def mjpeg_frames(quality: int, fps: int):
+    """Yield the annotated camera frame as a multipart MJPEG body at ``fps`` until disconnect.
+
+    One long-lived response replaces per-frame Gradio image fetches: on a link whose round-trip
+    time exceeds the frame interval (any WAN/VPN), per-frame fetches are cancelled by the next
+    frame and the feed freezes, whereas this stream only needs throughput.
+
+    Args:
+        quality: JPEG quality (1-100) of the browser stream; the model path is unaffected.
+        fps: Maximum frames per second sent to the browser.
+
+    Yields:
+        Multipart chunks, one JPEG frame each.
+    """
+    import asyncio
+
+    from ui.stream import get_latest_jpeg, has_published_frame
+
+    interval = 1.0 / max(1, fps)
+    while True:
+        # Until the capture publishes its first frame, send nothing rather than the sim
+        # placeholder ("MODE: SIMULATION"), which would flash in real mode.
+        jpg = await asyncio.to_thread(get_latest_jpeg, quality) if has_published_frame() else None
+        if jpg is not None:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+        await asyncio.sleep(interval)
+
+
 def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastAPI:
     """Create FastAPI application with mounted Gradio UI, 3D assets, and simulation endpoints.
 
@@ -364,6 +392,15 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
         return StreamingResponse(
             frame_generator(),
             media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    @app.get("/api/stream")
+    async def get_camera_stream():
+        settings = get_settings()
+        return StreamingResponse(
+            mjpeg_frames(settings.web_jpeg_quality, settings.web_stream_fps),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store"},
         )
 
     theme = get_cached_or_hub_theme("YTheme/TehnoX")
