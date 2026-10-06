@@ -4,13 +4,18 @@ import gradio as gr
 
 from robot.interface import RobotInterface
 from ui.stream import (
+    ensure_camera_capture,
     get_available_camera_choices,
     get_calibration_status_summary,
     get_default_camera_index,
-    prepare_stream_switch,
     set_calibration_overlay,
     set_target_overlay_enabled,
-    stream_video,
+    switch_camera_capture,
+)
+
+CAMERA_FEED_HTML = (
+    '<img src="/api/stream" alt="LIVE Observation Stream" '
+    'style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;" />'
 )
 
 
@@ -81,12 +86,7 @@ def build_vision_interface(
                 gr.HTML(value=viewer_iframe)
 
             with gr.Tab("📹 Physical Camera Stream"):
-                video_feed = gr.Image(
-                    label="LIVE Observation Stream",
-                    show_label=True,
-                    interactive=False,
-                    elem_id="vision-feed",
-                )
+                gr.HTML(value=CAMERA_FEED_HTML, elem_id="vision-feed")
                 with gr.Row():
                     target_chk_twin = gr.Checkbox(
                         label="🎯 Show Model Targets",
@@ -159,47 +159,42 @@ def build_vision_interface(
                         new_val = updated[0][1]
                     return gr.Dropdown(choices=updated, value=new_val)
 
-                def stream_twin_cam(cam_idx: int, m: str):
-                    yield from stream_video(camera_index=cam_idx, mode=m, robot=robot)
+                def start_twin_cam(cam_idx: int, m: str) -> int:
+                    return ensure_camera_capture(cam_idx, m, robot)
+
+                def switch_twin_cam(cam_idx: int, m: str) -> int:
+                    return switch_camera_capture(cam_idx, m, robot)
+
+                def restart_twin_cam(cam_idx: int, m: str) -> int:
+                    return switch_camera_capture(cam_idx, m, robot, force=True)
+
+                # Capture is shared by every browser tab: page load joins the running capture
+                # (and shows which camera it is using) instead of restarting it.
+                demo.load(
+                    fn=start_twin_cam,
+                    inputs=[camera_dropdown, mode_state],
+                    outputs=[camera_dropdown],
+                )
 
                 refresh_button.click(
                     fn=refresh_camera_list_twin,
                     inputs=[camera_dropdown],
                     outputs=[camera_dropdown],
                 ).then(
-                    fn=stream_twin_cam,
+                    fn=restart_twin_cam,
                     inputs=[camera_dropdown, mode_state],
-                    outputs=[video_feed],
-                    concurrency_limit=None,
-                )
-
-                demo.load(
-                    fn=stream_twin_cam,
-                    inputs=[camera_dropdown, mode_state],
-                    outputs=[video_feed],
-                    concurrency_limit=None,
-                )
-
-                switch_evt = camera_dropdown.change(
-                    fn=prepare_stream_switch,
-                    inputs=None,
                     outputs=None,
                 )
-                switch_evt.then(
-                    fn=stream_twin_cam,
+
+                camera_dropdown.change(
+                    fn=switch_twin_cam,
                     inputs=[camera_dropdown, mode_state],
-                    outputs=[video_feed],
-                    concurrency_limit=None,
+                    outputs=None,
                 )
         return save_calib_btn_twin, calib_status_twin, calib_timer_twin
 
     # Real mode
-    video_feed = gr.Image(
-        label="LIVE Observation Stream",
-        show_label=True,
-        interactive=False,
-        elem_id="vision-feed",
-    )
+    gr.HTML(value=CAMERA_FEED_HTML, elem_id="vision-feed")
     with gr.Row():
         target_chk = gr.Checkbox(
             label="🎯 Show Model Targets",
@@ -272,37 +267,36 @@ def build_vision_interface(
             new_val = updated[0][1]
         return gr.Dropdown(choices=updated, value=new_val)
 
-    def stream_real_cam(cam_idx: int, m: str):
-        yield from stream_video(camera_index=cam_idx, mode=m, robot=robot)
+    def start_real_cam(cam_idx: int, m: str) -> int:
+        return ensure_camera_capture(cam_idx, m, robot)
 
-    refresh_event = refresh_button.click(
+    def switch_real_cam(cam_idx: int, m: str) -> int:
+        return switch_camera_capture(cam_idx, m, robot)
+
+    def restart_real_cam(cam_idx: int, m: str) -> int:
+        return switch_camera_capture(cam_idx, m, robot, force=True)
+
+    # Capture is shared by every browser tab: page load joins the running capture (and shows
+    # which camera it is using) instead of restarting it.
+    demo.load(
+        fn=start_real_cam,
+        inputs=[camera_dropdown, mode_state],
+        outputs=[camera_dropdown],
+    )
+
+    refresh_button.click(
         fn=refresh_camera_list,
         inputs=[camera_dropdown],
         outputs=[camera_dropdown],
-    )
-    refresh_event.then(
-        fn=stream_real_cam,
+    ).then(
+        fn=restart_real_cam,
         inputs=[camera_dropdown, mode_state],
-        outputs=[video_feed],
-        concurrency_limit=None,
-    )
-
-    demo.load(
-        fn=stream_real_cam,
-        inputs=[camera_dropdown, mode_state],
-        outputs=[video_feed],
-        concurrency_limit=None,
-    )
-
-    switch_evt = camera_dropdown.change(
-        fn=prepare_stream_switch,
-        inputs=None,
         outputs=None,
     )
-    switch_evt.then(
-        fn=stream_real_cam,
+
+    camera_dropdown.change(
+        fn=switch_real_cam,
         inputs=[camera_dropdown, mode_state],
-        outputs=[video_feed],
-        concurrency_limit=None,
+        outputs=None,
     )
     return save_calib_btn, calib_status, calib_timer
