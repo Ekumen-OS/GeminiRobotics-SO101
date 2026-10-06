@@ -6,7 +6,15 @@ import numpy as np
 
 
 class RobotInterface(ABC):
-    """Abstract Base Class for SO-101 robot controllers (Physical, Simulated, Twin)."""
+    """Abstract Base Class for SO-101 robot controllers (Physical, Simulated).
+
+    Attributes:
+        mode: Operational mode this controller represents: ``"real"`` for a physical arm or
+            ``"sim"`` for a MuJoCo simulation. Consumers (tool adapters, calibrator routing)
+            read this instead of duck-typing on rendering methods.
+    """
+
+    mode: str = "real"
 
     @abstractmethod
     def set_joint_positions(self, qpos: np.ndarray) -> None:

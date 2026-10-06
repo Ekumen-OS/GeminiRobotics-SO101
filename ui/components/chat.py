@@ -25,9 +25,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     from ui.stream import get_calibrator
 
     calib = get_calibrator()
-    is_calibrated = (
-        calib is not None and calib.is_calibrated if controller.mode in ("real", "twin") else True
-    )
+    is_calibrated = calib is not None and calib.is_calibrated if controller.mode == "real" else True
 
     if not is_calibrated:
         initial_msg = (
@@ -103,7 +101,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
                 scale=1,
                 elem_classes=["chat-action-btn"],
             )
-            if controller.mode in ("sim", "twin")
+            if controller.mode == "sim"
             else None
         )
         clear_btn = gr.Button(
@@ -214,9 +212,7 @@ def wire_chat_events(
 
             calib = get_calibrator()
             is_calibrated = (
-                calib is not None and calib.is_calibrated
-                if controller.mode in ("real", "twin")
-                else True
+                calib is not None and calib.is_calibrated if controller.mode == "real" else True
             )
 
             if not controller.is_api_available:
@@ -269,9 +265,7 @@ def wire_chat_events(
 
         calib = get_calibrator()
         is_calibrated = (
-            calib is not None and calib.is_calibrated
-            if controller.mode in ("real", "twin")
-            else True
+            calib is not None and calib.is_calibrated if controller.mode == "real" else True
         )
 
         if not controller.is_api_available:

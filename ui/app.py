@@ -165,7 +165,7 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
 
     Args:
         robot: Initialized robot hardware or simulation controller instance.
-        mode: Execution operational mode ('real', 'sim', or 'twin').
+        mode: Execution operational mode ('real' or 'sim').
 
     Returns:
         Gradio Blocks application demo instance.
@@ -318,7 +318,7 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
 
     Args:
         robot: Initialized robot controller instance.
-        mode: Target execution operational mode ('real', 'sim', 'twin').
+        mode: Target execution operational mode ('real' or 'sim').
 
     Returns:
         Configured FastAPI application instance.
@@ -419,7 +419,7 @@ def launch_web_ui(
 
     Args:
         robot: Initialized robot controller instance.
-        mode: Target execution operational mode ('real', 'sim', 'twin').
+        mode: Target execution operational mode ('real' or 'sim').
         server_name: Host binding address (default: from settings).
         server_port: Port number for web application (default: from settings).
     """

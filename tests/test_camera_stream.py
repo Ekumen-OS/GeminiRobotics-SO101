@@ -245,3 +245,18 @@ def test_mjpeg_waits_for_first_frame_instead_of_serving_sim_placeholder(
             await gen.aclose()
 
     assert asyncio.run(run()).startswith(b"--frame")
+
+
+def test_stop_camera_capture_joins_thread_and_clears_key(fake_capture) -> None:
+    """Shutdown stops the shared capture thread so no V4L2 read is pending at interpreter exit."""
+    stream_mod.ensure_camera_capture(4, "real")
+    assert _wait_until(lambda: len(fake_capture) == 1)
+    thread = stream_mod._capture_thread
+    assert thread is not None and thread.is_alive()
+
+    stream_mod.stop_camera_capture(timeout_s=2.0)
+
+    assert not thread.is_alive()
+    assert stream_mod._capture_thread is None
+    assert stream_mod._capture_key is None
+    stream_mod.stop_camera_capture()  # idempotent when nothing is running

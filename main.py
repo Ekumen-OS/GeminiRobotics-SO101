@@ -1,4 +1,4 @@
-"""Unified main entry point for GeminiRobotics-SO101 simulation, hardware, and twin execution."""
+"""Unified main entry point for GeminiRobotics-SO101 simulation and hardware execution."""
 
 import argparse
 import signal
@@ -13,7 +13,6 @@ from robot.constants import PRESET_POSES
 from robot.logger import setup_logging
 from robot.real_robot import RealSO101Robot
 from robot.settings import Settings, get_settings, set_settings
-from robot.twin_robot import TwinSO101Robot
 from simulation.sim_robot import SO101Robot
 
 
@@ -24,11 +23,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["sim", "real", "twin"],
+        choices=["sim", "real"],
         default="real",
         help=(
-            "Execution target mode: 'real' (Physical SO-101 arm & UVC camera stream), "
-            "'sim' (MuJoCo simulation), or 'twin' (Sim + Real Digital Twin Mirror)."
+            "Execution target mode: 'real' (Physical SO-101 arm & UVC camera stream) "
+            "or 'sim' (MuJoCo simulation)."
         ),
     )
     parser.add_argument(
@@ -243,10 +242,6 @@ def _run_once(args: argparse.Namespace) -> None:
     if args.mode == "sim":
         print("Initializing MuJoCo simulation robot arm in headless UI mode...")
         robot = SO101Robot(render_viewer=False)
-        robot.reset("HOME")
-    elif args.mode == "twin":
-        print(f"Initializing Twin (Sim + Real on port {port}) without viewer...")
-        robot = TwinSO101Robot(port=port, render_viewer=False)
         robot.reset("HOME")
     else:
         print(f"Connecting real SO-101 arm on port {port} for Real Mode VLA UI...")

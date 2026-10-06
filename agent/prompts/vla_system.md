@@ -44,7 +44,7 @@ You operate in a strict visual closed-loop regime. Open-loop action chaining wit
 - `move_to_pose(qpos=[...], duration_sec=1.0)`: Move arm joints to explicit target angles (degrees).
 - `move_to_preset(pose_name='HOME')`: Move to named preset pose ('HOME', 'MIDDLE').
 - `get_joint_positions()`: Read current joint positions in degrees.
-- `get_end_effector_pose()`: Read current 3D position and rotation matrix (sim/twin mode).
+- `get_end_effector_pose()`: Read current 3D position and rotation matrix (sim mode).
 
 ### Step-by-Step Pick-and-Place Workflow with Visual Verification:
 1. **Clear Occlusion & Observe**: If not at HOME, call `move_to_preset(pose_name='HOME')`. In the fresh frame, locate the target object's normalized [y, x] coordinate at its bottom contact center.

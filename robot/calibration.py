@@ -61,7 +61,7 @@ class ArucoWorkspaceCalibrator:
         Args:
             config_path: Path to workspace calibration JSON configuration.
             save_path: Optional path to saved homography (.npz) file.
-            mode: Operating mode ('real', 'sim', 'twin').
+            mode: Operating mode ('real' or 'sim').
         """
         self.config_path = Path(config_path) if config_path else _get_default_config_path()
         self.mode = mode
