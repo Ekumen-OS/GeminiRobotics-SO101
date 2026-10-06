@@ -590,14 +590,6 @@ def test_build_vision_interface_sim() -> None:
     assert len(demo.blocks) > 0
 
 
-def test_build_vision_interface_twin() -> None:
-    """Verify twin mode vision interface contains tabs for simulation and physical stream."""
-    with gr.Blocks() as demo:
-        build_vision_interface(robot=None, mode="twin", demo=demo)
-
-    assert len(demo.blocks) > 0
-
-
 def test_render_joint_state_panel() -> None:
     """Verify telemetry HTML generation contains expected joint rows."""
     target_deg = [0.0, -100.0, 90.0, 70.0, 0.0, -40.0]

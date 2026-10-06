@@ -26,7 +26,7 @@ def build_vision_interface(
 
     Args:
         robot: Initialized robot hardware or simulation controller instance.
-        mode: Execution operational mode ('real', 'sim', or 'twin').
+        mode: Execution operational mode ('real' or 'sim').
         demo: The parent Gradio Blocks app to attach load events to.
 
     Returns:
@@ -79,119 +79,6 @@ def build_vision_interface(
                 outputs=None,
             )
         return None, None, None
-
-    elif mode == "twin":
-        with gr.Tabs():
-            with gr.Tab("🎮 3D Digital Twin Simulation"):
-                gr.HTML(value=viewer_iframe)
-
-            with gr.Tab("📹 Physical Camera Stream"):
-                gr.HTML(value=CAMERA_FEED_HTML, elem_id="vision-feed")
-                with gr.Row():
-                    target_chk_twin = gr.Checkbox(
-                        label="🎯 Show Model Targets",
-                        value=True,
-                        scale=1,
-                    )
-                    calib_chk_twin = gr.Checkbox(
-                        label="📐 Show Calibration Overlay",
-                        value=False,
-                        scale=1,
-                    )
-
-                target_chk_twin.change(
-                    fn=set_target_overlay_enabled,
-                    inputs=[target_chk_twin],
-                    outputs=None,
-                )
-
-                calib_chk_twin.change(
-                    fn=set_calibration_overlay,
-                    inputs=[calib_chk_twin],
-                    outputs=None,
-                )
-
-                initial_choices = get_available_camera_choices()
-                initial_value = get_default_camera_index(initial_choices)
-                with gr.Row(equal_height=True, elem_classes=["camera-control-row"]):
-                    camera_dropdown = gr.Dropdown(
-                        choices=initial_choices,
-                        value=initial_value,
-                        label="Select Video Source Device",
-                        interactive=True,
-                        scale=3,
-                        elem_classes=["camera-dropdown"],
-                    )
-                    refresh_button = gr.Button(
-                        "🔄 Refresh Cameras",
-                        variant="secondary",
-                        scale=1,
-                        elem_classes=["camera-refresh-btn"],
-                    )
-                mode_state = gr.State(value=mode)
-
-                with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
-                    with gr.Row():
-                        calib_status_twin = gr.Textbox(
-                            label="Calibration Status",
-                            value=get_calibration_status_summary(),
-                            interactive=False,
-                            scale=3,
-                        )
-                        save_calib_btn_twin = gr.Button(
-                            "💾 Save Calibration",
-                            variant="secondary",
-                            scale=1,
-                        )
-
-                    calib_timer_twin = gr.Timer(value=1.5, active=True)
-                    calib_timer_twin.tick(
-                        fn=get_calibration_status_summary,
-                        inputs=None,
-                        outputs=[calib_status_twin],
-                    )
-
-                def refresh_camera_list_twin(current_val: int) -> gr.Dropdown:
-                    updated = get_available_camera_choices()
-                    valid = {c[1] for c in updated}
-                    new_val = current_val
-                    if (current_val == -2 and updated[0][1] != -2) or current_val not in valid:
-                        new_val = updated[0][1]
-                    return gr.Dropdown(choices=updated, value=new_val)
-
-                def start_twin_cam(cam_idx: int, m: str) -> int:
-                    return ensure_camera_capture(cam_idx, m, robot)
-
-                def switch_twin_cam(cam_idx: int, m: str) -> int:
-                    return switch_camera_capture(cam_idx, m, robot)
-
-                def restart_twin_cam(cam_idx: int, m: str) -> int:
-                    return switch_camera_capture(cam_idx, m, robot, force=True)
-
-                # Capture is shared by every browser tab: page load joins the running capture
-                # (and shows which camera it is using) instead of restarting it.
-                demo.load(
-                    fn=start_twin_cam,
-                    inputs=[camera_dropdown, mode_state],
-                    outputs=[camera_dropdown],
-                )
-
-                refresh_button.click(
-                    fn=refresh_camera_list_twin,
-                    inputs=[camera_dropdown],
-                    outputs=[camera_dropdown],
-                ).then(
-                    fn=restart_twin_cam,
-                    inputs=[camera_dropdown, mode_state],
-                    outputs=None,
-                )
-
-                camera_dropdown.change(
-                    fn=switch_twin_cam,
-                    inputs=[camera_dropdown, mode_state],
-                    outputs=None,
-                )
-        return save_calib_btn_twin, calib_status_twin, calib_timer_twin
 
     # Real mode
     gr.HTML(value=CAMERA_FEED_HTML, elem_id="vision-feed")

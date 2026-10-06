@@ -56,7 +56,7 @@ def test_vla_controller_api_unavailable() -> None:
 
 
 def test_vla_controller_calibration_gate() -> None:
-    """Test calibration gate blocks physical/twin execution when uncalibrated."""
+    """Test calibration gate blocks physical execution when uncalibrated."""
     controller_real = VLAController(mode="real")
     controller_real._api_available = True
 

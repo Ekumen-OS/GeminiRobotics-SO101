@@ -26,7 +26,7 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
    - **Kinematics & Theory**: Forward kinematics ([`kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`theory.md`](robot/theory.md)).
    - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, printable calibration mat sheet generator, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
    - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`perception.py`](robot/perception.py), [`vision_detector.py`](robot/vision_detector.py)).
-   - **Hardware & Digital Twin**: Physical serial bus interfaces for Feetech servos ([`real_robot.py`](robot/real_robot.py)), simulation controller ([`simulation/sim_robot.py`](simulation/sim_robot.py)), and simultaneous simulation-to-hardware streaming ([`twin_robot.py`](robot/twin_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
+   - **Hardware & Simulation**: Physical serial bus interface for Feetech servos ([`real_robot.py`](robot/real_robot.py)) and MuJoCo simulation controller ([`simulation/sim_robot.py`](simulation/sim_robot.py)), both adhering to [`RobotInterface`](robot/interface.py) and declaring their `mode` (`real` / `sim`).
 
 2. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
    - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
@@ -42,7 +42,7 @@ To keep code modular and hardware, simulation, agent, and user interfaces cleanl
 
 4. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
    - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
-   - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` and `twin` modes.
+   - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
    - **Thread-Safe State Management**: Centralized robot state manager (`RobotStateManager` and `get_active_robot` in [`state.py`](ui/state.py)) for synchronized joint telemetry and actuator feedback.
    - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV and native macOS hardware camera enumeration via AVFoundation ([`stream.py`](ui/stream.py), [`components/vision.py`](ui/components/vision.py)).
    - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
@@ -94,7 +94,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 
 ## Running the Robot (`main.py`)
 
-[`main.py`](main.py) is the unified entry point for running the SO-101 robotic arm in physical control, MuJoCo simulation, digital twin mode, or automated verification. By default, running `main.py` launches the modern **FastAPI + Gradio VLA Web UI Server** on port `7860`:
+[`main.py`](main.py) is the unified entry point for running the SO-101 robotic arm in physical control, MuJoCo simulation, or automated verification. By default, running `main.py` launches the modern **FastAPI + Gradio VLA Web UI Server** on port `7860`:
 
 ```bash
 # Instantly launch the Unified VLA Web UI server (default mode is 'real')
@@ -104,9 +104,9 @@ uv run python main.py
 # Launch Web UI specifying an explicit physical serial port (or set ROBOT_PORT in .env)
 uv run python main.py --mode real --port /dev/ttyACM0
 
-# Launch Web UI with interactive 3D simulation viewer (sim) or digital twin split view (twin)
+# Launch Web UI with interactive 3D simulation viewer
+# (the former 'twin' split view was removed; only 'real' and 'sim' are supported)
 uv run python main.py --mode sim
-uv run python main.py --mode twin --port /dev/ttyACM0
 
 # Development auto-reload (restarts server when Python files change)
 uv run python main.py --mode sim --reload
@@ -131,7 +131,7 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 | `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`, `SWEEP_HOME`). | `pose_name` (string) |
 | `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
 | `get_joint_positions` | Read current joint angles in degrees. | None |
-| `get_end_effector_pose` | Read 3D Cartesian position and orientation matrix (sim/twin). | None |
+| `get_end_effector_pose` | Read 3D Cartesian position and orientation matrix (sim). | None |
 
 ## Model-Driven Closed-Loop Orchestration & Workspace Calibration
 
