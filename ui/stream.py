@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from robot.calibration import ArucoWorkspaceCalibrator
+from robot.interface import RobotInterface
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,112 @@ logger = logging.getLogger(__name__)
 _stream_lock = threading.Lock()
 _current_stream_id = 0
 _device_names: dict[int, str] = {}
+# Set by the active stream generator once it has released its capture device. A new generator
+# waits on the previous event before opening hardware so two streams never fight over one node.
+_stream_done_event: threading.Event | None = None
+_PREVIOUS_STREAM_RELEASE_TIMEOUT_S = 3.0
+_CAPTURE_OPEN_ATTEMPTS = 8
+_CAPTURE_OPEN_RETRY_DELAY_S = 0.25
+
+# Linux V4L2 constants (linux/videodev2.h) used to classify device nodes without opening them
+_VIDIOC_QUERYCAP = 0x80685600
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+_V4L2_CAP_VIDEO_CAPTURE_MPLANE = 0x00001000
+_V4L2_CAP_META_CAPTURE = 0x00800000
+_V4L2_CAP_DEVICE_CAPS = 0x80000000
+_BUILTIN_CAMERA_KEYWORDS = ("integrated", "built-in", "builtin", "facetime", "internal")
+
+
+def _preferred_capture_backend() -> int:
+    """Return the OpenCV capture backend that maps an integer index to a stable device.
+
+    On Linux ``cv2.VideoCapture(idx)`` tries V4L2 and, if ``/dev/video{idx}`` is busy or not a
+    capture node, silently falls back to the FFmpeg backend. FFmpeg numbers devices in ``/dev``
+    directory order, so "index 3" can open a completely different camera than ``/dev/video3``.
+    Pinning V4L2 guarantees the index always means ``/dev/video{idx}``.
+    """
+    if sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
+def _open_capture(index: int, attempts: int = _CAPTURE_OPEN_ATTEMPTS) -> cv2.VideoCapture:
+    """Open a hardware capture device, retrying briefly while the node is still busy.
+
+    Args:
+        index: Integer camera index (``/dev/video{index}`` on Linux).
+        attempts: Maximum number of open attempts before giving up.
+
+    Returns:
+        The ``cv2.VideoCapture`` instance (check ``isOpened()`` for success).
+    """
+    backend = _preferred_capture_backend()
+    cap = cv2.VideoCapture(index, backend)
+    attempt = 1
+    while not cap.isOpened() and attempt < attempts:
+        cap.release()
+        time.sleep(_CAPTURE_OPEN_RETRY_DELAY_S)
+        cap = cv2.VideoCapture(index, backend)
+        attempt += 1
+    if cap.isOpened() and attempt > 1:
+        logger.info(f"Camera index {index} opened after {attempt} attempts (device was busy).")
+    return cap
+
+
+def _wait_for_previous_stream_release(prev_done: threading.Event | None) -> None:
+    """Block (bounded) until the previously active stream generator has released its camera."""
+    if prev_done is None or prev_done.is_set():
+        return
+    if not prev_done.wait(timeout=_PREVIOUS_STREAM_RELEASE_TIMEOUT_S):
+        logger.warning(
+            "Previous video stream did not release its camera within "
+            f"{_PREVIOUS_STREAM_RELEASE_TIMEOUT_S:.1f}s; attempting to open anyway."
+        )
+
+
+def _query_v4l2_device_caps(dev_node: Path) -> int | None:
+    """Read the per-node V4L2 ``device_caps`` bitmask via ``VIDIOC_QUERYCAP``.
+
+    Unlike opening the device with OpenCV, this ioctl succeeds even while another process (or
+    the active stream) is streaming from the node, so enumeration never steals or drops a camera.
+
+    Args:
+        dev_node: Path to ``/dev/videoN``.
+
+    Returns:
+        The ``device_caps`` bitmask, or None when the node cannot be queried.
+    """
+    import fcntl
+    import os
+    import struct
+
+    try:
+        fd = os.open(str(dev_node), os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        buf = bytearray(104)  # struct v4l2_capability
+        fcntl.ioctl(fd, _VIDIOC_QUERYCAP, buf)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    _driver, _card, _bus, _version, capabilities, device_caps = struct.unpack(
+        "<16s32s32sIII", bytes(buf[:92])
+    )
+    if capabilities & _V4L2_CAP_DEVICE_CAPS:
+        return device_caps
+    return capabilities
+
+
+def _is_v4l2_video_capture_node(dev_node: Path) -> bool | None:
+    """Classify a V4L2 node: True for video capture, False for metadata/output, None if unknown."""
+    caps = _query_v4l2_device_caps(dev_node)
+    if caps is None:
+        return None
+    if caps & _V4L2_CAP_META_CAPTURE and not caps & _V4L2_CAP_VIDEO_CAPTURE:
+        return False
+    return bool(caps & (_V4L2_CAP_VIDEO_CAPTURE | _V4L2_CAP_VIDEO_CAPTURE_MPLANE))
 
 
 def __getattr__(name: str) -> Any:
@@ -477,6 +584,38 @@ def generate_raw_sim_placeholder_pattern() -> np.ndarray:
     return np.full((height, width, 3), (20, 35, 45), dtype=np.uint8)
 
 
+def _robot_can_render(robot: Any | None) -> bool:
+    """Return True only when ``robot`` really implements ``render_rgb_frame``.
+
+    ``RobotInterface`` defines ``render_rgb_frame`` as a method that raises
+    ``NotImplementedError`` (physical arms inherit it), so ``hasattr`` alone is true for every
+    robot. Only a subclass that overrides it (simulation, twin) can render a frame.
+
+    Args:
+        robot: Active robot instance, or None.
+
+    Returns:
+        True when the robot overrides ``render_rgb_frame``.
+    """
+    if robot is None:
+        return False
+    render = getattr(type(robot), "render_rgb_frame", None)
+    return render is not None and render is not RobotInterface.render_rgb_frame
+
+
+def has_published_frame() -> bool:
+    """Return True once a capture has published at least one frame to the shared buffers."""
+    with _global_frame_lock:
+        return any(
+            frame is not None
+            for frame in (
+                _global_latest_annotated_frame,
+                _global_latest_frame,
+                _global_latest_raw_frame,
+            )
+        )
+
+
 def get_latest_raw_jpeg() -> bytes | None:
     """Get the most recent camera frame as a 100% pristine, un-annotated JPEG.
 
@@ -493,7 +632,7 @@ def get_latest_raw_jpeg() -> bytes | None:
         from ui.state import get_active_robot
 
         robot = get_active_robot()
-        if robot is not None and hasattr(robot, "render_rgb_frame"):
+        if _robot_can_render(robot):
             frame = _SIM_RUNTIME.get_latest_raw_frame(robot)
 
     if frame is None:
@@ -510,10 +649,13 @@ def get_latest_raw_jpeg() -> bytes | None:
     return None
 
 
-def get_latest_jpeg() -> bytes | None:
+def get_latest_jpeg(quality: int = 95) -> bytes | None:
     """Get the most recent camera frame from any active stream as a JPEG with UI overlays.
 
-    Used by Web UI endpoints (e.g. /api/sim_stream) and preview viewers.
+    Used by Web UI endpoints (/api/stream, /api/sim_stream) and preview viewers.
+
+    Args:
+        quality: JPEG quality (1-100). The model path uses ``get_latest_raw_jpeg`` instead.
 
     Returns:
         JPEG-encoded bytes of the annotated RGB frame, or None if unavailable.
@@ -537,7 +679,7 @@ def get_latest_jpeg() -> bytes | None:
         from ui.state import get_active_robot
 
         robot = get_active_robot()
-        if robot is not None and hasattr(robot, "render_rgb_frame"):
+        if _robot_can_render(robot):
             frame = _SIM_RUNTIME.get_latest_frame(robot)
 
     if frame is None:
@@ -552,7 +694,9 @@ def get_latest_jpeg() -> bytes | None:
             frame = draw_model_target_overlay(frame)
 
     bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    success, encoded = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    success, encoded = cv2.imencode(
+        ".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    )
     if success:
         return encoded.tobytes()
     return None
@@ -667,7 +811,7 @@ class _SingletonSimRuntime:
         stream_width = settings.stream_width
         stream_height = settings.stream_height
 
-        if robot is not None and hasattr(robot, "render_rgb_frame"):
+        if _robot_can_render(robot):
             frame = _sim_frame_with_fallback(
                 robot=robot,
                 width=stream_width,
@@ -705,7 +849,7 @@ class _SingletonSimRuntime:
         stream_width = settings.stream_width
         stream_height = settings.stream_height
 
-        if robot is not None and hasattr(robot, "render_rgb_frame"):
+        if _robot_can_render(robot):
             frame = _sim_frame_with_fallback(
                 robot=robot,
                 width=stream_width,
@@ -826,11 +970,15 @@ def _enumerate_cameras_linux() -> list[tuple[str, int]]:
                         name = name_file.read_text(encoding="utf-8", errors="ignore").strip()
                     else:
                         name = f"Linux V4L2 Device (video{idx})"
-                    cap = cv2.VideoCapture(idx)
-                    if cap.isOpened():
+                    is_capture = _is_v4l2_video_capture_node(Path(f"/dev/video{idx}"))
+                    if is_capture is None:
+                        # Capability query unavailable: fall back to a single open probe.
+                        cap = _open_capture(idx, attempts=1)
+                        is_capture = cap.isOpened()
+                        cap.release()
+                    if is_capture:
                         _device_names[idx] = name
                         choices.append((f"{name} (Index {idx})", idx))
-                        cap.release()
     except (OSError, RuntimeError, AttributeError, ValueError, PermissionError) as e:
         logger.info(f"Linux V4L2 sysfs enumeration error ({e}). Fallback to active probe...")
     if not choices:
@@ -855,12 +1003,12 @@ def _enumerate_cameras_fallback() -> list[tuple[str, int]]:
     """
     choices: list[tuple[str, int]] = []
     for idx in range(4):
-        cap = cv2.VideoCapture(idx)
+        cap = _open_capture(idx, attempts=1)
         if cap.isOpened():
             name = f"Hardware Camera {idx}"
             _device_names[idx] = name
             choices.append((f"{name} (Index {idx})", idx))
-            cap.release()
+        cap.release()
     return choices
 
 
@@ -891,7 +1039,13 @@ def get_available_camera_choices() -> list[tuple[str, int]]:
 
 
 def get_default_camera_index(choices: list[tuple[str, int]] | None = None) -> int:
-    """Select the preferred default camera index (priority: 2 -> 1 -> 0).
+    """Select the preferred default camera index.
+
+    Priority order:
+        1. ``CAMERA_INDEX`` setting, when that index is currently available.
+        2. ``CAMERA_NAME`` setting, matched case-insensitively against device labels.
+        3. The first external camera (labels not mentioning an integrated/built-in webcam).
+        4. Legacy fallback priority: index 2 -> 1 -> 0, then the first listed choice.
 
     Args:
         choices: Optional list of available camera tuples (label, index).
@@ -902,9 +1056,26 @@ def get_default_camera_index(choices: list[tuple[str, int]] | None = None) -> in
     if choices is None:
         choices = get_available_camera_choices()
 
-    valid_indices = {c[1] for c in choices if c[1] >= 0}
+    hardware = {c[1]: c[0] for c in choices if c[1] >= 0}
+    settings = get_settings()
+
+    if settings.camera_index is not None and settings.camera_index in hardware:
+        return settings.camera_index
+
+    if settings.camera_name:
+        needle = settings.camera_name.strip().lower()
+        for idx in sorted(hardware):
+            if needle and needle in hardware[idx].lower():
+                return idx
+        logger.warning(f"No camera matching CAMERA_NAME='{settings.camera_name}' found.")
+
+    for idx in sorted(hardware):
+        label = hardware[idx].lower()
+        if not any(keyword in label for keyword in _BUILTIN_CAMERA_KEYWORDS):
+            return idx
+
     for preferred in [2, 1, 0]:
-        if preferred in valid_indices:
+        if preferred in hardware:
             return preferred
 
     if choices:
@@ -1270,7 +1441,7 @@ def _sim_frame_with_fallback(
     Returns:
         RGB frame as uint8 numpy array.
     """
-    if robot is not None and hasattr(robot, "render_rgb_frame"):
+    if _robot_can_render(robot):
         try:
             return robot.render_rgb_frame(width=width, height=height)
         except Exception as err:
@@ -1321,6 +1492,9 @@ def stream_video(
 ):
     """Capture real-time video frames and yield them to Gradio over Server-Sent Events.
 
+    Takes over the global stream token (stopping any previous generator) and registers a
+    completion event so the next generator can wait for this one to release its camera.
+
     Args:
         camera_index: Integer index of target hardware capture device.
         mode: Operation mode ('real', 'sim', or 'twin').
@@ -1329,10 +1503,28 @@ def stream_video(
     Yields:
         NumPy array of shape (H, W, 3) containing RGB video frames.
     """
-    global _global_latest_frame, _global_latest_raw_frame, _global_latest_annotated_frame
-    global _current_stream_id
+    global _current_stream_id, _stream_done_event
     my_stream_id = time.time_ns()
-    _current_stream_id = my_stream_id
+    my_done = threading.Event()
+    with _stream_lock:
+        prev_done = _stream_done_event
+        _stream_done_event = my_done
+        _current_stream_id = my_stream_id
+    try:
+        yield from _stream_video_impl(camera_index, mode, robot, my_stream_id, prev_done)
+    finally:
+        my_done.set()
+
+
+def _stream_video_impl(
+    camera_index: int,
+    mode: str,
+    robot: Any | None,
+    my_stream_id: int,
+    prev_done: threading.Event | None,
+):
+    """Generator body for :func:`stream_video`; see that function for the contract."""
+    global _global_latest_frame, _global_latest_raw_frame, _global_latest_annotated_frame
 
     settings = get_settings()
     frame_interval = 1.0 / settings.stream_fps
@@ -1398,6 +1590,8 @@ def stream_video(
 
         cap = None
         camera_active = False
+        if camera_index >= 0:
+            _wait_for_previous_stream_release(prev_done)
         with _stream_lock:
             if _current_stream_id != my_stream_id:
                 return
@@ -1405,7 +1599,7 @@ def stream_video(
             cam_name = get_camera_name(camera_index)
             if camera_index >= 0:
                 logger.info(f"Initializing twin bottom camera {cam_name} (Index {camera_index})...")
-                cap = cv2.VideoCapture(camera_index)
+                cap = _open_capture(camera_index)
                 camera_active = cap.isOpened()
                 if camera_active:
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
@@ -1487,22 +1681,29 @@ def stream_video(
 
     camera_active = False
     cap = None
+    cam_name = get_camera_name(camera_index)
+
+    if camera_index >= 0:
+        # Yield the status frame *before* taking the lock: a generator suspended while holding
+        # the lock would deadlock every later stream if the client never resumed it.
+        msg = f"Connecting to OpenCV index {camera_index}..."
+        yield generate_loading_pattern(camera_index, msg)
+        _wait_for_previous_stream_release(prev_done)
 
     with _stream_lock:
         if _current_stream_id != my_stream_id:
             return
 
-        cam_name = get_camera_name(camera_index)
-
         if camera_index >= 0:
-            msg = f"Connecting to OpenCV index {camera_index}..."
-            yield generate_loading_pattern(camera_index, msg)
             logger.info(f"Initializing {cam_name} (Index {camera_index})...")
-            cap = cv2.VideoCapture(camera_index)
+            cap = _open_capture(camera_index)
             camera_active = cap.isOpened()
 
             if not camera_active:
-                logger.warning(f"Failed to open {cam_name}. Falling back to synthetic mock feed.")
+                logger.warning(
+                    f"Failed to open {cam_name} (Index {camera_index}): device busy or "
+                    "not a capture node. Falling back to synthetic mock feed."
+                )
             else:
                 # Enable MJPG hardware video codec to prevent USB firmware FPS throttling
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
@@ -1513,7 +1714,10 @@ def stream_video(
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 real_fps = cap.get(cv2.CAP_PROP_FPS)
-                logger.info(f"Connected to {cam_name} at {w}x{h} (~{real_fps:.0f} FPS).")
+                logger.info(
+                    f"Connected to {cam_name} at {w}x{h} (~{real_fps:.0f} FPS) "
+                    f"via {cap.getBackendName()} backend."
+                )
         else:
             logger.info("Synthetic mock video feed selected.")
 
@@ -1565,3 +1769,80 @@ def stream_video(
         if cap is not None and cap.isOpened():
             cap.release()
             logger.info(f"Released camera resource for index {camera_index}.")
+
+
+# --- Shared camera capture -------------------------------------------------------------------
+# The browser reads frames from /api/stream (MJPEG over one long-lived response), so capture must
+# not depend on any Gradio session. One background thread drives ``stream_video`` -- which already
+# publishes the raw and annotated frame buffers -- and every client reads those buffers. A second
+# browser tab therefore shares the stream instead of stealing it.
+_capture_lock = threading.Lock()
+_capture_thread: threading.Thread | None = None
+_capture_key: tuple[int, str] | None = None
+
+
+def _capture_alive() -> bool:
+    """Return True when the shared capture thread is running."""
+    return _capture_thread is not None and _capture_thread.is_alive()
+
+
+def _run_capture(camera_index: int, mode: str, robot: Any | None) -> None:
+    """Drain ``stream_video`` so it keeps publishing the frame buffers; frames are discarded."""
+    try:
+        for _ in stream_video(camera_index=camera_index, mode=mode, robot=robot):
+            pass
+    except Exception:
+        logger.exception(f"Camera capture for index {camera_index} stopped unexpectedly.")
+
+
+def _start_capture_locked(camera_index: int, mode: str, robot: Any | None) -> None:
+    """Start a capture thread; caller holds ``_capture_lock``. Supersedes any previous one."""
+    global _capture_thread, _capture_key
+    prepare_stream_switch()  # makes a still-running previous generator exit and release its camera
+    _capture_key = (camera_index, mode)
+    _capture_thread = threading.Thread(
+        target=_run_capture,
+        args=(camera_index, mode, robot),
+        name="camera-capture",
+        daemon=True,
+    )
+    _capture_thread.start()
+
+
+def ensure_camera_capture(camera_index: int, mode: str, robot: Any | None = None) -> int:
+    """Start shared capture if it is not running; never steal it from a running capture.
+
+    Called on every page load, so a second tab joins the existing stream.
+
+    Args:
+        camera_index: Camera to open when nothing is capturing yet.
+        mode: Operation mode ('real' or 'twin').
+        robot: Optional robot used by twin mode to compose frames.
+
+    Returns:
+        The camera index that is actually being captured.
+    """
+    with _capture_lock:
+        if not _capture_alive() or _capture_key is None:
+            _start_capture_locked(camera_index, mode, robot)
+        return _capture_key[0] if _capture_key is not None else camera_index
+
+
+def switch_camera_capture(
+    camera_index: int, mode: str, robot: Any | None = None, force: bool = False
+) -> int:
+    """Switch shared capture to ``camera_index`` (restart only when it changed or ``force``).
+
+    Args:
+        camera_index: Requested camera index (-1 selects the synthetic feed).
+        mode: Operation mode ('real' or 'twin').
+        robot: Optional robot used by twin mode to compose frames.
+        force: Restart even when this camera is already active (e.g. after a replug).
+
+    Returns:
+        The camera index being captured after the call.
+    """
+    with _capture_lock:
+        if force or not _capture_alive() or _capture_key != (camera_index, mode):
+            _start_capture_locked(camera_index, mode, robot)
+        return camera_index
