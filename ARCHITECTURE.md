@@ -11,7 +11,7 @@ The GeminiRobotics-SO101 platform integrates a 6-DOF robotic arm with Google Gem
                                      │ (Raw RGB Frames)
                                      ▼
                   ┌────────────────────────────────────────┐
-                  │    ui/stream.py: Dual Buffer Engine    │
+                  │    vision/frames.py: Dual Buffer Engine│
                   │  (get_latest_raw_jpeg vs UI annotated) │
                   └─────────┬────────────────────┬─────────┘
                             │                    │
@@ -49,11 +49,11 @@ The GeminiRobotics-SO101 platform integrates a 6-DOF robotic arm with Google Gem
 
 ### Vision Pipeline Decoupling
 
-To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **Dual-Buffer Stream Engine**:
+To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements a **Dual-Buffer Stream Engine**:
 
 1. **Model Vision Channel (`get_latest_raw_jpeg`)**: Supplies pristine, untouched RGB camera frames to the Gemini Live session and OpenCV perception detectors. It is guaranteed to be free of bounding boxes, text overlays, crosshairs, or UI annotations.
 2. **Operator Display Channel (`/api/stream`, `/api/sim_stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and model target focus badges for human operator inspection. Both are long-lived `multipart/x-mixed-replace` MJPEG responses rendered by a plain `<img>`, so delivery needs throughput, not a per-frame round trip (per-frame Gradio image delivery froze on any link whose round-trip time exceeded the frame interval, e.g. Tailscale/WAN). Browser quality and rate are `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
-3. **Shared capture**: camera capture is one background thread (`ensure_camera_capture` / `switch_camera_capture` in `ui/stream.py`), independent of any browser session. Every tab reads the same frame buffers, so opening a second tab joins the running capture instead of replacing it.
+3. **Shared capture**: camera capture is one background thread (`ensure_camera_capture` / `switch_camera_capture` in `vision/capture.py`), independent of any browser session. Every tab reads the same frame buffers, so opening a second tab joins the running capture instead of replacing it.
 
 ---
 
@@ -63,7 +63,7 @@ To eliminate UI-to-model visual feedback leakage, `ui/stream.py` implements a **
 | --- | --- | --- | --- |
 | **F1** | ArUco Marker ID & Corner Harmonization | `robot/calibration.py`, `config/workspace_calibration.json`, `simulation/assets/scene.xml` | Canonical fiducial corner IDs (`1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`) harmonized across physical config, simulation XML, and prompts. |
 | **F2** | Homography & Lateral Axis Parity | `config/workspace_homography.npz`, `config/workspace_homography_sim.npz`, `robot/calibration.py` | Lateral $Y$-axis parity guaranteed between real and simulation frames. Target `[760, 484]` maps to $X \approx 0.197$ m, $Y \approx +0.145$ m, yielding inward shoulder pan ($\approx -42^\circ$) inside camera FOV. |
-| **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `ui/stream.py`, `ui/state.py` | `execute_tool_call` receives the controller's `mode` explicitly and otherwise reads `robot.mode` (`resolve_robot_mode`); `image_point_to_xyz` then loads the matching homography. No duck-typing on rendering methods. |
+| **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `vision/calibrator.py`, `robot/registry.py` | `execute_tool_call` receives the controller's `mode` explicitly and otherwise reads `robot.mode` (`resolve_robot_mode`); `image_point_to_xyz` then loads the matching homography. No duck-typing on rendering methods. |
 | **F4** | Reachability & FOV Kinematic Grounding | `robot/cartesian_ik.py`, `robot/calibration.py` | All normalized coordinates $[y, x] \in [0, 1000]$ within the calibrated mat map to collision-free Cartesian poses ($r \le 391$ mm) contained within the camera FOV. |
 | **F5** | Programmatic Perception Metrics Engine | `robot/perception.py`, `robot/vision_detector.py` | Programmatic extraction of measured gripper $[y_g, x_g]$, target $[y_t, x_t]$, relative offset $[dy, dx]$, Euclidean distance, alignment status, and post-lift elevation check. |
 | **F6** | Tool Execution Feedback Enrichment | `agent/tools.py` | `move_to_spatial_point`, `close_gripper`, and `open_gripper` return payloads enriched with verified perceptual measurements and context-sensitive visual hints. |
@@ -94,9 +94,10 @@ Any agent modifying the codebase MUST preserve the following schemas and functio
 
 Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py`](robot/contracts.py):
 
-- **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=None) -> VisualAlignmentResponse`**:
+- **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=None, calibrator=None) -> VisualAlignmentResponse`**:
   - **Typed contract:** [`VisualAlignmentResponse`](robot/contracts.py) (incorporates [`MeasuredOffset`](robot/contracts.py)).
-- **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0) -> GraspElevationResponse`**:
+- **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0, calibrator=None) -> GraspElevationResponse`**:
+  - `calibrator` (both functions): the `ArucoWorkspaceCalibrator` used to mask detection to the workspace polygon. `robot/` never fetches it itself; `agent/tools.py` passes `vision.get_calibrator()`.
   - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
 
 ### 3.3. Tool Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
@@ -201,6 +202,7 @@ GeminiRobotics-SO101/
 │   ├── settings.py                   # Central Settings dataclass and environment configuration
 │   ├── logger.py                     # ISO-8601 millisecond logger and stream router
 │   ├── contracts.py                  # Subsystem TypedDict contracts for perception payloads
+│   ├── registry.py                   # Thread-safe global active-robot registry
 │   ├── calibration.py                # ArUco detection, homography & coordinate transformations
 │   ├── perception.py                 # Visual alignment [dy, dx] & grasp elevation metrics
 │   ├── vision_detector.py            # HSV salient color segmentation & contour detection
@@ -209,6 +211,20 @@ GeminiRobotics-SO101/
 │   ├── interface.py                  # Abstract base RobotInterface contract
 │   ├── constants.py                  # Joint limits, home poses, and serial port defaults
 │   └── theory.md                     # Mathematical derivations for kinematics and homography
+├── simulation/
+│   ├── assets/scene.xml              # MuJoCo scene definition with camera & ArUco markers
+│   ├── sim_robot.py                  # MuJoCo simulation robot wrapper
+│   ├── sim_calibration.py            # Synthetic homography calibrator for virtual camera
+│   └── env.py                        # Gym-style RL environment wrapper
+├── vision/
+│   ├── camera.py                     # Camera enumeration, V4L2 device inspection & backend selection
+│   ├── capture.py                    # Shared capture thread manager & stream_video loop
+│   ├── frames.py                     # Dual-buffer engine (pristine raw vs operator annotated)
+│   ├── calibrator.py                 # Calibrator singleton registry (real & sim modes)
+│   ├── targets.py                    # Model-target blackboard & sleek bounding box overlay
+│   ├── overlays.py                   # Dynamic operator overlay toggles & accessors
+│   ├── sim_runtime.py                # Headless MuJoCo simulation worker & frame sink
+│   └── patterns.py                   # Standby test pattern & placeholder generators
 ├── agent/
 │   ├── contracts.py                  # Subsystem TypedDict contracts for tool responses
 │   ├── prompts/
@@ -216,15 +232,35 @@ GeminiRobotics-SO101/
 │   ├── live_session.py               # Gemini Live WebSocket session manager
 │   ├── tools.py                      # Primitive robot tool declarations & execution adapters
 │   └── vla_controller.py             # Closed-loop visual verification loop & guardrails
-├── simulation/
-│   ├── assets/scene.xml              # MuJoCo scene definition with camera & ArUco markers
-│   ├── sim_robot.py                  # MuJoCo simulation robot wrapper
-│   ├── sim_calibration.py            # Synthetic homography calibrator for virtual camera
-│   └── env.py                        # Gym-style RL environment wrapper
+├── tools/
+│   ├── calibration_sheet.py          # Printable ArUco marker PNG & calibration mat generator
+│   └── setup_wizard.py               # Interactive CLI wizard for table dimensions & markers
 ├── ui/
 │   ├── app.py                        # FastAPI application mounting Gradio Web UI
-│   ├── state.py                      # Thread-safe global RobotStateManager
-│   ├── stream.py                     # Dual-buffer frame engine & dynamic target overlays
+│   ├── state.py                      # Lazy kinematics 3D state synchronization manager
 │   └── components/                   # Gradio chat, controls, and vision viewports
 └── tests/                            # Comprehensive 4-tier automated test suite
 ```
+
+---
+
+## 7. Layered Architecture & Import-Linter Contract
+
+The codebase strictly enforces a bottom-to-top layered dependency direction:
+
+```
+robot  <  simulation  <  vision  <  agent  <  ui
+```
+
+- **`robot/`** (bottom layer): Defines core interfaces, kinematics, inverse kinematics, calibration geometry, perception metrics, and the active-robot registry (`robot/registry.py`). Never imports `simulation`, `vision`, `agent`, or `ui`.
+- **`simulation/`**: Wraps MuJoCo simulation, environment logic, and synthetic homography calculation. Imports `robot` only.
+- **`vision/`**: Owns camera hardware capture, V4L2 enumeration, dual frame buffers, the ArUco calibrator singleton registry, overlay blackboard, and sim runtime. Imports `robot` and `simulation`. Never imports `agent` or `ui`.
+- **`agent/`**: Owns Gemini Live session management, VLA orchestration, and primitive robot tool executors. Imports `vision`, `simulation`, and `robot`. Never imports `ui`.
+- **`ui/`** (top layer): Gradio and FastAPI presentation layer only. Pure consumer of all underlying layers.
+- **`tools/`** (operator package): Standalone CLI utilities (`tools/calibration_sheet.py`, `tools/setup_wizard.py`). May import layers below it; no architectural package may import `tools` (only `main.py` dispatches into it).
+
+### Enforcement
+This architecture is enforced locally by the pre-commit hook (there is no CI) using `import-linter` via `[tool.importlinter]` in `pyproject.toml`:
+- `uv run lint-imports` validates that all layer boundaries and tool isolation contracts are kept.
+- Cycle-dodging function-local imports are strictly prohibited.
+
