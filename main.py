@@ -223,7 +223,7 @@ def _run_once(args: argparse.Namespace) -> None:
         return
 
     elif args.task in ("generate_markers", "setup_workspace", "calibrate_workspace"):
-        from robot.calibration import setup_workspace_interactive
+        from tools.setup_wizard import setup_workspace_interactive
 
         reuse_flag = True if args.reuse else (False if args.regenerate else None)
 
