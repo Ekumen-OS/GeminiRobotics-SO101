@@ -18,7 +18,14 @@ from robot.settings import get_settings
 from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.vision import build_vision_interface
-from ui.state import get_robot_state_dict, set_active_robot
+from ui.state import ensure_centered_meshes, get_robot_state_dict, set_active_robot
+from vision import (
+    ensure_sim_runtime_started,
+    get_calibrator,
+    get_latest_jpeg,
+    has_published_frame,
+    save_workspace_calibration_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,8 +230,6 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
         if save_calib_btn is not None and calib_status is not None:
 
             def on_save_calibration(history: list) -> tuple:
-                from ui.stream import get_calibrator, save_workspace_calibration_file
-
                 msg = save_workspace_calibration_file()
                 calib = get_calibrator(mode=mode)
                 if calib.is_calibrated:
@@ -252,8 +257,6 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
         if calib_timer is not None:
 
             def sync_calibration_timer(history: list, current_status: str) -> tuple:
-                from ui.stream import get_calibrator
-
                 calib = get_calibrator(mode=mode)
                 if calib.is_calibrated and "Workspace Not Calibrated" in (current_status or ""):
                     ready_status = "🟢 **Status: Ready**"
@@ -301,8 +304,6 @@ async def mjpeg_frames(quality: int, fps: int):
     """
     import asyncio
 
-    from ui.stream import get_latest_jpeg, has_published_frame
-
     interval = 1.0 / max(1, fps)
     while True:
         # Until the capture publishes its first frame, send nothing rather than the sim
@@ -323,15 +324,15 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
     Returns:
         Configured FastAPI application instance.
     """
+    ensure_centered_meshes()
     set_active_robot(robot)
     if mode == "sim":
         from simulation.sim_calibration import init_sim_workspace_calibration
-        from ui.stream import _SIM_RUNTIME, get_calibrator
 
         calib = get_calibrator(mode="sim")
         init_sim_workspace_calibration(calibrator=calib)
         if robot is not None:
-            _SIM_RUNTIME.ensure_started(robot)
+            ensure_sim_runtime_started(robot)
 
     app = FastAPI(title="GeminiRobotics-SO101", docs_url=None, redoc_url=None)
 
@@ -379,8 +380,6 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
     @app.get("/api/sim_stream")
     async def get_sim_stream():
         import asyncio
-
-        from ui.stream import get_latest_jpeg
 
         async def frame_generator():
             while True:
