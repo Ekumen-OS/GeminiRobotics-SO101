@@ -16,6 +16,7 @@ def compute_visual_alignment(
     gripper_point_1000: list[float] | tuple[float, float] | np.ndarray | None = None,
     robot_state: dict[str, Any] | None = None,
     tolerance: float | None = None,
+    calibrator: Any | None = None,
 ) -> VisualAlignmentResponse:
     """Calculate measured visual alignment offset between gripper and target object.
 
@@ -26,6 +27,8 @@ def compute_visual_alignment(
         robot_state: Optional dictionary containing robot telemetry or joint angles.
         tolerance: Maximum pixel error threshold in normalized [0, 1000] space.
             Defaults to settings alignment_tolerance_px.
+        calibrator: Optional workspace calibrator used to mask detection to the ArUco
+            workspace polygon. None disables the mask.
 
     Returns:
         Dictionary adhering to ARCHITECTURE.md perception contract:
@@ -46,7 +49,7 @@ def compute_visual_alignment(
     if frame_rgb is not None and getattr(frame_rgb, "size", 0) > 0:
         try:
             refined_pt, _ = refine_point_to_nearest_object(
-                [target_y, target_x], frame_rgb, max_dist_1000=120.0
+                [target_y, target_x], frame_rgb, max_dist_1000=120.0, calibrator=calibrator
             )
             target_y = float(refined_pt[0])
             target_x = float(refined_pt[1])
@@ -89,6 +92,7 @@ def verify_grasp_elevation(
     post_lift_frame_rgb: np.ndarray | None,
     target_point_1000: list[float] | tuple[float, float] | np.ndarray | None = None,
     max_table_presence_dist: float = 80.0,
+    calibrator: Any | None = None,
 ) -> GraspElevationResponse:
     """Verify whether an object was lifted or remains resting on the table surface.
 
@@ -97,6 +101,8 @@ def verify_grasp_elevation(
         post_lift_frame_rgb: RGB frame after lifting motion.
         target_point_1000: Initial target bottom contact coordinate [y, x] in [0, 1000].
         max_table_presence_dist: Radius in [0, 1000] units to check for stationary object.
+        calibrator: Optional workspace calibrator used to mask detection to the ArUco
+            workspace polygon. None disables the mask.
 
     Returns:
         Dictionary adhering to ARCHITECTURE.md grasp verification contract:
@@ -110,14 +116,14 @@ def verify_grasp_elevation(
 
     if pre_lift_frame_rgb is not None and getattr(pre_lift_frame_rgb, "size", 0) > 0:
         try:
-            pre_objs = detect_workspace_objects(pre_lift_frame_rgb)
+            pre_objs = detect_workspace_objects(pre_lift_frame_rgb, calibrator=calibrator)
             object_detected_pre = len(pre_objs) > 0
         except Exception:
             object_detected_pre = True
 
     if post_lift_frame_rgb is not None and getattr(post_lift_frame_rgb, "size", 0) > 0:
         try:
-            post_objs = detect_workspace_objects(post_lift_frame_rgb)
+            post_objs = detect_workspace_objects(post_lift_frame_rgb, calibrator=calibrator)
             if target_point_1000 is not None and len(post_objs) > 0:
                 t_y, t_x = float(target_point_1000[0]), float(target_point_1000[1])
                 for obj in post_objs:

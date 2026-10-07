@@ -28,17 +28,22 @@ MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
 def get_workspace_polygon_from_calibrator(
     frame_rgb: np.ndarray,
+    calibrator: Any | None = None,
 ) -> np.ndarray | None:
-    """Extract workspace polygon from detected ArUco markers or saved calibration."""
+    """Extract workspace polygon from detected ArUco markers or saved calibration.
+
+    Args:
+        frame_rgb: Input image in RGB format (H, W, 3).
+        calibrator: Optional ArucoWorkspaceCalibrator instance.
+
+    Returns:
+        NumPy array of shape (4, 2) with corner coordinates, or None.
+    """
+    if calibrator is None:
+        return None
     try:
-        from ui.stream import get_calibrator
-
-        calib = get_calibrator()
-        if calib is None:
-            return None
-
-        detected = calib.detect_markers(frame_rgb)
-        marker_ids = calib.config.get("marker_ids", {})
+        detected = calibrator.detect_markers(frame_rgb)
+        marker_ids = calibrator.config.get("marker_ids", {})
         expected_ids = [
             int(marker_ids.get("top_left", 1)),
             int(marker_ids.get("top_right", 2)),
@@ -51,7 +56,7 @@ def get_workspace_polygon_from_calibrator(
                 pts.append(np.mean(detected[mid], axis=0))
         if len(pts) == 4:
             return np.array(pts, dtype=np.float32)
-    except Exception:
+    except (KeyError, ValueError, TypeError, AttributeError, cv2.error):
         pass
     return None
 
@@ -60,6 +65,7 @@ def detect_workspace_objects(
     frame_rgb: np.ndarray,
     workspace_polygon_px: np.ndarray | None = None,
     min_area: int = DEFAULT_MIN_OBJECT_AREA_PX,
+    calibrator: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Detect salient colored objects on the tabletop workspace.
 
@@ -68,6 +74,7 @@ def detect_workspace_objects(
         workspace_polygon_px: Optional (N, 2) array of polygon vertex pixels
             defining the workspace boundary. If None, tries to detect ArUco boundaries.
         min_area: Minimum contour pixel area to consider as an object.
+        calibrator: Optional workspace calibrator instance to derive the boundary polygon.
 
     Returns:
         List of detected object dictionaries containing color, bounding box,
@@ -79,8 +86,10 @@ def detect_workspace_objects(
     h, w = frame_rgb.shape[:2]
     hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2HSV)
 
-    if workspace_polygon_px is None:
-        workspace_polygon_px = get_workspace_polygon_from_calibrator(frame_rgb)
+    if workspace_polygon_px is None and calibrator is not None:
+        workspace_polygon_px = get_workspace_polygon_from_calibrator(
+            frame_rgb, calibrator=calibrator
+        )
 
     # Workspace polygon mask (optional)
     mask_roi: np.ndarray | None = None
@@ -149,6 +158,7 @@ def refine_point_to_nearest_object(
     target_color: str | None = None,
     workspace_polygon_px: np.ndarray | None = None,
     min_area: int = DEFAULT_MIN_OBJECT_AREA_PX,
+    calibrator: Any | None = None,
 ) -> tuple[list[float], dict[str, Any] | None]:
     """Refine a candidate VLA target point to the nearest detected tabletop object.
 
@@ -160,6 +170,7 @@ def refine_point_to_nearest_object(
         target_color: Optional preferred color name (red, blue, green, yellow).
         workspace_polygon_px: Optional polygon vertices in pixels.
         min_area: Minimum contour pixel area to consider.
+        calibrator: Optional ArucoWorkspaceCalibrator instance.
 
     Returns:
         Tuple of (refined_point_1000, detected_object_dict_or_None).
@@ -169,7 +180,10 @@ def refine_point_to_nearest_object(
         return [float(point_1000[0]), float(point_1000[1])], None
 
     objects = detect_workspace_objects(
-        frame_rgb, workspace_polygon_px=workspace_polygon_px, min_area=min_area
+        frame_rgb,
+        workspace_polygon_px=workspace_polygon_px,
+        min_area=min_area,
+        calibrator=calibrator,
     )
     if not objects:
         return [float(point_1000[0]), float(point_1000[1])], None
