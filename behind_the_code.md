@@ -208,7 +208,7 @@ We established parity between the simulation and physical setups through **Synth
 3. **Analytical Pinhole Projection (`simulation/sim_calibration.py`)**: Computed the exact synthetic homography matrix $H_{\text{sim}}$ by projecting the known 3D workspace corners through the virtual camera's projection matrix into image pixels and computing $H_{\text{sim}} \in \mathbb{R}^{3 \times 3}$.
 4. **Dual Calibration Persistence & High-Speed Streaming**: Calibrations are isolated into `config/workspace_homography.npz` (real mode) and `config/workspace_homography_sim.npz` (simulation mode), with high-performance 30+ FPS non-blocking MJPEG observation streaming (`/api/sim_stream`).
 5. **Continuous Live ArUco Calibration Tracking**: In real mode, the video stream continuously tracks visible ArUco fiducials and dynamically updates the perspective homography in real time, eliminating camera drift and ensuring millimeter-level accuracy across varying physical camera placements.
-6. **Minimalist Multi-Target Bounding Box Overlay (`ui/stream.py`)**: Dynamically overlays sleek, color-coded bounding boxes with corner notches and floating coordinate badges on the camera feed for multiple simultaneous objects identified by the Gemini Robotics ER Model.
+6. **Minimalist Multi-Target Bounding Box Overlay (`vision/targets.py`)**: Dynamically overlays sleek, color-coded bounding boxes with corner notches and floating coordinate badges on the camera feed for multiple simultaneous objects identified by the Gemini Robotics ER Model.
 
 ## 11. Multi-Channel Stream Separation & Diagnostic Telemetry
 
