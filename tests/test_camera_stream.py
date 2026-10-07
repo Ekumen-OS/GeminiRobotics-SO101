@@ -9,7 +9,10 @@ import cv2
 import numpy as np
 import pytest
 
-import ui.stream as stream_mod
+import vision as stream_mod
+import vision.capture as capture_mod
+import vision.frames as frames_mod
+import vision.sim_runtime as sim_runtime_mod
 from robot.settings import Settings
 from ui.app import mjpeg_frames
 
@@ -31,21 +34,21 @@ def _decode_jpeg(data: bytes) -> np.ndarray:
 def frames(clean_stream_state: None) -> Generator[None, None, None]:
     """Publish a raw frame to the global buffers and restore them afterwards."""
     raw = _noise_frame()
-    with stream_mod._global_frame_lock:
+    with frames_mod._global_frame_lock:
         saved = (
-            stream_mod._global_latest_raw_frame,
-            stream_mod._global_latest_annotated_frame,
-            stream_mod._global_latest_frame,
+            frames_mod._global_latest_raw_frame,
+            frames_mod._global_latest_annotated_frame,
+            frames_mod._global_latest_frame,
         )
-        stream_mod._global_latest_raw_frame = raw.copy()
-        stream_mod._global_latest_annotated_frame = raw.copy()
-        stream_mod._global_latest_frame = raw.copy()
+        frames_mod._global_latest_raw_frame = raw.copy()
+        frames_mod._global_latest_annotated_frame = raw.copy()
+        frames_mod._global_latest_frame = raw.copy()
     yield
-    with stream_mod._global_frame_lock:
+    with frames_mod._global_frame_lock:
         (
-            stream_mod._global_latest_raw_frame,
-            stream_mod._global_latest_annotated_frame,
-            stream_mod._global_latest_frame,
+            frames_mod._global_latest_raw_frame,
+            frames_mod._global_latest_annotated_frame,
+            frames_mod._global_latest_frame,
         ) = saved
 
 
@@ -66,10 +69,10 @@ def test_raw_jpeg_is_free_of_overlays_even_when_annotated_differs(frames: None) 
     raw = np.full((480, 640, 3), 128, dtype=np.uint8)
     annotated = raw.copy()
     annotated[100:300, 100:300] = (255, 0, 0)  # simulated overlay box
-    with stream_mod._global_frame_lock:
-        stream_mod._global_latest_raw_frame = raw
-        stream_mod._global_latest_annotated_frame = annotated
-        stream_mod._global_latest_frame = annotated
+    with frames_mod._global_frame_lock:
+        frames_mod._global_latest_raw_frame = raw
+        frames_mod._global_latest_annotated_frame = annotated
+        frames_mod._global_latest_frame = annotated
 
     raw_patch = _decode_jpeg(stream_mod.get_latest_raw_jpeg() or b"")[150:250, 150:250]
     web_patch = _decode_jpeg(stream_mod.get_latest_jpeg(quality=95) or b"")[150:250, 150:250]
@@ -114,19 +117,19 @@ def fake_capture(monkeypatch: pytest.MonkeyPatch) -> Generator[list[tuple[int, s
     ready = threading.Event()
 
     def fake_stream_video(camera_index: int, mode: str, robot: Any = None):
-        my_id = stream_mod._current_stream_id
+        my_id = capture_mod._current_stream_id
         started.append((camera_index, mode))
         ready.set()
-        while stream_mod._current_stream_id == my_id:
+        while capture_mod._current_stream_id == my_id:
             yield None
             ready.wait(0.005)
 
-    monkeypatch.setattr(stream_mod, "stream_video", fake_stream_video)
-    monkeypatch.setattr(stream_mod, "_capture_thread", None)
-    monkeypatch.setattr(stream_mod, "_capture_key", None)
+    monkeypatch.setattr(capture_mod, "stream_video", fake_stream_video)
+    monkeypatch.setattr(capture_mod, "_capture_thread", None)
+    monkeypatch.setattr(capture_mod, "_capture_key", None)
     yield started
-    stream_mod.prepare_stream_switch()  # let the fake generator exit
-    thread = stream_mod._capture_thread
+    capture_mod.prepare_stream_switch()  # let the fake generator exit
+    thread = capture_mod._capture_thread
     if thread is not None:
         thread.join(timeout=2)
 
@@ -171,21 +174,21 @@ def test_switch_restarts_only_when_camera_changes_or_forced(
 @pytest.fixture
 def empty_frames(clean_stream_state: None) -> Generator[None, None, None]:
     """Clear the shared frame buffers (as at startup, before the first capture frame)."""
-    with stream_mod._global_frame_lock:
+    with frames_mod._global_frame_lock:
         saved = (
-            stream_mod._global_latest_raw_frame,
-            stream_mod._global_latest_annotated_frame,
-            stream_mod._global_latest_frame,
+            frames_mod._global_latest_raw_frame,
+            frames_mod._global_latest_annotated_frame,
+            frames_mod._global_latest_frame,
         )
-        stream_mod._global_latest_raw_frame = None
-        stream_mod._global_latest_annotated_frame = None
-        stream_mod._global_latest_frame = None
+        frames_mod._global_latest_raw_frame = None
+        frames_mod._global_latest_annotated_frame = None
+        frames_mod._global_latest_frame = None
     yield
-    with stream_mod._global_frame_lock:
+    with frames_mod._global_frame_lock:
         (
-            stream_mod._global_latest_raw_frame,
-            stream_mod._global_latest_annotated_frame,
-            stream_mod._global_latest_frame,
+            frames_mod._global_latest_raw_frame,
+            frames_mod._global_latest_annotated_frame,
+            frames_mod._global_latest_frame,
         ) = saved
 
 
@@ -204,9 +207,9 @@ def test_robot_can_render_only_when_render_is_overridden(mock_robot: Any) -> Non
             return np.zeros((height, width, 3), dtype=np.uint8)
 
     assert hasattr(mock_robot, "render_rgb_frame")  # the trap: true for every RobotInterface
-    assert stream_mod._robot_can_render(mock_robot) is False
-    assert stream_mod._robot_can_render(Renderer()) is True
-    assert stream_mod._robot_can_render(None) is False
+    assert sim_runtime_mod._robot_can_render(mock_robot) is False
+    assert sim_runtime_mod._robot_can_render(Renderer()) is True
+    assert sim_runtime_mod._robot_can_render(None) is False
 
 
 def test_empty_buffers_with_physical_robot_do_not_attempt_sim_render(
@@ -236,9 +239,9 @@ def test_mjpeg_waits_for_first_frame_instead_of_serving_sim_placeholder(
         try:
             done, _ = await asyncio.wait({pending}, timeout=0.3)
             assert not done, "stream emitted a frame before any camera frame was published"
-            with stream_mod._global_frame_lock:
-                stream_mod._global_latest_frame = _noise_frame()
-                stream_mod._global_latest_annotated_frame = _noise_frame()
+            with frames_mod._global_frame_lock:
+                frames_mod._global_latest_frame = _noise_frame()
+                frames_mod._global_latest_annotated_frame = _noise_frame()
             return await asyncio.wait_for(pending, timeout=2)
         finally:
             pending.cancel()
@@ -251,12 +254,12 @@ def test_stop_camera_capture_joins_thread_and_clears_key(fake_capture) -> None:
     """Shutdown stops the shared capture thread so no V4L2 read is pending at interpreter exit."""
     stream_mod.ensure_camera_capture(4, "real")
     assert _wait_until(lambda: len(fake_capture) == 1)
-    thread = stream_mod._capture_thread
+    thread = capture_mod._capture_thread
     assert thread is not None and thread.is_alive()
 
     stream_mod.stop_camera_capture(timeout_s=2.0)
 
     assert not thread.is_alive()
-    assert stream_mod._capture_thread is None
-    assert stream_mod._capture_key is None
+    assert capture_mod._capture_thread is None
+    assert capture_mod._capture_key is None
     stream_mod.stop_camera_capture()  # idempotent when nothing is running

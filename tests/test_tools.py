@@ -199,7 +199,7 @@ async def test_execute_tool_move_to_spatial_point() -> None:
     mock_calibrator.is_calibrated = True
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
@@ -235,7 +235,7 @@ async def test_execute_tool_move_to_spatial_uncalibrated() -> None:
     mock_calibrator = MagicMock()
     mock_calibrator.is_calibrated = False
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall("move_to_spatial_point", {"point": [500.0, 500.0]})
         res = await execute_tool_call(call, robot=robot)
         assert "error" in res
@@ -243,7 +243,7 @@ async def test_execute_tool_move_to_spatial_uncalibrated() -> None:
 
 def test_image_point_to_xyz_uncalibrated() -> None:
     """Test image_point_to_xyz raises RuntimeError when uncalibrated."""
-    with patch("ui.stream.get_calibrator", return_value=None):
+    with patch("agent.tools.get_calibrator", return_value=None):
         with pytest.raises(RuntimeError, match="Workspace is not calibrated"):
             image_point_to_xyz([500.0, 500.0])
 
@@ -284,7 +284,7 @@ async def test_tools_visual_hints_enrichment() -> None:
     mock_calibrator.is_calibrated = True
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
         # Hover height >= 3.0
         hover_call = DummyToolCall(
             "move_to_spatial_point",
@@ -335,7 +335,7 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
     # 1. Successful move_to_spatial_point logs to stdout with ISO timestamp
-    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [600.0, 400.0], "z_height_cm": 3.0, "approach": "top_down"},
@@ -369,7 +369,7 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
 @pytest.mark.asyncio
 async def test_move_to_spatial_point_custom_label() -> None:
     """Verify that custom label parameter is preserved on the visual overlay."""
-    from ui.stream import clear_model_targets, get_model_targets
+    from vision import clear_model_targets, get_model_targets
 
     clear_model_targets()
     robot = MockRobot()
@@ -377,7 +377,7 @@ async def test_move_to_spatial_point_custom_label() -> None:
     mock_calib.is_calibrated = True
     mock_calib.gemini_to_robot_xyz.return_value = np.array([0.2, 0.0, 0.05])
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
         call = DummyToolCall(
             "move_to_spatial_point",
             {

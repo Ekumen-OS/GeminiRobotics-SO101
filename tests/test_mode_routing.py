@@ -64,7 +64,7 @@ async def test_physical_robot_spatial_move_loads_real_homography() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("ui.stream.get_calibrator", return_value=calib):
+    with patch("agent.tools.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=robot)
 
     assert res.get("status") == "success"
@@ -83,7 +83,7 @@ async def test_sim_robot_spatial_move_loads_sim_homography() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("ui.stream.get_calibrator", return_value=calib):
+    with patch("agent.tools.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=_SimLikeRobot())
 
     assert res.get("status") == "success"
@@ -101,7 +101,7 @@ async def test_controller_mode_argument_overrides_robot_mode() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("ui.stream.get_calibrator", return_value=calib):
+    with patch("agent.tools.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=MockRobot(), mode="sim")
 
     assert res.get("status") == "success"

@@ -3,7 +3,7 @@
 import gradio as gr
 
 from robot.interface import RobotInterface
-from ui.stream import (
+from vision import (
     ensure_camera_capture,
     get_available_camera_choices,
     get_calibration_status_summary,

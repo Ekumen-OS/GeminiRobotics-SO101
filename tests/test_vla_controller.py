@@ -63,7 +63,7 @@ def test_vla_controller_calibration_gate() -> None:
     mock_calibrator = MagicMock()
     mock_calibrator.is_calibrated = False
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calibrator):
+    with patch("agent.vla_controller.get_calibrator", return_value=mock_calibrator):
         chunks = list(controller_real.process_instruction_stream("Pick up the cube"))
         assert len(chunks) == 1
         assert "Action Blocked — Workspace Not Calibrated" in chunks[0]

@@ -453,7 +453,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
 
     fake_frame = b"\xff\xd8\xff\xe0mock_frame"
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Pick the red cube with visual self-correction",
@@ -587,7 +587,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Pick red cube with grasp retry",
@@ -682,7 +682,7 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Test retry exhaustion escalation",
@@ -883,7 +883,7 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("ui.stream.get_calibrator", return_value=mock_calib):
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Execute pick and place pipeline",

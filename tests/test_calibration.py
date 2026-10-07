@@ -1,5 +1,6 @@
 """Unit tests for ArUco workspace calibration and coordinate projection."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -8,7 +9,8 @@ import mujoco
 import numpy as np
 import pytest
 
-from robot.calibration import ArucoWorkspaceCalibrator, generate_aruco_markers
+from robot.calibration import ArucoWorkspaceCalibrator
+from tools.calibration_sheet import generate_aruco_markers
 
 
 def test_gemini_to_pixel_mapping() -> None:
@@ -170,7 +172,7 @@ def test_generate_aruco_markers() -> None:
 
 def test_generate_calibration_sheet() -> None:
     """Test generating the all-in-one workspace calibration mat sheet."""
-    from robot.calibration import generate_calibration_sheet
+    from tools.calibration_sheet import generate_calibration_sheet
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sheet_path = generate_calibration_sheet(output_dir=tmp_dir)
@@ -183,7 +185,7 @@ def test_generate_calibration_sheet() -> None:
 
 def test_setup_workspace_interactive() -> None:
     """Test non-interactive setup workspace config updating and artifact generation."""
-    from robot.calibration import setup_workspace_interactive
+    from tools.setup_wizard import setup_workspace_interactive
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         cfg_path = Path(tmp_dir) / "test_ws.json"
@@ -210,7 +212,7 @@ def test_setup_workspace_interactive() -> None:
 
 def test_setup_workspace_reuse_existing_markers() -> None:
     """Test setup workspace detects existing markers and updates JSON without regenerating files."""
-    from robot.calibration import setup_workspace_interactive
+    from tools.setup_wizard import setup_workspace_interactive
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         cfg_path = Path(tmp_dir) / "test_ws.json"
@@ -294,7 +296,7 @@ def test_sim_spatial_point_execution() -> None:
     from agent.tools import execute_tool_call
     from simulation.sim_calibration import init_sim_workspace_calibration
     from simulation.sim_robot import SO101Robot
-    from ui.stream import get_calibrator
+    from vision import get_calibrator
 
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
@@ -464,3 +466,46 @@ def test_f4_reachability_and_fov_coverage() -> None:
                 assert err < 0.015, (
                     f"IK positioning error too large ({err * 1000:.1f}mm) at ({x_m}, {y_m})"
                 )
+
+
+def test_setup_wizard_non_interactive_reuse_preserves_existing_corners() -> None:
+    """A non-interactive --reuse run without overrides must not rewrite calibrated corners.
+
+    The checked-in config has corners that are not an axis-aligned rectangle; rebuilding them
+    from x/y extremes used to flip the lateral sign of two corners on every `--reuse` run.
+    """
+    from tools.setup_wizard import setup_workspace_interactive
+
+    corners = {
+        "top_left": {"x": 380.0, "y": -190.0},
+        "top_right": {"x": 100.0, "y": -190.0},
+        "bottom_right": {"x": 100.0, "y": 190.0},
+        "bottom_left": {"x": 380.0, "y": 190.0},
+    }
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cfg_path = Path(tmp_dir) / "ws.json"
+        cfg_path.write_text(json.dumps({"workspace_corners_mm": corners, "marker_size_mm": 50}))
+        out_dir = Path(tmp_dir) / "markers"
+        out_dir.mkdir()
+        (out_dir / "marker_0.png").write_text("existing")
+
+        updated = setup_workspace_interactive(
+            config_path=cfg_path, output_dir=out_dir, interactive=False, reuse=True
+        )
+
+    assert updated["workspace_corners_mm"] == corners
+
+    # Explicit overrides still rebuild the rectangle (existing behaviour).
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cfg_path = Path(tmp_dir) / "ws.json"
+        cfg_path.write_text(json.dumps({"workspace_corners_mm": corners, "marker_size_mm": 50}))
+        updated = setup_workspace_interactive(
+            config_path=cfg_path,
+            output_dir=Path(tmp_dir) / "m",
+            interactive=False,
+            x_max=400,
+            x_min=100,
+            y_max=300,
+            y_min=-250,
+        )
+    assert updated["workspace_corners_mm"]["top_left"] == {"x": 400, "y": 300}

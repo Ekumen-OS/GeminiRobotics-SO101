@@ -19,32 +19,43 @@ We use Python version **3.13.7** and the extremely fast, deterministic package m
 
 ## Architecture & Modules
 
-To keep code modular and hardware, simulation, agent, and user interfaces cleanly isolated, the repository is structured into four primary packages:
+The repository strictly enforces a layered dependency architecture (`robot < simulation < vision < agent < ui`, with operator tooling in `tools/` importing layers below it):
 
-1. **[`/robot`](robot/) (Core Robot Definition & Kinematics)**
+1. **[`/robot`](robot/) (Core Robot Definition, Kinematics & Registry)**
    - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`constants.py`](robot/constants.py)).
    - **Kinematics & Theory**: Forward kinematics ([`kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`theory.md`](robot/theory.md)).
-   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, printable calibration mat sheet generator, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
+   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
    - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`perception.py`](robot/perception.py), [`vision_detector.py`](robot/vision_detector.py)).
-   - **Hardware & Simulation**: Physical serial bus interface for Feetech servos ([`real_robot.py`](robot/real_robot.py)) and MuJoCo simulation controller ([`simulation/sim_robot.py`](simulation/sim_robot.py)), both adhering to [`RobotInterface`](robot/interface.py) and declaring their `mode` (`real` / `sim`).
+   - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
+   - **Active Robot Registry**: Thread-safe global active-robot registry ([`registry.py`](robot/registry.py)).
 
-2. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
-   - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
-   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
-   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
-   - **Verbose Diagnostic Terminal Logging**: ISO-8601 millisecond-precision diagnostic logging (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`) routing model decisions, tool call payloads (`call.args`), and execution results (`result_dict`) to stdout/stderr while keeping Chat UI reasoning clean.
-
-3. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
+2. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
    - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
    - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
    - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`warp_env.py`](simulation/warp_env.py)).
    - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`test_movement.py`](simulation/test_movement.py)) and system health checks ([`check_env.py`](simulation/check_env.py)).
 
-4. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
-   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
+3. **[`/vision`](vision/) (Camera Capture, Dual Buffers & Sim Runtime)**
+   - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`camera.py`](vision/camera.py)).
+   - **Shared Capture Manager**: Multi-consumer shared capture thread and video stream production ([`capture.py`](vision/capture.py)).
+   - **Dual Frame Buffer Engine**: Separation between untouched raw model observations (`get_latest_raw_jpeg`) and operator annotated display frames (`get_latest_jpeg`) ([`frames.py`](vision/frames.py)).
+   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`calibrator.py`](vision/calibrator.py)) and model-target blackboard with sleek corner-notched bounding box overlays ([`targets.py`](vision/targets.py)).
+   - **Simulation Frame Runtime**: Dedicated background sim rendering worker ([`sim_runtime.py`](vision/sim_runtime.py)).
+
+4. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
+   - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
+   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
+   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
+   - **Verbose Diagnostic Terminal Logging**: ISO-8601 millisecond-precision diagnostic logging (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`) routing model decisions, tool call payloads (`call.args`), and execution results (`result_dict`) to stdout/stderr while keeping Chat UI reasoning clean.
+
+5. **[`/tools`](tools/) (Operator Tooling & Wizards)**
+   - **Printable Calibration Sheets**: True-to-scale workspace calibration mat poster and ArUco marker PNG generator ([`calibration_sheet.py`](tools/calibration_sheet.py)).
+   - **Interactive Setup Wizard**: Terminal CLI wizard configuring table dimensions, clearances, and marker reuse ([`setup_wizard.py`](tools/setup_wizard.py)).
+
+6. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
+   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` and `/api/sim_stream` MJPEG endpoints, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
    - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
-   - **Thread-Safe State Management**: Centralized robot state manager (`RobotStateManager` and `get_active_robot` in [`state.py`](ui/state.py)) for synchronized joint telemetry and actuator feedback.
-   - **Vision Streaming & Camera Enumeration**: High-throughput Motion JPEG (MJPG) streaming over OpenCV and native macOS hardware camera enumeration via AVFoundation ([`stream.py`](ui/stream.py), [`components/vision.py`](ui/components/vision.py)).
+   - **Lazy Kinematics State Management**: Centralized robot state manager and lazy kinematics transforms ([`state.py`](ui/state.py)).
    - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
 
 ## Getting Started

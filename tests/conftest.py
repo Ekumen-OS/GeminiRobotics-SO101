@@ -226,25 +226,25 @@ def smooth_gradient_frame() -> np.ndarray:
 @pytest.fixture
 def clean_stream_state() -> Generator[None, None, None]:
     """Reset stream overlays, model targets, and frame buffers before and after each test."""
-    import ui.stream as stream_mod
-    from ui.state import get_active_robot, set_active_robot
+    import vision as vision_mod
+    from robot.registry import get_active_robot, set_active_robot
 
     orig_robot = get_active_robot()
-    stream_mod.set_target_overlay_enabled(True)
-    stream_mod.set_calibration_overlay(False)
-    stream_mod.set_bounding_boxes_overlay(False)
-    stream_mod.set_grid_overlay(False)
-    stream_mod.set_crosshair_overlay(False)
-    stream_mod.clear_model_targets()
-    stream_mod._SIM_RUNTIME.stop()
+    vision_mod.set_target_overlay_enabled(True)
+    vision_mod.set_calibration_overlay(False)
+    vision_mod.set_bounding_boxes_overlay(False)
+    vision_mod.set_grid_overlay(False)
+    vision_mod.set_crosshair_overlay(False)
+    vision_mod.clear_model_targets()
+    vision_mod.stop_sim_runtime()
 
     yield
 
-    stream_mod.set_target_overlay_enabled(True)
-    stream_mod.set_calibration_overlay(False)
-    stream_mod.set_bounding_boxes_overlay(False)
-    stream_mod.set_grid_overlay(False)
-    stream_mod.set_crosshair_overlay(False)
-    stream_mod.clear_model_targets()
+    vision_mod.set_target_overlay_enabled(True)
+    vision_mod.set_calibration_overlay(False)
+    vision_mod.set_bounding_boxes_overlay(False)
+    vision_mod.set_grid_overlay(False)
+    vision_mod.set_crosshair_overlay(False)
+    vision_mod.clear_model_targets()
     set_active_robot(orig_robot)
-    stream_mod._SIM_RUNTIME.stop()
+    vision_mod.stop_sim_runtime()
