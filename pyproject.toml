@@ -36,6 +36,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pre-commit>=4.0.0",
     "mypy>=1.10.0",
+    "import-linter>=2.15",
 ]
 
 [tool.ruff]
@@ -48,7 +49,7 @@ ignore = ["D100", "D104"]
 pydocstyle.convention = "google"
 
 [tool.setuptools.packages.find]
-include = ["simulation*", "robot*", "ui*", "agent*"]
+include = ["simulation*", "robot*", "ui*", "agent*", "vision*", "tools*"]
 
 [tool.setuptools.package-data]
 "agent" = ["prompts/*.md"]
@@ -69,3 +70,32 @@ files = [
 follow_imports = "silent"
 ignore_missing_imports = true
 check_untyped_defs = true
+
+[tool.importlinter]
+root_packages = ["robot", "simulation", "vision", "agent", "ui", "tools"]
+
+[[tool.importlinter.contracts]]
+name = "Architecture Layer Contract"
+type = "layers"
+layers = [
+    "ui",
+    "agent",
+    "vision",
+    "simulation",
+    "robot",
+]
+
+[[tool.importlinter.contracts]]
+name = "Operator Tools Isolation Contract"
+type = "forbidden"
+source_modules = [
+    "robot",
+    "simulation",
+    "vision",
+    "agent",
+    "ui",
+]
+forbidden_modules = [
+    "tools",
+]
+

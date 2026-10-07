@@ -50,7 +50,7 @@ def _first_import_gl(module: str, **env_overrides: str) -> str:
     return line.split("=", 1)[1]
 
 
-@pytest.mark.parametrize("module", ["robot", "simulation"])
+@pytest.mark.parametrize("module", ["robot", "simulation", "vision", "ui"])
 def test_headless_linux_selects_egl_before_mujoco_is_imported(module: str) -> None:
     """Without a display, importing the package must pick EGL before MuJoCo loads."""
     assert _first_import_gl(module) == "egl"
