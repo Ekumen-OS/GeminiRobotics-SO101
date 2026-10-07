@@ -7,7 +7,7 @@ import gradio as gr
 import numpy as np
 
 from agent.vla_controller import VLAController
-from ui.stream import get_latest_raw_jpeg
+from vision import get_calibrator, get_latest_raw_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,6 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     Returns:
         Tuple of (prompt_input, chatbot, status_banner, exec_btn, home_btn, clear_btn, rand_btn)
     """
-    from ui.stream import get_calibrator
-
     calib = get_calibrator()
     is_calibrated = calib is not None and calib.is_calibrated if controller.mode == "real" else True
 
@@ -208,8 +206,6 @@ def wire_chat_events(
                 except Exception:
                     pass
 
-            from ui.stream import get_calibrator
-
             calib = get_calibrator()
             is_calibrated = (
                 calib is not None and calib.is_calibrated if controller.mode == "real" else True
@@ -261,8 +257,6 @@ def wire_chat_events(
 
     def clear_chat() -> tuple[list, dict]:
         controller.clear_history()
-        from ui.stream import get_calibrator
-
         calib = get_calibrator()
         is_calibrated = (
             calib is not None and calib.is_calibrated if controller.mode == "real" else True

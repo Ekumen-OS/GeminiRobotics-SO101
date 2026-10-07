@@ -15,6 +15,7 @@ from agent.tools import ROBOT_TOOL_DECLARATIONS, execute_tool_call
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
+from vision import get_calibrator, set_model_targets
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,6 @@ class VLAController:
 
         if self.mode == "sim":
             from simulation.sim_calibration import init_sim_workspace_calibration
-            from ui.stream import get_calibrator
 
             calib = get_calibrator(mode="sim")
             init_sim_workspace_calibration(calibrator=calib)
@@ -349,8 +349,6 @@ class VLAController:
                                     parsed_targets = parse_targets_from_text(msg_text)
                                     if parsed_targets:
                                         try:
-                                            from ui.stream import set_model_targets
-
                                             set_model_targets(parsed_targets)
                                         except Exception:
                                             pass
@@ -533,8 +531,6 @@ class VLAController:
 
         # In real mode, block execution if workspace calibration is missing
         if self.mode == "real":
-            from ui.stream import get_calibrator
-
             calib = get_calibrator()
             if calib is None or not calib.is_calibrated:
                 block_msg = (

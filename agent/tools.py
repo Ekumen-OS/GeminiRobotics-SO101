@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+import cv2
 import numpy as np
 
 from agent.contracts import GripperToolResponse, MoveToSpatialPointResponse
@@ -13,7 +14,11 @@ from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.contracts import VisualAlignmentResponse
 from robot.interface import RobotInterface
 from robot.logger import log_compat, log_with_tag
+from robot.perception import compute_visual_alignment
+from robot.registry import get_active_robot, set_active_robot
 from robot.settings import get_settings
+from robot.vision_detector import refine_point_to_nearest_object
+from vision import get_calibrator, get_model_targets, set_model_targets
 
 logger = logging.getLogger(__name__)
 
@@ -283,8 +288,6 @@ def image_point_to_xyz(
         RuntimeError: If the workspace is not calibrated.
     """
     from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
-    from ui.state import get_active_robot
-    from ui.stream import get_calibrator
 
     active_mode = resolve_robot_mode(get_active_robot(), mode)
     is_sim = active_mode == "sim"
@@ -385,8 +388,6 @@ async def execute_tool_call(
         return {"error": err_msg}
 
     try:
-        from ui.state import get_active_robot, set_active_robot
-
         if get_active_robot() is None:
             set_active_robot(robot)
     except Exception:
@@ -518,16 +519,12 @@ async def execute_tool_call(
                 try:
                     raw_jpeg = get_latest_jpeg_fn()
                     if raw_jpeg:
-                        import cv2
-
-                        from robot.vision_detector import refine_point_to_nearest_object
-
                         nparr = np.frombuffer(raw_jpeg, np.uint8)
                         frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if frame_bgr is not None:
                             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                             refined_pt, matched_obj = refine_point_to_nearest_object(
-                                point, frame_rgb
+                                point, frame_rgb, calibrator=get_calibrator()
                             )
                             if matched_obj is not None and (
                                 abs(refined_pt[0] - point[0]) > 5
@@ -563,8 +560,6 @@ async def execute_tool_call(
 
             # Update live visual target overlay on camera stream
             try:
-                from ui.stream import get_model_targets, set_model_targets
-
                 user_label = args.get("label")
                 if user_label and str(user_label).strip():
                     badge_name = str(user_label).strip().upper()
@@ -626,10 +621,6 @@ async def execute_tool_call(
             perception_res: VisualAlignmentResponse | None = None
             if get_latest_jpeg_fn:
                 try:
-                    import cv2
-
-                    from robot.perception import compute_visual_alignment
-
                     raw_jpeg = get_latest_jpeg_fn()
                     if raw_jpeg:
                         nparr = np.frombuffer(raw_jpeg, np.uint8)
@@ -640,6 +631,7 @@ async def execute_tool_call(
                                 frame_rgb=frame_rgb,
                                 target_point_1000=point,
                                 tolerance=get_settings().alignment_tolerance_px,
+                                calibrator=get_calibrator(),
                             )
                 except Exception as e:
                     log_with_tag(logger, "WARN", f"Perception computation skipped: {e}")

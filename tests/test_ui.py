@@ -15,7 +15,7 @@ from ui.components.controls import build_controls_interface
 from ui.components.telemetry import render_joint_state_panel
 from ui.components.vision import build_vision_interface
 from ui.state import get_active_robot, set_active_robot
-from ui.stream import (
+from vision import (
     add_model_target,
     clear_model_target_point,
     clear_model_targets,
@@ -133,7 +133,7 @@ def test_dual_buffer_stream_zero_leakage(
     neutral_frame: np.ndarray, clean_stream_state: None
 ) -> None:
     """Verify get_latest_raw_jpeg has zero annotations while get_latest_jpeg includes overlays."""
-    import ui.stream as stream_mod
+    import vision.frames as stream_mod
 
     raw_canvas = neutral_frame.copy()
     with stream_mod._global_frame_lock:
@@ -169,7 +169,7 @@ def test_stream_color_fidelity_rgb_vs_bgr(
     smooth_gradient_frame: np.ndarray, clean_stream_state: None
 ) -> None:
     """Verify color channel ordering is preserved and does not swap R and B."""
-    import ui.stream as stream_mod
+    import vision.frames as stream_mod
 
     test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     test_frame[:, :, 0] = 230  # High Red, Zero Blue
@@ -192,7 +192,7 @@ def test_stream_concurrency_thread_safety(
     neutral_frame: np.ndarray, clean_stream_state: None
 ) -> None:
     """Verify thread safety under concurrent reads of raw and annotated buffers."""
-    import ui.stream as stream_mod
+    import vision.frames as stream_mod
 
     with stream_mod._global_frame_lock:
         if hasattr(stream_mod, "_global_latest_raw_frame"):
@@ -285,7 +285,7 @@ def test_chat_status_banner_initial_state() -> None:
     assert banner_no_api.value == "⚠️ **Status: Gemini API Unavailable**"
 
     # Real mode without calibration
-    from ui.stream import get_calibrator
+    from vision import get_calibrator
 
     calib = get_calibrator(mode="real")
     if calib is not None:
@@ -419,7 +419,7 @@ def test_process_instruction_recovers_on_exception() -> None:
 
 def test_process_instruction_uncalibrated_status() -> None:
     """Verify status banner and placeholder when workspace calibration is missing in real mode."""
-    from ui.stream import get_calibrator
+    from vision import get_calibrator
 
     calib = get_calibrator(mode="real")
     if calib is not None:
@@ -514,7 +514,7 @@ def test_clear_chat_resets_status_banner() -> None:
 
 def test_chat_uses_raw_jpeg_stream() -> None:
     """Verify that chat instruction execution passes get_latest_raw_jpeg to the controller."""
-    import ui.stream as stream_mod
+    import vision as stream_mod
 
     controller_sim = VLAController(mode="sim", robot=None)
     controller_sim._api_available = True
