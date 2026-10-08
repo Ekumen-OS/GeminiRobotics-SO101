@@ -161,7 +161,7 @@ uv run python main.py --mode sim --reload
 
 ## Gemini Live API & Robot Tool Capabilities
 
-When interacting with the AI in the Web UI chat or via the agent controller, Gemini has access to real-time function calling tools:
+When interacting with the AI in the Web UI chat or via the agent controller, Gemini has access to real-time function calling tools (defined and mirrored from the single-source-of-truth `TOOL_REGISTRY` in [`agent/tools.py`](agent/tools.py)):
 
 | Tool Name | Description | Parameters |
 | :--- | :--- | :--- |

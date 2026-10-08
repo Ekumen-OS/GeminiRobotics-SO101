@@ -1,0 +1,147 @@
+[
+  {
+    "description": "Speak, narrate, or deliver a conversational message to the user. Use this to explain your thoughts, describe visual observations, ask questions, or confirm task progress.",
+    "name": "send_message",
+    "parameters": {
+      "properties": {
+        "message": {
+          "description": "The natural language message to narrate to the user.",
+          "type": "STRING"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Smoothly interpolate motion to a 6-DOF joint target.",
+    "name": "move_to_pose",
+    "parameters": {
+      "properties": {
+        "duration_sec": {
+          "description": "Duration of the movement in seconds.",
+          "type": "NUMBER"
+        },
+        "qpos": {
+          "description": "Target joint angles in degrees for all 6 joints.",
+          "items": {
+            "type": "NUMBER"
+          },
+          "type": "ARRAY"
+        }
+      },
+      "required": [
+        "qpos",
+        "duration_sec"
+      ],
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Instant or snap joint position command to 6-DOF joint target.",
+    "name": "set_joint_positions",
+    "parameters": {
+      "properties": {
+        "qpos": {
+          "description": "Target joint angles in degrees for all 6 joints.",
+          "items": {
+            "type": "NUMBER"
+          },
+          "type": "ARRAY"
+        }
+      },
+      "required": [
+        "qpos"
+      ],
+      "type": "OBJECT"
+    }
+  },
+  {
+    "description": "Read current joint state (informational, non-blocking). Returns degrees.",
+    "name": "get_joint_positions",
+    "parameters": {
+      "properties": {},
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Convenience wrapper to open the gripper fully.",
+    "name": "open_gripper",
+    "parameters": {
+      "properties": {},
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Convenience wrapper to close the gripper fully.",
+    "name": "close_gripper",
+    "parameters": {
+      "properties": {},
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Move the robot to a predefined preset pose (e.g., 'HOME', 'MIDDLE').",
+    "name": "move_to_preset",
+    "parameters": {
+      "properties": {
+        "pose_name": {
+          "description": "Name of the preset pose.",
+          "type": "STRING"
+        }
+      },
+      "required": [
+        "pose_name"
+      ],
+      "type": "OBJECT"
+    }
+  },
+  {
+    "description": "Read current end-effector XYZ position and rotation matrix. Available in sim mode.",
+    "name": "get_end_effector_pose",
+    "parameters": {
+      "properties": {},
+      "type": "OBJECT"
+    }
+  },
+  {
+    "behavior": "BLOCKING",
+    "description": "Move the robot end-effector to a 2D point visible in the camera feed. Provide a normalized [y, x] coordinate (0-1000) from the camera image. The system maps this to 3D workspace coordinates using ArUco workspace calibration and solves inverse kinematics to reach the target. Specify z_height_cm to control vertical offset above table (0 for table contact, 3-5 for hover/transit).",
+    "name": "move_to_spatial_point",
+    "parameters": {
+      "properties": {
+        "approach": {
+          "description": "Approach mode (REQUIRED): 'top_down' (vertical grasp perpendicular to table, MANDATORY for all tabletop pick-and-place, grasping, and table descends) or 'horizontal' (lateral approach).",
+          "enum": [
+            "top_down",
+            "horizontal"
+          ],
+          "type": "STRING"
+        },
+        "point": {
+          "description": "Normalized [y, x] image coordinate (0-1000) of the target.",
+          "items": {
+            "type": "NUMBER"
+          },
+          "type": "ARRAY"
+        },
+        "z_height_cm": {
+          "description": "Height above the table surface in centimeters (default: 3.0). Use 0 for grasping contact at table level, 3-5 for safe hover.",
+          "type": "NUMBER"
+        }
+      },
+      "required": [
+        "point",
+        "approach"
+      ],
+      "type": "OBJECT"
+    }
+  }
+]
