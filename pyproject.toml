@@ -67,6 +67,7 @@ files = [
   "agent/contracts.py",
   "robot/perception.py",
   "agent/tools.py",
+  "agent/response_assembler.py",
 ]
 follow_imports = "silent"
 ignore_missing_imports = true

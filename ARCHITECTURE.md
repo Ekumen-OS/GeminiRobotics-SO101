@@ -102,7 +102,19 @@ Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py
   - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
   - **Fail-Closed Invariant:** If detector raises an exception on either frame, returns `object_elevated=None, object_detected_on_table=False, grasped=None, confidence=0.0`. Never returns fail-open `True`.
 
-### 3.3. Tool Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
+### 3.3. Tool Registry & Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
+
+Tools are defined via a unified `TOOL_REGISTRY` map of `ToolSpec` dataclasses. Each tool specification
+co-locates:
+- **`name`**, **`description`**, **`parameters`**: the Google GenAI function declaration fields.
+- **`handler`**: Execution callback `handler(ctx: ToolContext, args: dict[str, Any]) -> dict`.
+- **`blocking`**: Boolean indicating whether execution requires model reasoning pauses or physical movement.
+- **`prompt_line`**: Formatted prompt documentation string for system instructions.
+
+`ROBOT_TOOL_DECLARATIONS` and `_BLOCKING_TOOLS` are programmatically derived from `TOOL_REGISTRY`.
+The system prompt (`agent/prompts/vla_system.md`) uses `{tool_list}` which is dynamically generated
+at runtime via `render_prompt_tool_list()`, guaranteeing synchronization between registered tools
+and the model's behavioral prompt.
 
 Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py`](agent/contracts.py):
 
@@ -238,7 +250,8 @@ GeminiRobotics-SO101/
 │   ├── prompts/
 │   │   └── vla_system.md             # Externalized VLA system prompt template
 │   ├── live_session.py               # Gemini Live WebSocket session manager
-│   ├── tools.py                      # Primitive robot tool declarations & execution adapters
+│   ├── response_assembler.py         # Pure streaming response markdown assembler
+│   ├── tools.py                      # Tool registry, declarations, handlers & prompt generation
 │   └── vla_controller.py             # Closed-loop visual verification loop & guardrails
 ├── tools/
 │   ├── calibration_sheet.py          # Printable ArUco marker PNG & calibration mat generator

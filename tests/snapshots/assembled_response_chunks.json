@@ -1,0 +1,9 @@
+[
+  "> \ud83d\udcad *Thinking step 1...",
+  "> \ud83d\udcad *Thinking step 1... and step 2.",
+  "> \ud83d\udcad *Thinking step 1... and step 2.*\n\nI will check the joints.",
+  "> \ud83d\udcad *Thinking step 1... and step 2.*\n\nI will check the joints.\n\u2699\ufe0f Executing `get_joint_positions`...\n",
+  "> \ud83d\udcad *Thinking step 1... and step 2.*\n\nI will check the joints.\n\u2699\ufe0f Executing `get_joint_positions`...\n\u2705 `get_joint_positions` completed.\n",
+  "> \ud83d\udcad *Thinking step 1... and step 2.*\n\nI will check the joints.\n\u2699\ufe0f Executing `get_joint_positions`...\n\u2705 `get_joint_positions` completed.\n> \ud83d\udcad *Evaluating joints.",
+  "> \ud83d\udcad *Thinking step 1... and step 2.*\n\nI will check the joints.\n\u2699\ufe0f Executing `get_joint_positions`...\n\u2705 `get_joint_positions` completed.\n> \ud83d\udcad *Evaluating joints.*\n\n\n**Error:** Session error: Simulated connection failure\n"
+]
