@@ -5,13 +5,21 @@ import logging
 import re
 import sys
 import threading
+from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from google.genai import types
 
 from agent.live_session import GeminiLiveSession
-from agent.tools import ROBOT_TOOL_DECLARATIONS, execute_tool_call
+from agent.response_assembler import ResponseAssembler
+from agent.tools import (
+    ROBOT_TOOL_DECLARATIONS,
+    TOOL_REGISTRY,
+    execute_tool_call,
+    render_prompt_tool_list,
+)
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
@@ -57,6 +65,7 @@ def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
         mode_upper=mode.upper(),
         tolerance=tolerance,
         sim_workspace_note=sim_note,
+        tool_list=render_prompt_tool_list(),
     )
 
 
@@ -130,6 +139,16 @@ def parse_targets_from_text(text: str) -> list[dict]:
             )
 
     return targets
+
+
+@dataclass
+class _TurnContext:
+    """Context holding queues and callbacks for an instruction processing turn."""
+
+    get_latest_jpeg_fn: Callable[[], bytes | None] | None
+    response_queue: asyncio.Queue
+    tool_executing_event: asyncio.Event
+    tool_status_callback: Callable[[str], None]
 
 
 class VLAController:
@@ -229,42 +248,193 @@ class VLAController:
                     break
             await asyncio.sleep(1.0)
 
-    async def _stream_frames_in_background(
-        self,
-        get_latest_jpeg_fn,
-        stop_event: asyncio.Event,
-        tool_executing_event: asyncio.Event,
-    ) -> None:
-        """Continuously stream frames at ~1 FPS between tool calls while model is reasoning.
-
-        Skips sending when a BLOCKING tool is executing since _stream_frames_during_execution
-        handles tool execution periods.
+    async def _handle_model_turn(self, parts: list[Any], ctx: _TurnContext) -> None:
+        """Process model turn parts for reasoning thoughts and narration text.
 
         Args:
-            get_latest_jpeg_fn: Callable returning latest pristine raw camera frame as JPEG bytes.
-            stop_event: Event signaling the background streamer to terminate.
-            tool_executing_event: Event indicating whether a BLOCKING tool is currently executing.
+            parts: Sequence of content parts emitted by the model.
+            ctx: Active turn context.
         """
-        if not self._session or not get_latest_jpeg_fn:
-            return
-
-        while not stop_event.is_set():
-            if not tool_executing_event.is_set():
-                jpeg = get_latest_jpeg_fn()
-                if jpeg:
-                    try:
-                        await self._session.send_frame(jpeg)
-                    except Exception as e:
-                        log_with_tag(logger, "ERROR", f"Background frame stream error: {e}")
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
+        for part in parts:
+            is_thought = getattr(part, "thought", False)
+            if is_thought:
+                log_with_tag(logger, "REASONING", f"💭 {part.text}")
+                if part.text:
+                    await ctx.response_queue.put({"type": "thought", "content": part.text})
+            elif part.text:
+                log_with_tag(logger, "DECISION", f"📝 Model text: {part.text}")
+                await ctx.response_queue.put({"type": "text", "content": part.text})
+            elif part.executable_code:
                 pass
+
+    async def _execute_tool(self, call: Any, ctx: _TurnContext) -> types.FunctionResponse:
+        """Execute a single function call, emit UI updates, and return response payload.
+
+        Args:
+            call: Function call object from Gemini.
+            ctx: Active turn context.
+
+        Returns:
+            FunctionResponse wrapping the tool result.
+        """
+        log_with_tag(
+            logger,
+            "TOOL_CALL",
+            f"🔧 Dispatching '{call.name}' [ID: {call.id}] | Payload: {call.args}",
+        )
+
+        if call.name == "send_message":
+            msg_text = call.args.get("message", "") if hasattr(call, "args") else ""
+            log_with_tag(logger, "DECISION", f"💬 Model speech: {msg_text}")
+            await ctx.response_queue.put({"type": "text", "content": msg_text})
+
+            parsed_targets = parse_targets_from_text(msg_text)
+            if parsed_targets:
+                try:
+                    set_model_targets(parsed_targets)
+                except Exception:
+                    pass
+
+            log_with_tag(
+                logger,
+                "TOOL_RESULT",
+                f"✅ Tool 'send_message' completed [ID: {call.id}] | "
+                "Result: {'status': 'success'}",
+            )
+            return types.FunctionResponse(
+                name=call.name,
+                id=call.id,
+                response={"status": "success"},
+            )
+
+        await ctx.response_queue.put({"type": "status", "content": f"⚙️ Executing `{call.name}`..."})
+
+        spec = TOOL_REGISTRY.get(call.name)
+        is_blocking = spec.blocking if spec is not None else False
+
+        frame_task = None
+        if is_blocking:
+            ctx.tool_executing_event.set()
+            frame_task = asyncio.create_task(
+                self._stream_frames_during_execution(
+                    ctx.get_latest_jpeg_fn, ctx.tool_executing_event
+                )
+            )
+
+        result_dict = await execute_tool_call(
+            call=call,
+            robot=self.robot,
+            get_latest_jpeg_fn=ctx.get_latest_jpeg_fn,
+            status_callback=ctx.tool_status_callback,
+            mode=self.mode,
+        )
+
+        if is_blocking:
+            ctx.tool_executing_event.clear()
+            if frame_task:
+                await frame_task
+
+            await asyncio.sleep(0.3)
+            post_frame = ctx.get_latest_jpeg_fn() if ctx.get_latest_jpeg_fn else None
+            if post_frame:
+                try:
+                    log_with_tag(
+                        logger,
+                        "STREAM",
+                        f"📸 Injected post-action observation frame ({len(post_frame)} bytes)",
+                    )
+                    if self._session:
+                        await self._session.send_frame(post_frame)
+                except Exception as e:
+                    log_with_tag(logger, "ERROR", f"Post-action frame error: {e}")
+
+        has_error = "error" in result_dict
+        status_emoji = "⚠️" if has_error else "✅"
+        log_with_tag(
+            logger,
+            "TOOL_RESULT",
+            f"{status_emoji} Tool '{call.name}' completed [ID: {call.id}] | Result: {result_dict}",
+            level=logging.ERROR if has_error else logging.INFO,
+            stream=sys.stderr if has_error else sys.stdout,
+        )
+
+        if has_error:
+            err_msg = result_dict["error"]
+            await ctx.response_queue.put(
+                {"type": "status", "content": f"⚠️ `{call.name}` error: {err_msg}"}
+            )
+        else:
+            await ctx.response_queue.put(
+                {"type": "status", "content": f"✅ `{call.name}` completed."}
+            )
+
+        return types.FunctionResponse(name=call.name, id=call.id, response=result_dict)
+
+    async def _handle_tool_call(self, tool_call: Any, ctx: _TurnContext) -> None:
+        """Handle tool call message by executing each function call and sending responses.
+
+        Args:
+            tool_call: Tool call payload containing function_calls.
+            ctx: Active turn context.
+        """
+        function_responses = []
+        for call in tool_call.function_calls:
+            resp = await self._execute_tool(call, ctx)
+            function_responses.append(resp)
+        if function_responses and self._session:
+            await self._session.send_tool_response(function_responses)
+
+    async def _handle_server_message(self, message: Any, ctx: _TurnContext) -> bool:
+        """Handle a single LiveServerMessage from Gemini.
+
+        Args:
+            message: Inbound LiveServerMessage from Gemini Live session.
+            ctx: Active turn context.
+
+        Returns:
+            True if turn is fully complete, False to keep receiving messages.
+        """
+        if not isinstance(message, types.LiveServerMessage):
+            return False
+
+        log_with_tag(
+            logger,
+            "INFO",
+            f"📩 Live Message: "
+            f"server_content={message.server_content is not None}, "
+            f"tool_call={message.tool_call is not None}",
+        )
+
+        if message.server_content and message.server_content.model_turn:
+            await self._handle_model_turn(message.server_content.model_turn.parts, ctx)
+
+        if message.tool_call:
+            await self._handle_tool_call(message.tool_call, ctx)
+
+        if message.server_content and message.server_content.turn_complete:
+            if not message.tool_call:
+                log_with_tag(logger, "DECISION", "🏁 Full turn complete received.")
+                return True
+            else:
+                log_with_tag(
+                    logger,
+                    "INFO",
+                    "ℹ️ Sub-turn complete on tool_call message; "
+                    "waiting for model response to tool output.",
+                )
+
+        return False
 
     async def _process_instruction_async(
         self, instruction: str, get_latest_jpeg_fn, response_queue: asyncio.Queue
     ) -> None:
-        """Async core for processing an instruction and running the tool-call loop."""
+        """Async core orchestrator for processing an instruction and running the loop.
+
+        Args:
+            instruction: Prompt text from user.
+            get_latest_jpeg_fn: Optional frame provider.
+            response_queue: Async queue receiving progressive updates.
+        """
         if not self._session:
             await response_queue.put({"type": "error", "content": "API unavailable"})
             await response_queue.put(None)
@@ -280,229 +450,38 @@ class VLAController:
         log_with_tag(logger, "DECISION", f"🚀 Received user instruction: {instruction!r}")
 
         async with self._async_instruction_lock:
-            # Inject initial snapshot
             initial_frame = get_latest_jpeg_fn() if get_latest_jpeg_fn else None
 
-            bg_stream_stop_event = asyncio.Event()
-            tool_executing_event = asyncio.Event()
-            bg_stream_task = None
+            def tool_status_callback(status_msg: str) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    response_queue.put({"type": "status", "content": status_msg}),
+                    self._loop,
+                )
+
+            ctx = _TurnContext(
+                get_latest_jpeg_fn=get_latest_jpeg_fn,
+                response_queue=response_queue,
+                tool_executing_event=asyncio.Event(),
+                tool_status_callback=tool_status_callback,
+            )
 
             try:
                 await self._session.send_instruction(text=instruction, frame_jpeg=initial_frame)
-
-                # Disable background streamer to prevent overwhelming the Live API
-                # bg_streamer_task = asyncio.create_task(
-                #     self._stream_frames_in_background(
-                #         get_latest_jpeg_fn, bg_stream_stop_event, tool_executing_event
-                #     )
-                # )
-
                 async for message in self._session.receive():
-                    if isinstance(message, types.LiveServerMessage):
-                        log_with_tag(
-                            logger,
-                            "INFO",
-                            f"📩 Live Message: "
-                            f"server_content={message.server_content is not None}, "
-                            f"tool_call={message.tool_call is not None}",
-                        )
-                        if message.server_content and message.server_content.model_turn:
-                            for part in message.server_content.model_turn.parts:
-                                is_thought = getattr(part, "thought", False)
-                                if is_thought:
-                                    log_with_tag(logger, "REASONING", f"💭 {part.text}")
-                                    if part.text:
-                                        await response_queue.put(
-                                            {"type": "thought", "content": part.text}
-                                        )
-                                elif part.text:
-                                    log_with_tag(logger, "DECISION", f"📝 Model text: {part.text}")
-                                    await response_queue.put({"type": "text", "content": part.text})
-                                elif part.executable_code:
-                                    pass  # not handling executable code in this scope
-
-                        if message.tool_call:
-                            # Handle tool calls
-                            function_responses = []
-                            for call in message.tool_call.function_calls:
-                                log_with_tag(
-                                    logger,
-                                    "TOOL_CALL",
-                                    f"🔧 Dispatching '{call.name}' [ID: {call.id}] | "
-                                    f"Payload: {call.args}",
-                                )
-
-                                if call.name == "send_message":
-                                    msg_text = (
-                                        call.args.get("message", "")
-                                        if hasattr(call, "args")
-                                        else ""
-                                    )
-                                    log_with_tag(
-                                        logger,
-                                        "DECISION",
-                                        f"💬 Model speech: {msg_text}",
-                                    )
-                                    await response_queue.put({"type": "text", "content": msg_text})
-
-                                    # If message mentions coordinates, preview targets overlay
-                                    parsed_targets = parse_targets_from_text(msg_text)
-                                    if parsed_targets:
-                                        try:
-                                            set_model_targets(parsed_targets)
-                                        except Exception:
-                                            pass
-
-                                    function_responses.append(
-                                        types.FunctionResponse(
-                                            name=call.name,
-                                            id=call.id,
-                                            response={"status": "success"},
-                                        )
-                                    )
-                                    log_with_tag(
-                                        logger,
-                                        "TOOL_RESULT",
-                                        f"✅ Tool 'send_message' completed [ID: {call.id}] | "
-                                        "Result: {'status': 'success'}",
-                                    )
-                                    continue
-
-                                await response_queue.put(
-                                    {"type": "status", "content": f"⚙️ Executing `{call.name}`..."}
-                                )
-
-                                is_blocking = any(
-                                    d["name"] == call.name and d.get("behavior") == "BLOCKING"
-                                    for d in ROBOT_TOOL_DECLARATIONS
-                                )
-
-                                frame_task = None
-                                if is_blocking:
-                                    tool_executing_event.set()
-                                    # Start frame streaming task
-                                    frame_task = asyncio.create_task(
-                                        self._stream_frames_during_execution(
-                                            get_latest_jpeg_fn, tool_executing_event
-                                        )
-                                    )
-
-                                def tool_status_callback(status_msg: str) -> None:
-                                    asyncio.run_coroutine_threadsafe(
-                                        response_queue.put(
-                                            {"type": "status", "content": status_msg}
-                                        ),
-                                        self._loop,
-                                    )
-
-                                # Execute tool
-                                result_dict = await execute_tool_call(
-                                    call=call,
-                                    robot=self.robot,
-                                    get_latest_jpeg_fn=get_latest_jpeg_fn,
-                                    status_callback=tool_status_callback,
-                                    mode=self.mode,
-                                )
-
-                                if is_blocking:
-                                    tool_executing_event.clear()
-                                    if frame_task:
-                                        await frame_task
-
-                                    # Send ONE fresh post-action frame before the tool response
-                                    # This guarantees the image is in context when the model resumes
-                                    await asyncio.sleep(0.3)
-                                    post_frame = (
-                                        get_latest_jpeg_fn() if get_latest_jpeg_fn else None
-                                    )
-                                    if post_frame:
-                                        try:
-                                            log_with_tag(
-                                                logger,
-                                                "STREAM",
-                                                "📸 Injected post-action observation frame "
-                                                f"({len(post_frame)} bytes)",
-                                            )
-                                            await self._session.send_frame(post_frame)
-                                        except Exception as e:
-                                            log_with_tag(
-                                                logger,
-                                                "ERROR",
-                                                f"Post-action frame error: {e}",
-                                            )
-
-                                function_responses.append(
-                                    types.FunctionResponse(
-                                        name=call.name, id=call.id, response=result_dict
-                                    )
-                                )
-
-                                has_error = "error" in result_dict
-                                status_emoji = "⚠️" if has_error else "✅"
-                                log_with_tag(
-                                    logger,
-                                    "TOOL_RESULT",
-                                    f"{status_emoji} Tool '{call.name}' completed [ID: {call.id}] "
-                                    f"| Result: {result_dict}",
-                                    level=logging.ERROR if has_error else logging.INFO,
-                                    stream=sys.stderr if has_error else sys.stdout,
-                                )
-
-                                if has_error:
-                                    err_msg = result_dict["error"]
-                                    await response_queue.put(
-                                        {
-                                            "type": "status",
-                                            "content": f"⚠️ `{call.name}` error: {err_msg}",
-                                        }
-                                    )
-                                else:
-                                    await response_queue.put(
-                                        {
-                                            "type": "status",
-                                            "content": f"✅ `{call.name}` completed.",
-                                        }
-                                    )
-
-                            if function_responses:
-                                await self._session.send_tool_response(function_responses)
-
-                        if message.server_content and message.server_content.turn_complete:
-                            if not message.tool_call:
-                                log_with_tag(
-                                    logger,
-                                    "DECISION",
-                                    "🏁 Full turn complete received.",
-                                )
-                                break
-                            else:
-                                log_with_tag(
-                                    logger,
-                                    "INFO",
-                                    "ℹ️ Sub-turn complete on tool_call message; "
-                                    "waiting for model response to tool output.",
-                                )
-
+                    if await self._handle_server_message(message, ctx):
+                        break
             except asyncio.CancelledError:
                 log_with_tag(logger, "WARN", "Instruction task cancelled.")
                 raise
             except Exception as e:
                 log_with_tag(logger, "ERROR", f"Error during session loop: {e}")
                 await response_queue.put({"type": "error", "content": f"Session error: {e}"})
-                # Try to disconnect so it can reconnect cleanly
                 try:
                     await self._session.disconnect()
                 except Exception:
                     pass
             finally:
-                bg_stream_stop_event.set()
-                if bg_stream_task and not bg_stream_task.done():
-                    bg_stream_task.cancel()
-                    try:
-                        await bg_stream_task
-                    except asyncio.CancelledError:
-                        pass
-                await response_queue.put(None)  # Signal completion
+                await response_queue.put(None)
 
     def process_instruction_stream(
         self, instruction: str, get_latest_jpeg_fn=None
@@ -559,8 +538,7 @@ class VLAController:
             self._loop,
         )
 
-        full_response = ""
-        in_thought_block = False
+        assembler = ResponseAssembler()
 
         # Synchronously consume the queue
         while True:
@@ -569,49 +547,11 @@ class VLAController:
             item = future.result()
 
             if item is None:
-                if in_thought_block:
-                    full_response += "*\n\n"
-                    in_thought_block = False
                 break
 
-            if item["type"] == "thought":
-                if not in_thought_block:
-                    if full_response and not full_response.endswith("\n"):
-                        full_response += "\n\n"
-                    full_response += "> 💭 *"
-                    in_thought_block = True
-                full_response += item["content"]
-                yield full_response
-            elif item["type"] == "text":
-                if in_thought_block:
-                    full_response += "*\n\n"
-                    in_thought_block = False
-                if (
-                    full_response
-                    and not full_response.endswith("\n")
-                    and not full_response.endswith(" ")
-                ):
-                    full_response += "\n\n"
-                full_response += item["content"]
-                yield full_response
-            elif item["type"] == "status":
-                if in_thought_block:
-                    full_response += "*\n\n"
-                    in_thought_block = False
-                if full_response and not full_response.endswith("\n"):
-                    full_response += "\n"
-                full_response += f"{item['content']}\n"
-                yield full_response
-            elif item["type"] == "error":
-                if in_thought_block:
-                    full_response += "*\n\n"
-                    in_thought_block = False
-                if full_response and not full_response.endswith("\n"):
-                    full_response += "\n"
-                full_response += f"\n**Error:** {item['content']}\n"
-                yield full_response
+            yield assembler.feed(item)
 
-        self.history.append({"role": "assistant", "content": full_response.strip()})
+        self.history.append({"role": "assistant", "content": assembler.finish().strip()})
 
     def process_instruction(self, instruction: str, context_images: list | None = None) -> str:
         """Process a user instruction and return the agent's full response.

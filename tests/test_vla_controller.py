@@ -235,41 +235,6 @@ def test_vla_controller_send_message_tool() -> None:
     mock_session.send_tool_response.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_vla_controller_background_streamer() -> None:
-    """Test background frame streamer sends frames and respects tool execution state."""
-    import asyncio
-
-    controller = VLAController(mode="sim")
-    mock_session = MagicMock()
-    mock_session.send_frame = AsyncMock()
-    controller._session = mock_session
-
-    mock_frame = b"mock_bg_frame"
-    get_frame = MagicMock(return_value=mock_frame)
-
-    stop_event = asyncio.Event()
-    tool_executing_event = asyncio.Event()
-
-    task = asyncio.create_task(
-        controller._stream_frames_in_background(get_frame, stop_event, tool_executing_event)
-    )
-
-    # Allow one background tick
-    await asyncio.sleep(0.05)
-    assert mock_session.send_frame.called
-
-    # When tool is executing, send_frame should not be called by background task
-    mock_session.send_frame.reset_mock()
-    tool_executing_event.set()
-    await asyncio.sleep(0.05)
-    assert not mock_session.send_frame.called
-
-    # Stop task
-    stop_event.set()
-    await task
-
-
 def test_vla_controller_thought_and_narration_streaming() -> None:
     """Test that model thoughts and narration stream properly with formatted markdown."""
     controller = VLAController(mode="sim")
