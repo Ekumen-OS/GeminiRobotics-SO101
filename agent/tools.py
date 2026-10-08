@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -11,7 +12,8 @@ import numpy as np
 from agent.contracts import GripperToolResponse, MoveToSpatialPointResponse
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS, PRESET_POSES
-from robot.contracts import VisualAlignmentResponse
+from robot.contracts import GraspClassification, VisualAlignmentResponse
+from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_compat, log_with_tag
 from robot.perception import compute_visual_alignment
@@ -54,6 +56,7 @@ def build_gripper_response(
     gripper_deg: float,
     executed_qpos_deg: list[float],
     visual_hint: str,
+    grasp: GraspClassification | None = None,
     warnings: list[str] | None = None,
 ) -> GripperToolResponse:
     """Build a typed response payload for open_gripper / close_gripper tool execution."""
@@ -64,6 +67,8 @@ def build_gripper_response(
         "executed_qpos_deg": executed_qpos_deg,
         "visual_hint": visual_hint,
     }
+    if grasp is not None:
+        resp["grasp"] = grasp
     if warnings:
         resp["warnings"] = warnings
     return resp
@@ -434,14 +439,13 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_OPEN_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
+            reading = robot.read_gripper_state()
+            aperture_deg = float(reading["aperture_deg"])
             return build_gripper_response(
                 gripper_state="open",
-                gripper_deg=float(GRIPPER_OPEN_DEG),
+                gripper_deg=aperture_deg,
                 executed_qpos_deg=clamped_qpos,
-                visual_hint=(
-                    "Gripper opened. Inspect camera frame to visually verify object release and "
-                    "clearance."
-                ),
+                visual_hint=f"Gripper opened (aperture {aperture_deg:.1f}°).",
                 warnings=warnings if warnings else None,
             )
 
@@ -451,14 +455,47 @@ async def execute_tool_call(
             qpos_deg[5] = float(GRIPPER_CLOSE_DEG)
             clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
             robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
+
+            settle_s = get_settings().gripper_settle_s
+            if settle_s > 0:
+                time.sleep(settle_s)
+
+            reading = robot.read_gripper_state()
+            grasp = classify_grasp(reading, get_settings())
+
+            log_with_tag(
+                logger,
+                "GRASP",
+                f"aperture={grasp['aperture_deg']:.1f}° load={reading['load']} "
+                f"source={reading['source']} → grasped={grasp['grasped']} ({grasp['reason']})",
+            )
+
+            if grasp["grasped"] is False:
+                gripper_state = "closed_empty"
+                visual_hint = (
+                    f"Gripper closed on NOTHING (aperture {grasp['aperture_deg']:.1f}° "
+                    "equals the empty-jaw value). Grasp missed. Open the gripper, hover again, "
+                    "re-observe the target, and retry."
+                )
+            elif grasp["grasped"] is True:
+                gripper_state = "closed"
+                visual_hint = (
+                    f"Gripper stalled at {grasp['aperture_deg']:.1f}° — an object is between "
+                    "the jaws. Lift to 5 cm and visually confirm before transporting."
+                )
+            else:  # grasped is None
+                gripper_state = "closed_unverified"
+                visual_hint = (
+                    "Gripper sensor unavailable; grasp NOT verified. Lift and inspect "
+                    "before transporting."
+                )
+
             return build_gripper_response(
-                gripper_state="closed",
-                gripper_deg=float(GRIPPER_CLOSE_DEG),
+                gripper_state=gripper_state,
+                gripper_deg=float(grasp["aperture_deg"]),
                 executed_qpos_deg=clamped_qpos,
-                visual_hint=(
-                    "Gripper closed. Lift arm to hover (z_height_cm=5.0) and inspect camera frame "
-                    "to visually confirm if object is held between jaws or still on table."
-                ),
+                visual_hint=visual_hint,
+                grasp=grasp,
                 warnings=warnings if warnings else None,
             )
 

@@ -2,7 +2,7 @@
 
 from typing import Any, NotRequired, TypedDict
 
-from robot.contracts import VisualAlignmentResponse
+from robot.contracts import GraspClassification, VisualAlignmentResponse
 
 
 class MoveToSpatialPointResponse(TypedDict):
@@ -26,5 +26,6 @@ class GripperToolResponse(TypedDict):
     gripper_deg: NotRequired[float]
     executed_qpos_deg: NotRequired[list[float]]
     visual_hint: NotRequired[str]
+    grasp: NotRequired[GraspClassification | None]
     warnings: NotRequired[list[str]]
     error: NotRequired[str]

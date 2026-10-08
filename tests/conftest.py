@@ -12,6 +12,7 @@ import pytest
 
 import robot.calibration
 import simulation.sim_calibration
+from robot.contracts import GripperReading
 from robot.interface import RobotInterface
 from robot.logger import setup_logging
 from robot.settings import Settings, set_settings
@@ -72,6 +73,7 @@ class MockRobot(RobotInterface):
         self.last_move_target: np.ndarray | None = None
         self.last_move_duration: float | None = None
         self._stop_requested = False
+        self.gripper_reading: GripperReading | None = None
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Set joint positions immediately.
@@ -123,6 +125,12 @@ class MockRobot(RobotInterface):
     def close(self) -> None:
         """Clean up mock resources."""
         self.interrupt()
+
+    def read_gripper_state(self) -> GripperReading:
+        """Return scripted gripper reading if set, else delegate to base."""
+        if self.gripper_reading is not None:
+            return self.gripper_reading
+        return super().read_gripper_state()
 
 
 class DummyToolCall:

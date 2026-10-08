@@ -106,11 +106,12 @@ def verify_grasp_elevation(
 
     Returns:
         Dictionary adhering to ARCHITECTURE.md grasp verification contract:
-            - object_elevated: bool
+            - object_elevated: bool | None
             - object_detected_on_table: bool
-            - grasped: bool
+            - grasped: bool | None
             - confidence: float
     """
+    detector_failed = False
     object_detected_pre = True
     object_detected_post = False
 
@@ -119,7 +120,7 @@ def verify_grasp_elevation(
             pre_objs = detect_workspace_objects(pre_lift_frame_rgb, calibrator=calibrator)
             object_detected_pre = len(pre_objs) > 0
         except Exception:
-            object_detected_pre = True
+            detector_failed = True
 
     if post_lift_frame_rgb is not None and getattr(post_lift_frame_rgb, "size", 0) > 0:
         try:
@@ -135,7 +136,15 @@ def verify_grasp_elevation(
                 # If target point not specified, check if any object is still detected on table
                 object_detected_post = len(post_objs) > 0
         except Exception:
-            object_detected_post = False
+            detector_failed = True
+
+    if detector_failed:
+        return {
+            "object_elevated": None,
+            "object_detected_on_table": False,
+            "grasped": None,
+            "confidence": 0.0,
+        }
 
     object_elevated = bool(object_detected_pre and not object_detected_post)
     confidence = 0.95 if object_elevated else 0.85
