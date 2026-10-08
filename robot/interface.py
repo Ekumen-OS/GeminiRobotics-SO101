@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from robot.contracts import GripperReading
+
 
 class RobotInterface(ABC):
     """Abstract Base Class for SO-101 robot controllers (Physical, Simulated).
@@ -76,3 +78,22 @@ class RobotInterface(ABC):
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement or blocking operations."""
         pass
+
+    def read_gripper_state(self) -> GripperReading:
+        """Read the current state of the gripper joint.
+
+        The base implementation derives aperture from the 6th joint position
+        (index 5) in degrees, with load=None and source='commanded'. Subclasses
+        with hardware or physics sensor feedback override this method with
+        measured values.
+
+        Returns:
+            A GripperReading dict containing aperture_deg, load, and source.
+        """
+        qpos = self.get_joint_positions()
+        aperture_deg = float(np.degrees(qpos[5])) if len(qpos) > 5 else 0.0
+        return {
+            "aperture_deg": aperture_deg,
+            "load": None,
+            "source": "commanded",
+        }

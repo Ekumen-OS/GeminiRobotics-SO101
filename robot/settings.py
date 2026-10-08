@@ -69,6 +69,12 @@ class Settings:
     # Preferred hardware camera: explicit /dev/video index, or case-insensitive device-name match
     camera_index: int | None = None
     camera_name: str | None = None
+    # Physical grasp sensor settings (Phase 3a)
+    # Calibrated empty-jaw aperture on this arm; None anchors the threshold to GRIPPER_CLOSE_DEG
+    gripper_empty_aperture_deg: float | None = None
+    grasp_empty_margin_deg: float = 6.0
+    gripper_settle_s: float = 0.6
+    grasp_load_min: float | None = None
 
     @property
     def credentials_mode(self) -> str:
@@ -123,6 +129,36 @@ class Settings:
                     except (ValueError, TypeError):
                         pass
             return default
+
+        def _resolve_float(override_val: Any, env_names: tuple[str, ...], default: float) -> float:
+            if override_val is not None:
+                try:
+                    return float(override_val)
+                except (ValueError, TypeError):
+                    return default
+            for name in env_names:
+                env_val = os.environ.get(name)
+                if env_val is not None and env_val.strip() != "":
+                    try:
+                        return float(env_val)
+                    except (ValueError, TypeError):
+                        pass
+            return default
+
+        def _resolve_opt_float(override_val: Any, env_names: tuple[str, ...]) -> float | None:
+            if override_val is not None:
+                try:
+                    return float(override_val)
+                except (ValueError, TypeError):
+                    return None
+            for name in env_names:
+                env_val = os.environ.get(name)
+                if env_val is not None and env_val.strip() != "":
+                    try:
+                        return float(env_val)
+                    except (ValueError, TypeError):
+                        pass
+            return None
 
         def _resolve_str(override_val: Any, env_names: tuple[str, ...], default: str) -> str:
             if override_val is not None:
@@ -274,6 +310,28 @@ class Settings:
 
         camera_name = _resolve_opt_str(overrides.get("camera_name"), ("CAMERA_NAME",))
 
+        gripper_empty_aperture_deg = _resolve_opt_float(
+            overrides.get("gripper_empty_aperture_deg"),
+            ("GRIPPER_EMPTY_APERTURE_DEG",),
+        )
+
+        grasp_empty_margin_deg = _resolve_float(
+            overrides.get("grasp_empty_margin_deg"),
+            ("GRASP_EMPTY_MARGIN_DEG",),
+            cls.grasp_empty_margin_deg,
+        )
+
+        gripper_settle_s = _resolve_float(
+            overrides.get("gripper_settle_s"),
+            ("GRIPPER_SETTLE_S",),
+            cls.gripper_settle_s,
+        )
+
+        grasp_load_min = _resolve_opt_float(
+            overrides.get("grasp_load_min"),
+            ("GRASP_LOAD_MIN",),
+        )
+
         return cls(
             serial_port=serial_port,
             gemini_model_id=gemini_model_id,
@@ -295,6 +353,10 @@ class Settings:
             web_jpeg_quality=web_jpeg_quality,
             camera_index=camera_index,
             camera_name=camera_name,
+            gripper_empty_aperture_deg=gripper_empty_aperture_deg,
+            grasp_empty_margin_deg=grasp_empty_margin_deg,
+            gripper_settle_s=gripper_settle_s,
+            grasp_load_min=grasp_load_min,
         )
 
 

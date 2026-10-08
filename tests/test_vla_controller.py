@@ -564,4 +564,4 @@ def test_vla_controller_visual_hint_in_tool_response() -> None:
     assert len(called_responses) == 1
     resp_dict = called_responses[0].response
     assert "visual_hint" in resp_dict
-    assert "Gripper opened. Inspect camera frame" in resp_dict["visual_hint"]
+    assert "Gripper opened (aperture" in resp_dict["visual_hint"]

@@ -160,20 +160,20 @@ async def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
     """Validate close_gripper and open_gripper visual hints instruct verification."""
     robot = MockRobot()
 
-    # close_gripper hint instructs post-lift inspection
+    # close_gripper hint on empty jaws reports missed grasp
     call_close = DummyToolCall("close_gripper", {})
     res_close = await execute_tool_call(call=call_close, robot=robot)
     assert res_close["status"] == "success"
     hint_close = res_close.get("visual_hint", "")
-    assert "Lift arm to hover" in hint_close
-    assert "visually confirm if object is held between jaws" in hint_close
+    assert "Gripper closed on NOTHING" in hint_close
+    assert "Grasp missed" in hint_close
 
-    # open_gripper hint instructs release inspection
+    # open_gripper hint reports aperture
     call_open = DummyToolCall("open_gripper", {})
     res_open = await execute_tool_call(call=call_open, robot=robot)
     assert res_open["status"] == "success"
     hint_open = res_open.get("visual_hint", "")
-    assert "verify object release and clearance" in hint_open
+    assert "Gripper opened (aperture" in hint_open
 
 
 def test_t1_f7_system_prompt_mandates_descent_alignment_gate() -> None:
