@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from robot.constants import JOINT_NAMES
+from robot.contracts import GripperReading
 from robot.interface import RobotInterface
 from robot.settings import get_settings
 
@@ -257,6 +258,54 @@ class RealSO101Robot(RobotInterface):
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement."""
         self._stop_requested = True
+
+    def read_gripper_state(self) -> GripperReading:
+        """Read measured gripper state from physical motor encoder and load registers.
+
+        Returns:
+            GripperReading with source='measured' if bus read succeeds, or
+            source='unavailable' if disconnected or read fails. Never reports
+            _last_qpos as measured.
+        """
+        if not self.connected or self.bus is None:
+            return {
+                "aperture_deg": float(np.degrees(self._last_qpos[5])),
+                "load": None,
+                "source": "unavailable",
+            }
+
+        with self._bus_lock:
+            try:
+                deg_dict = self.bus.sync_read("Present_Position", normalize=True)
+                if "gripper" not in deg_dict:
+                    return {
+                        "aperture_deg": float(np.degrees(self._last_qpos[5])),
+                        "load": None,
+                        "source": "unavailable",
+                    }
+                aperture_deg = float(deg_dict["gripper"])
+            except Exception as e:
+                logger.error(f"Error reading gripper present position from bus: {e}")
+                return {
+                    "aperture_deg": float(np.degrees(self._last_qpos[5])),
+                    "load": None,
+                    "source": "unavailable",
+                }
+
+            load: float | None = None
+            try:
+                raw_load = self.bus.read("Present_Load", "gripper", normalize=False)
+                if raw_load is not None:
+                    load = float(raw_load)
+            except Exception as e:
+                logger.debug(f"Optional Present_Load read on gripper skipped/failed: {e}")
+                load = None
+
+            return {
+                "aperture_deg": aperture_deg,
+                "load": load,
+                "source": "measured",
+            }
 
     def move_to_pose(
         self,

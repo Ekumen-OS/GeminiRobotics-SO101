@@ -63,6 +63,7 @@ python_version = "3.13"
 # Start permissive: add modules here as they get annotated.
 files = [
   "robot/contracts.py",
+  "robot/grasp.py",
   "agent/contracts.py",
   "robot/perception.py",
   "agent/tools.py",

@@ -37,6 +37,9 @@ JOINT_LIMITS = {
     "gripper": (-75.0, 75.0),
 }
 
+GRIPPER_OPEN_DEG: float = JOINT_LIMITS["gripper"][1]
+GRIPPER_CLOSE_DEG: float = JOINT_LIMITS["gripper"][0]
+
 
 def __getattr__(name: str) -> str:
     """Dynamically resolve configuration constants from the central Settings singleton."""

@@ -21,6 +21,7 @@ import mujoco.viewer
 import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
+from robot.contracts import GripperReading
 from robot.interface import RobotInterface
 from robot.settings import get_settings
 
@@ -233,17 +234,21 @@ class SO101Robot(RobotInterface):
                 logger.warning(f"[SO101Robot] Could not randomize target: {e}")
                 return np.zeros(3)
 
-    def set_joint_positions(self, qpos: np.ndarray) -> None:
+    def set_joint_positions(self, qpos: np.ndarray, snap_gripper: bool = True) -> None:
         """Set target joint position control targets and snap joints in sim.
 
         Args:
             qpos: Target joint angles as a numpy array of shape (6,).
+            snap_gripper: Whether to forcibly snap the gripper joint (True for resets, False
+                to allow physics contact solver to stall jaws on grasped objects).
         """
         with self._sim_lock:
             assert len(qpos) == len(self.actuator_ids), f"Expected {len(self.actuator_ids)} values"
             for i, act_id in enumerate(self.actuator_ids):
                 self.data.ctrl[act_id] = qpos[i]
-            for i, j_id in enumerate(self.joint_ids):
+            limit = len(self.joint_ids) if snap_gripper else len(self.joint_ids) - 1
+            for i in range(limit):
+                j_id = self.joint_ids[i]
                 qpos_adr = self.model.jnt_qposadr[j_id]
                 self.data.qpos[qpos_adr] = qpos[i]
             mujoco.mj_forward(self.model, self.data)
@@ -262,6 +267,39 @@ class SO101Robot(RobotInterface):
                 qpos_adr = self.model.jnt_qposadr[j_id]
                 pos_list.append(self.data.qpos[qpos_adr])
             return np.array(pos_list)
+
+    def read_gripper_state(self) -> GripperReading:
+        """Read measured gripper state from MuJoCo physics simulation.
+
+        Advances kinematic state with mj_forward, queries the gripper joint
+        qpos in degrees, and retrieves gripper actuator force if present.
+
+        Returns:
+            GripperReading with aperture_deg, actuator load, and source='measured'.
+        """
+        with self._sim_lock:
+            mujoco.mj_forward(self.model, self.data)
+            try:
+                gripper_j_id = self.model.joint("gripper").id
+                qpos_adr = self.model.jnt_qposadr[gripper_j_id]
+                aperture_rad = float(self.data.qpos[qpos_adr])
+                aperture_deg = float(np.degrees(aperture_rad))
+            except Exception:
+                pos = self.get_joint_positions()
+                aperture_deg = float(np.degrees(pos[5])) if len(pos) > 5 else 0.0
+
+            load: float | None = None
+            try:
+                gripper_act_id = self.model.actuator("gripper").id
+                load = float(self.data.actuator_force[gripper_act_id])
+            except Exception:
+                load = None
+
+            return {
+                "aperture_deg": aperture_deg,
+                "load": load,
+                "source": "measured",
+            }
 
     def get_joint_velocities(self) -> np.ndarray:
         """Get current joint velocities.
@@ -324,7 +362,7 @@ class SO101Robot(RobotInterface):
             t = step_idx / num_steps
             alpha = 0.5 * (1.0 - np.cos(np.pi * t))
             interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-            self.set_joint_positions(interp_qpos)
+            self.set_joint_positions(interp_qpos, snap_gripper=False)
             self.step(sim_steps)
             if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                 self.viewer.sync()

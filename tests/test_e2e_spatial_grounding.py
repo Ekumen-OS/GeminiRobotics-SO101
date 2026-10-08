@@ -420,7 +420,8 @@ async def test_t4_scenario_pick_hover_and_descend_workflow() -> None:
         close_call = DummyToolCall(name="close_gripper", args={})
         res3 = await execute_tool_call(call=close_call, robot=robot)
         assert res3["status"] == "success"
-        assert "Gripper closed" in res3["visual_hint"]
+        assert res3["gripper_state"] == "closed_empty"
+        assert "Gripper closed on NOTHING" in res3["visual_hint"]
 
         # Step 4: Lift to 5.0 cm
         lift_call = DummyToolCall(
