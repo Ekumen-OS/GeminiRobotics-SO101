@@ -73,6 +73,7 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
+| **F13**| Physical Grasp Sensor & Classification | `robot/grasp.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry. Pure classifier `classify_grasp` detects jaw stall vs empty air closure with configurable margins and fail-closed safety. |
 
 ---
 
@@ -99,6 +100,7 @@ Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py
 - **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0, calibrator=None) -> GraspElevationResponse`**:
   - `calibrator` (both functions): the `ArucoWorkspaceCalibrator` used to mask detection to the workspace polygon. `robot/` never fetches it itself; `agent/tools.py` passes `vision.get_calibrator()`.
   - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
+  - **Fail-Closed Invariant:** If detector raises an exception on either frame, returns `object_elevated=None, object_detected_on_table=False, grasped=None, confidence=0.0`. Never returns fail-open `True`.
 
 ### 3.3. Tool Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
 
@@ -108,6 +110,12 @@ Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py
   - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`VisualAlignmentResponse`](robot/contracts.py) under `perception`).
 - **`close_gripper` / `open_gripper` Return Payload**:
   - **Typed contract:** [`GripperToolResponse`](agent/contracts.py).
+  - Incorporates measured `gripper_state` (`"open"`, `"closed"`, `"closed_empty"`, or `"closed_unverified"`), measured `gripper_deg`, context-sensitive `visual_hint`, and optional [`GraspClassification`](robot/contracts.py) under `grasp`:
+    - `grasped: bool | None`: `True` if stalled on object, `False` if closed on air / below load, `None` if sensor unavailable.
+    - `aperture_deg: float`: measured aperture from bus or physics.
+    - `closed_on_air_threshold_deg: float`: threshold (calibrated empty aperture `GRIPPER_EMPTY_APERTURE_DEG`, else `GRIPPER_CLOSE_DEG`, plus `GRASP_EMPTY_MARGIN_DEG`).
+    - `load: float | None`: present load register or actuator force.
+    - `reason: Literal["closed_on_air", "aperture", "no_load", "sensor_unavailable"]`.
 
 ---
 

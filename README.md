@@ -98,10 +98,41 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 
 # Physical SO-101 Serial Port (optional, defaults to /dev/tty.usbmodem5B415332861)
 # ROBOT_PORT=/dev/ttyACM0
+
+# Grasp Sensing & Verification (Phase 3a)
+# GRIPPER_EMPTY_APERTURE_DEG=-74.5
+# GRASP_EMPTY_MARGIN_DEG=6.0
+# GRIPPER_SETTLE_S=0.6
+# GRASP_LOAD_MIN=20.0
 ```
 
 - If using physical hardware, use the LeRobot package to find the serial port of your SO-101 robotic arm and calibrate it ([LeRobot SO-101 Guide](https://huggingface.co/docs/lerobot/so101)).
 - You are now ready to launch the Web UI and control your robot!
+
+### Configuration Settings Reference
+
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `GRIPPER_EMPTY_APERTURE_DEG` | `-75.0` | Aperture the gripper servo reports when closed on nothing. Set from step 1 of the checklist below; the arm's calibration decides this value, not the model. |
+| `GRASP_EMPTY_MARGIN_DEG` | `6.0` | Margin in degrees above the empty aperture to classify as `closed_on_air` (threshold = empty aperture + margin). |
+| `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
+| `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
+| `ROBOT_PORT` / `SO101_PORT` | `/dev/tty.usbmodem...` | Serial device path for physical Feetech bus adapter. |
+| `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
+| `WEB_STREAM_FPS` | `15` | Frame rate for operator MJPEG stream. |
+| `WEB_JPEG_QUALITY` | `75` | JPEG encoding quality for operator MJPEG stream. |
+
+### Real-Arm Grasp Calibration Checklist
+
+Follow this 4-step procedure when deploying to a physical SO-101 robotic arm to tune the grasp classifier:
+
+1. **Close on Air**: Execute `close_gripper` with no object between jaws. Inspect terminal log `[Tools] [GRASP] aperture=...` and record the fully closed aperture $A_{\text{empty}}$ (e.g., $-74.5^\circ$).
+2. **Close on Object**: Place your standard target object (e.g., 30 mm calibration cube) between the jaws and execute `close_gripper`. Record the stalled aperture $A_{\text{object}}$ (e.g., $-34.5^\circ$).
+3. **Calculate Gap**: Compute $\Delta A = A_{\text{object}} - A_{\text{empty}}$ (e.g., $-34.5^\circ - (-74.5^\circ) = 40.0^\circ$).
+4. **Set Anchor and Margin**: In your `.env`, set `GRIPPER_EMPTY_APERTURE_DEG` to $A_{\text{empty}}$ and `GRASP_EMPTY_MARGIN_DEG` to approximately 40% of the gap:
+   $$\text{GRASP\_EMPTY\_MARGIN\_DEG} \approx 0.40 \times \Delta A$$
+   *(e.g., $A_{\text{empty}} = -74.5^\circ$, margin $= 0.40 \times 40.0^\circ = 16.0^\circ$, threshold $= -58.5^\circ$). Without the anchor the threshold is measured from $-75^\circ$, which is only correct if your calibration happens to close there.*
+5. **Leave `GRASP_LOAD_MIN` unset** until you have read a few `load=` values from the log: the STS3215 `Present_Load` register is raw sign-magnitude (bit 10 is direction), so a reverse-direction load reads above 1023.
 
 ## Running the Robot (`main.py`)
 
