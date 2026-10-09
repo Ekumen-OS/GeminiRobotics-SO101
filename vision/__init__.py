@@ -24,7 +24,9 @@ from vision.camera import (
     get_default_camera_index,
 )
 from vision.capture import (
+    capture_was_started,
     ensure_camera_capture,
+    is_camera_alive,
     prepare_stream_switch,
     stop_camera_capture,
     stream_video,
@@ -65,6 +67,7 @@ from vision.targets import (
 
 __all__ = [
     "add_model_target",
+    "capture_was_started",
     "clear_model_target_point",
     "clear_model_targets",
     "draw_model_target_overlay",
@@ -83,6 +86,7 @@ __all__ = [
     "has_published_frame",
     "is_bounding_boxes_overlay_enabled",
     "is_calibration_overlay_enabled",
+    "is_camera_alive",
     "is_crosshair_overlay_enabled",
     "is_grid_overlay_enabled",
     "is_target_overlay_enabled",

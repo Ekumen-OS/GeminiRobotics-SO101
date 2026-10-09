@@ -7,6 +7,7 @@ from typing import AsyncIterator
 from google import genai
 from google.genai import types
 
+from agent.errors import SessionError
 from robot.logger import log_with_tag
 from robot.settings import get_settings
 
@@ -84,9 +85,14 @@ class GeminiLiveSession:
 
             log_with_tag(logger, "INFO", f"Connecting to {self.model}...")
             log_with_tag(logger, "INFO", f"Config: {self.config}")
-            self._session_cm = self.client.aio.live.connect(model=self.model, config=self.config)
-            self._session = await self._session_cm.__aenter__()
-            log_with_tag(logger, "INFO", "Connected successfully.")
+            try:
+                self._session_cm = self.client.aio.live.connect(
+                    model=self.model, config=self.config
+                )
+                self._session = await self._session_cm.__aenter__()
+                log_with_tag(logger, "INFO", "Connected successfully.")
+            except Exception as e:
+                raise SessionError(f"Failed to connect to Gemini Live session: {e}") from e
 
     async def disconnect(self) -> None:
         """Close the live WebSocket connection."""
@@ -96,7 +102,7 @@ class GeminiLiveSession:
                 try:
                     await self._session_cm.__aexit__(None, None, None)
                 except Exception as e:
-                    log_with_tag(logger, "ERROR", f"Error during disconnect: {e}")
+                    log_with_tag(logger, "DEBUG", f"Error during disconnect: {e}")
                 self._session_cm = None
             self._session = None
         log_with_tag(logger, "INFO", "Disconnected.")
@@ -104,53 +110,68 @@ class GeminiLiveSession:
     async def send_instruction(self, text: str, frame_jpeg: bytes | None) -> None:
         """Send user instruction with an optional JPEG frame."""
         if not self._session:
-            raise ConnectionError("Session is not connected.")
+            raise SessionError("Session is not connected.")
 
-        async with self._ws_lock:
-            if frame_jpeg:
-                log_with_tag(
-                    logger,
-                    "STREAM",
-                    f"📸 Sent initial observation frame ({len(frame_jpeg)} bytes)",
-                )
-                await self._session.send_realtime_input(
-                    video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
-                )
+        try:
+            async with self._ws_lock:
+                if frame_jpeg:
+                    log_with_tag(
+                        logger,
+                        "STREAM",
+                        f"📸 Sent initial observation frame ({len(frame_jpeg)} bytes)",
+                    )
+                    await self._session.send_realtime_input(
+                        video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
+                    )
 
-            log_with_tag(logger, "INFO", f"Sending text: {text!r}")
-            await self._session.send_realtime_input(text=text)
+                log_with_tag(logger, "INFO", f"Sending text: {text!r}")
+                await self._session.send_realtime_input(text=text)
+        except Exception as e:
+            raise SessionError(f"Failed to send instruction: {e}") from e
 
     async def send_text(self, text: str) -> None:
         """Send a realtime text prompt to the session."""
         if not self._session:
             return
-        async with self._ws_lock:
-            log_with_tag(logger, "INFO", f"Sending text: {text!r}")
-            await self._session.send_realtime_input(text=text)
+        try:
+            async with self._ws_lock:
+                log_with_tag(logger, "INFO", f"Sending text: {text!r}")
+                await self._session.send_realtime_input(text=text)
+        except Exception as e:
+            raise SessionError(f"Failed to send text: {e}") from e
 
     async def send_frame(self, jpeg_bytes: bytes) -> None:
         """Send a JPEG frame to the model without instruction (proactive)."""
         if not self._session:
             return
-        async with self._ws_lock:
-            log_with_tag(logger, "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
-            await self._session.send_realtime_input(
-                video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
-            )
+        try:
+            async with self._ws_lock:
+                log_with_tag(logger, "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
+                await self._session.send_realtime_input(
+                    video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
+                )
+        except Exception as e:
+            raise SessionError(f"Failed to send frame: {e}") from e
 
     async def send_tool_response(self, function_responses: list[types.FunctionResponse]) -> None:
         """Send tool execution results back to the model."""
         if not self._session:
             return
 
-        async with self._ws_lock:
-            log_with_tag(logger, "INFO", f"Sending tool responses: {function_responses}")
-            await self._session.send_tool_response(function_responses=function_responses)
+        try:
+            async with self._ws_lock:
+                log_with_tag(logger, "INFO", f"Sending tool responses: {function_responses}")
+                await self._session.send_tool_response(function_responses=function_responses)
+        except Exception as e:
+            raise SessionError(f"Failed to send tool response: {e}") from e
 
     async def receive(self) -> AsyncIterator[types.LiveServerMessage]:
         """Yield messages from the active session."""
         if not self._session:
-            raise ConnectionError("Session is not connected.")
+            raise SessionError("Session is not connected.")
 
-        async for message in self._session.receive():
-            yield message
+        try:
+            async for message in self._session.receive():
+                yield message
+        except Exception as e:
+            raise SessionError(f"Failed to receive from session: {e}") from e

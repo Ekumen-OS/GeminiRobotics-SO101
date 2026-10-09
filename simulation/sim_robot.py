@@ -22,6 +22,7 @@ import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
 from robot.contracts import GripperReading
+from robot.errors import HardwareError
 from robot.interface import RobotInterface
 from robot.settings import get_settings
 
@@ -177,7 +178,7 @@ class SO101Robot(RobotInterface):
                     self.model.geom_size[right_gid] = [right_len_x, 0.0015, 0.0005]
 
                 mujoco.mj_forward(self.model, self.data)
-        except Exception as e:
+        except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as e:
             logger.warning(f"[SO101Robot] Warning updating workspace geoms from config: {e}")
 
     def reset(self, pose: str = "HOME") -> None:
@@ -284,7 +285,7 @@ class SO101Robot(RobotInterface):
                 qpos_adr = self.model.jnt_qposadr[gripper_j_id]
                 aperture_rad = float(self.data.qpos[qpos_adr])
                 aperture_deg = float(np.degrees(aperture_rad))
-            except Exception:
+            except (KeyError, IndexError, AttributeError):
                 pos = self.get_joint_positions()
                 aperture_deg = float(np.degrees(pos[5])) if len(pos) > 5 else 0.0
 
@@ -292,7 +293,7 @@ class SO101Robot(RobotInterface):
             try:
                 gripper_act_id = self.model.actuator("gripper").id
                 load = float(self.data.actuator_force[gripper_act_id])
-            except Exception:
+            except (KeyError, IndexError, AttributeError):
                 load = None
 
             return {
@@ -350,32 +351,43 @@ class SO101Robot(RobotInterface):
             target_qpos: Target joint angles in radians.
             duration_sec: Duration of the interpolation trajectory in seconds.
             dt: Physics timestep duration in seconds.
+
+        Raises:
+            HardwareError: If motion is interrupted.
         """
+        self._stop_requested = False
         target_qpos = np.asarray(target_qpos, dtype=np.float32)
         start_qpos = self.get_joint_positions()
-        num_steps = int(duration_sec / dt)
+        num_steps = max(1, int(duration_sec / dt))
         sim_steps = max(1, int(round(dt / self.model.opt.timestep)))
 
-        for step_idx in range(1, num_steps + 1):
-            if self._stop_requested:
-                break
-            t = step_idx / num_steps
-            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-            interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-            self.set_joint_positions(interp_qpos, snap_gripper=False)
-            self.step(sim_steps)
-            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                self.viewer.sync()
-            time.sleep(dt)
-
-        if not self._stop_requested:
-            # Allow position actuators a short smooth settling phase
-            for _ in range(10):
+        steps_written = 0
+        try:
+            for step_idx in range(1, num_steps + 1):
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+                t = step_idx / num_steps
+                alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+                interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
+                self.set_joint_positions(interp_qpos, snap_gripper=False)
+                steps_written += 1
                 self.step(sim_steps)
                 if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                     self.viewer.sync()
                 time.sleep(dt)
-        self._stop_requested = False
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+
+            # Allow position actuators a short smooth settling phase
+            for _ in range(10):
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+                self.step(sim_steps)
+                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
+                    self.viewer.sync()
+                time.sleep(dt)
+        finally:
+            self._stop_requested = False
 
     def render_rgb_frame(
         self, width: int = 640, height: int = 480, camera: str | int | None = "workspace_cam"

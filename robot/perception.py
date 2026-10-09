@@ -3,9 +3,11 @@
 import math
 from typing import Any
 
+import cv2
 import numpy as np
 
 from robot.contracts import GraspElevationResponse, VisualAlignmentResponse
+from robot.errors import PerceptionUnavailable
 from robot.settings import get_settings
 from robot.vision_detector import detect_workspace_objects, refine_point_to_nearest_object
 
@@ -53,8 +55,8 @@ def compute_visual_alignment(
             )
             target_y = float(refined_pt[0])
             target_x = float(refined_pt[1])
-        except Exception:
-            pass
+        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
+            raise PerceptionUnavailable(f"Target visual refinement failed: {e}") from e
 
     # Determine gripper coordinate
     if gripper_point_1000 is not None:
@@ -110,8 +112,10 @@ def verify_grasp_elevation(
             - object_detected_on_table: bool
             - grasped: bool | None
             - confidence: float
+
+    Raises:
+        PerceptionUnavailable: If object detection fails on pre-lift or post-lift frames.
     """
-    detector_failed = False
     object_detected_pre = True
     object_detected_post = False
 
@@ -119,8 +123,8 @@ def verify_grasp_elevation(
         try:
             pre_objs = detect_workspace_objects(pre_lift_frame_rgb, calibrator=calibrator)
             object_detected_pre = len(pre_objs) > 0
-        except Exception:
-            detector_failed = True
+        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
+            raise PerceptionUnavailable(f"Pre-lift object detection failed: {e}") from e
 
     if post_lift_frame_rgb is not None and getattr(post_lift_frame_rgb, "size", 0) > 0:
         try:
@@ -135,16 +139,8 @@ def verify_grasp_elevation(
             else:
                 # If target point not specified, check if any object is still detected on table
                 object_detected_post = len(post_objs) > 0
-        except Exception:
-            detector_failed = True
-
-    if detector_failed:
-        return {
-            "object_elevated": None,
-            "object_detected_on_table": False,
-            "grasped": None,
-            "confidence": 0.0,
-        }
+        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
+            raise PerceptionUnavailable(f"Post-lift object detection failed: {e}") from e
 
     object_elevated = bool(object_detected_pre and not object_detected_post)
     confidence = 0.95 if object_elevated else 0.85
