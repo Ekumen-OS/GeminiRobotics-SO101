@@ -12,6 +12,7 @@ from typing import Any
 
 from google.genai import types
 
+from agent.errors import SessionError
 from agent.live_session import GeminiLiveSession
 from agent.response_assembler import ResponseAssembler
 from agent.tools import (
@@ -20,6 +21,7 @@ from agent.tools import (
     execute_tool_call,
     render_prompt_tool_list,
 )
+from robot.errors import CalibrationUnavailable
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
@@ -221,7 +223,7 @@ class VLAController:
             try:
                 await self._session.connect()
                 return
-            except Exception as e:
+            except (SessionError, OSError, TimeoutError, ConnectionError) as e:
                 log_with_tag(
                     logger,
                     "ERROR",
@@ -229,7 +231,7 @@ class VLAController:
                 )
                 await asyncio.sleep(delay)
 
-        raise ConnectionError("Failed to connect to Gemini Live API after 3 attempts.")
+        raise SessionError("Failed to connect to Gemini Live API after 3 attempts.")
 
     async def _stream_frames_during_execution(
         self, get_latest_jpeg_fn, tool_executing_event: asyncio.Event
@@ -243,10 +245,14 @@ class VLAController:
             if jpeg:
                 try:
                     await self._session.send_frame(jpeg)
-                except Exception as e:
+                except (SessionError, OSError) as e:
                     log_with_tag(logger, "ERROR", f"Frame stream error: {e}")
                     break
-            await asyncio.sleep(1.0)
+            # Wait up to 1.0 s in <= 0.1 s slices while tool_executing_event is set
+            for _ in range(10):
+                if not tool_executing_event.is_set():
+                    break
+                await asyncio.sleep(0.1)
 
     async def _handle_model_turn(self, parts: list[Any], ctx: _TurnContext) -> None:
         """Process model turn parts for reasoning thoughts and narration text.
@@ -292,8 +298,8 @@ class VLAController:
             if parsed_targets:
                 try:
                     set_model_targets(parsed_targets)
-                except Exception:
-                    pass
+                except (TypeError, KeyError, ValueError) as e:
+                    log_with_tag(logger, "WARN", f"Failed to set model targets: {e}")
 
             log_with_tag(
                 logger,
@@ -329,6 +335,7 @@ class VLAController:
             mode=self.mode,
         )
 
+        post_frame_missing = False
         if is_blocking:
             ctx.tool_executing_event.clear()
             if frame_task:
@@ -345,11 +352,23 @@ class VLAController:
                     )
                     if self._session:
                         await self._session.send_frame(post_frame)
-                except Exception as e:
+                except (SessionError, OSError) as e:
                     log_with_tag(logger, "ERROR", f"Post-action frame error: {e}")
+                    post_frame_missing = True
+                    await ctx.response_queue.put(
+                        {"type": "status", "content": f"⚠️ Failed to deliver post-action frame: {e}"}
+                    )
+            elif ctx.get_latest_jpeg_fn is not None:
+                post_frame_missing = True
+                await ctx.response_queue.put(
+                    {"type": "status", "content": "⚠️ Post-action frame unavailable"}
+                )
+
+        if post_frame_missing and isinstance(result_dict, dict):
+            result_dict["post_action_frame"] = "missing"
 
         has_error = "error" in result_dict
-        status_emoji = "⚠️" if has_error else "✅"
+        status_emoji = "⚠️" if (has_error or post_frame_missing) else "✅"
         log_with_tag(
             logger,
             "TOOL_RESULT",
@@ -359,9 +378,17 @@ class VLAController:
         )
 
         if has_error:
-            err_msg = result_dict["error"]
+            err_msg = result_dict.get("error", "Unknown error")
+            err_type = result_dict.get("error_type")
+            err_type_str = f" ({err_type})" if err_type else ""
+            robot_moved_str = (
+                " (Arm may have moved partially)" if result_dict.get("robot_moved") else ""
+            )
             await ctx.response_queue.put(
-                {"type": "status", "content": f"⚠️ `{call.name}` error: {err_msg}"}
+                {
+                    "type": "status",
+                    "content": f"⚠️ `{call.name}` failed: {err_msg}{err_type_str}{robot_moved_str}",
+                }
             )
         else:
             await ctx.response_queue.put(
@@ -442,7 +469,9 @@ class VLAController:
 
         try:
             await self._ensure_connected()
-        except ConnectionError as e:
+        except (SessionError, ConnectionError) as e:
+            if self.robot is not None:
+                self.robot.interrupt()
             await response_queue.put({"type": "error", "content": str(e)})
             await response_queue.put(None)
             return
@@ -472,14 +501,18 @@ class VLAController:
                         break
             except asyncio.CancelledError:
                 log_with_tag(logger, "WARN", "Instruction task cancelled.")
+                if self.robot is not None:
+                    self.robot.interrupt()
                 raise
             except Exception as e:
                 log_with_tag(logger, "ERROR", f"Error during session loop: {e}")
+                if self.robot is not None:
+                    self.robot.interrupt()
                 await response_queue.put({"type": "error", "content": f"Session error: {e}"})
                 try:
                     await self._session.disconnect()
-                except Exception:
-                    pass
+                except Exception as de:
+                    log_with_tag(logger, "DEBUG", f"Error during session disconnect: {de}")
             finally:
                 await response_queue.put(None)
 
@@ -511,7 +544,16 @@ class VLAController:
         # In real mode, block execution if workspace calibration is missing
         if self.mode == "real":
             calib = get_calibrator()
-            if calib is None or not calib.is_calibrated:
+            is_uncalibrated = False
+            if calib is None or not getattr(calib, "is_calibrated", False):
+                is_uncalibrated = True
+            elif hasattr(calib, "require_calibrated"):
+                try:
+                    calib.require_calibrated()
+                except CalibrationUnavailable:
+                    is_uncalibrated = True
+
+            if is_uncalibrated:
                 block_msg = (
                     "⚠️ **Action Blocked — Workspace Not Calibrated**\n\n"
                     "The physical workspace has not been calibrated. The robot cannot safely "
@@ -572,10 +614,7 @@ class VLAController:
     def interrupt(self) -> None:
         """Interrupt any ongoing execution and halt the robot."""
         if self.robot is not None:
-            if hasattr(self.robot, "stop"):
-                self.robot.stop()
-            elif hasattr(self.robot, "_stop_requested"):
-                self.robot._stop_requested = True
+            self.robot.interrupt()
 
         if self._current_async_task and not self._current_async_task.done():
             self._current_async_task.cancel()
@@ -592,4 +631,9 @@ class VLAController:
 
         # Reset session
         if self._session:
-            asyncio.run_coroutine_threadsafe(self._session.disconnect(), self._loop)
+            try:
+                asyncio.run_coroutine_threadsafe(self._session.disconnect(), self._loop)
+            except Exception as e:
+                log_with_tag(
+                    logger, "DEBUG", f"Error disconnecting session during clear_history: {e}"
+                )

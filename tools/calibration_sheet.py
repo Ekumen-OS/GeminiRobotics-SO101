@@ -90,7 +90,7 @@ def generate_calibration_sheet(
         if cfg_file.exists():
             try:
                 config_data = json.loads(cfg_file.read_text())
-            except Exception:
+            except (json.JSONDecodeError, OSError):
                 config_data = {}
         else:
             config_data = {}

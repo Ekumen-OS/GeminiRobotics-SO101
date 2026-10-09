@@ -7,6 +7,8 @@ import gradio as gr
 import numpy as np
 
 from agent.vla_controller import VLAController
+from robot.errors import CalibrationUnavailable
+from ui.state import get_ui_joint_positions
 from vision import get_calibrator, get_latest_raw_jpeg
 
 logger = logging.getLogger(__name__)
@@ -194,22 +196,30 @@ def wire_chat_events(
                     *[gr.skip()] * 6,
                 )
         except Exception as exc:
+            try:
+                controller.interrupt()
+            except Exception:
+                pass
             err_msg = f"\n\n⚠️ **Runtime Error**: `{exc}`"
             history[-1]["content"] = (history[-1]["content"] or "") + err_msg
         finally:
             # After execution completes or errors, sync sliders with final robot state
             final_deg = [gr.skip()] * 6
-            if controller.robot is not None and hasattr(controller.robot, "get_joint_positions"):
-                try:
-                    curr_rad = controller.robot.get_joint_positions()
-                    final_deg = [round(float(v), 1) for v in np.degrees(curr_rad)]
-                except Exception:
-                    pass
+            if controller.robot is not None:
+                measured = get_ui_joint_positions(controller.robot)
+                if measured is not None:
+                    final_deg = measured
 
-            calib = get_calibrator()
-            is_calibrated = (
-                calib is not None and calib.is_calibrated if controller.mode == "real" else True
-            )
+            is_calibrated = True
+            if controller.mode == "real":
+                calib = get_calibrator()
+                if calib is None or not getattr(calib, "is_calibrated", False):
+                    is_calibrated = False
+                elif hasattr(calib, "require_calibrated"):
+                    try:
+                        calib.require_calibrated()
+                    except CalibrationUnavailable:
+                        is_calibrated = False
 
             if not controller.is_api_available:
                 ready_status = "⚠️ **Status: Gemini API Unavailable**"
@@ -243,10 +253,13 @@ def wire_chat_events(
     def reset_to_home() -> list[float]:
         if controller.robot is not None:
             home_target = PRESET_POSES["HOME"]
-            if hasattr(controller.robot, "move_to_pose"):
-                controller.robot.move_to_pose(home_target, duration_sec=1.0)
-            elif hasattr(controller.robot, "set_joint_positions"):
-                controller.robot.set_joint_positions(home_target)
+            try:
+                if hasattr(controller.robot, "move_to_pose"):
+                    controller.robot.move_to_pose(home_target, duration_sec=1.0)
+                elif hasattr(controller.robot, "set_joint_positions"):
+                    controller.robot.set_joint_positions(home_target)
+            except Exception as exc:
+                logger.warning(f"Failed to reset to home pose: {exc}")
         home_deg = [round(float(np.degrees(v)), 1) for v in PRESET_POSES["HOME"]]
         return home_deg
 

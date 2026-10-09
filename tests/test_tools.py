@@ -15,7 +15,7 @@ from agent.tools import (
     image_point_to_xyz,
     validate_and_clamp_joints,
 )
-from robot.constants import JOINT_LIMITS, PRESET_POSES
+from robot.constants import JOINT_LIMITS, JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
 from tests.conftest import DummyToolCall, MockRobot
 
@@ -187,6 +187,8 @@ async def test_execute_tool_get_end_effector_pose() -> None:
     del plain_robot.get_end_effector_pose
     res_err = await execute_tool_call(call, robot=plain_robot)
     assert "error" in res_err
+    assert res_err.get("error_type") == "argument"
+    plain_robot.interrupt.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -398,3 +400,94 @@ async def test_move_to_spatial_point_custom_label() -> None:
         assert "(z=5.0cm, top_down)" in active["label"]
         assert "🎯" not in active["label"]
         clear_model_targets()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_hardware_error_calls_interrupt_and_returns_honestly() -> None:
+    """Verify HardwareError from driver calls robot.interrupt() and returns honest error payload."""
+    from tests.test_fail_closed_characterization import _make_mock_real_robot
+
+    fake_bus = MagicMock()
+    fake_bus.sync_read.return_value = {name: 0.0 for name in JOINT_NAMES}
+    # Step 1 write succeeds, step 2 write fails -> driver sets robot_moved = True
+    fake_bus.sync_write.side_effect = [None, RuntimeError("Bus write failed mid-motion")]
+    robot = _make_mock_real_robot(fake_bus)
+    robot.interrupt = MagicMock(wraps=robot.interrupt)
+
+    call = DummyToolCall("move_to_preset", {"pose_name": "HOME"})
+    res = await execute_tool_call(call, robot=robot)
+
+    robot.interrupt.assert_called_once()
+    assert res.get("error_type") == "hardware"
+    assert res.get("robot_moved") is True
+    assert "Failed to write joint positions" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_close_gripper_honors_nonzero_settle_setting() -> None:
+    """Verify close_gripper executes time.sleep(gripper_settle_s) when setting is non-zero."""
+    import dataclasses
+
+    from robot.settings import get_settings
+
+    robot = MockRobot()
+    call = DummyToolCall("close_gripper")
+
+    custom_settings = dataclasses.replace(get_settings(), gripper_settle_s=0.45)
+    with patch("agent.tools.get_settings", return_value=custom_settings):
+        with patch("agent.tools.time.sleep") as mock_sleep:
+            res = await execute_tool_call(call, robot=robot)
+
+    assert res.get("status") == "success"
+    mock_sleep.assert_called_with(0.45)
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_taxonomic_error_responses() -> None:
+    """Verify tool errors map cleanly to argument, calibration, perception, and internal types."""
+    from robot.errors import CalibrationUnavailable
+
+    robot = MockRobot()
+
+    # 1. Argument error
+    bad_arg_call = DummyToolCall("move_to_pose", {"qpos": [1.0, 2.0], "duration_sec": 1.0})
+    arg_res = await execute_tool_call(bad_arg_call, robot=robot)
+    assert arg_res.get("error_type") == "argument"
+    assert arg_res.get("robot_moved") is False
+
+    # 2. Calibration error
+    mock_calib = MagicMock()
+    mock_calib.require_calibrated.side_effect = CalibrationUnavailable("Workspace uncalibrated")
+    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+        spatial_call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "approach": "top_down"},
+        )
+        calib_res = await execute_tool_call(spatial_call, robot=robot)
+        assert calib_res.get("error_type") == "calibration"
+        assert calib_res.get("robot_moved") is False
+
+    # 3. Perception error (frame provider returns None in spatial move)
+    valid_calib = MagicMock()
+    valid_calib.is_calibrated = True
+    valid_calib.gemini_to_robot_xyz.return_value = np.array([0.2, 0.0, 0.05])
+    with patch("agent.tools.get_calibrator", return_value=valid_calib):
+        spatial_call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "approach": "top_down"},
+        )
+        percep_res = await execute_tool_call(
+            spatial_call, robot=robot, get_latest_jpeg_fn=lambda: None
+        )
+        assert percep_res.get("error_type") == "perception"
+        assert percep_res.get("robot_moved") is False
+
+    # 4. Internal error (unexpected exception)
+    def crash(*args, **kwargs):
+        raise TypeError("Unexpected type error in driver")
+
+    robot.get_joint_positions = crash
+    get_qpos_call = DummyToolCall("get_joint_positions", {})
+    internal_res = await execute_tool_call(get_qpos_call, robot=robot)
+    assert internal_res.get("error_type") == "internal"
+    assert internal_res.get("robot_moved") is False

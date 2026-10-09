@@ -41,28 +41,21 @@ async def test_close_gripper_measured_empty_flipped() -> None:
 
 
 def test_verify_grasp_elevation_fails_closed_flipped() -> None:
-    """Flipped Task 0 Characterization: detector exceptions must fail closed.
+    """Flipped Task 3 Characterization: detector exceptions must raise PerceptionUnavailable."""
+    from robot.errors import PerceptionUnavailable
 
-    Previously failed open with grasped=True and object_elevated=True.
-    Now flips to fail-closed: grasped=None, object_elevated=None, confidence=0.0.
-    """
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
     with patch(
         "robot.perception.detect_workspace_objects",
         side_effect=RuntimeError("Corrupt frame or detector crash"),
     ):
-        res = verify_grasp_elevation(
-            pre_lift_frame_rgb=frame,
-            post_lift_frame_rgb=frame,
-            target_point_1000=[500.0, 500.0],
-        )
-
-    # Flipped assertions: fail-closed contract
-    assert res["object_elevated"] is None
-    assert res["grasped"] is None
-    assert res["confidence"] == 0.0
-    assert res["object_detected_on_table"] is False
+        with pytest.raises(PerceptionUnavailable, match="Pre-lift object detection failed"):
+            verify_grasp_elevation(
+                pre_lift_frame_rgb=frame,
+                post_lift_frame_rgb=frame,
+                target_point_1000=[500.0, 500.0],
+            )
 
 
 # ==============================================================================
