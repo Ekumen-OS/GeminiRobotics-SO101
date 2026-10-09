@@ -379,6 +379,9 @@ def test_process_instruction_recovers_on_exception() -> None:
         yield "Starting task..."
         raise RuntimeError("Simulated WebSocket connection drop")
 
+    from unittest.mock import MagicMock
+
+    controller_sim.interrupt = MagicMock()
     controller_sim.process_instruction_stream = mock_failing_stream
 
     with gr.Blocks():
@@ -412,7 +415,8 @@ def test_process_instruction_recovers_on_exception() -> None:
     assert home_fin.get("interactive") is True
     assert clear_fin.get("interactive") is True
     assert rand_fin.get("interactive") is True
-    # Verify runtime error was cleanly communicated in chat history
+    # Verify runtime error was cleanly communicated in chat history and interrupt was called
+    assert controller_sim.interrupt.called
     assert "Runtime Error" in hist_fin[-1]["content"]
     assert "Simulated WebSocket connection drop" in hist_fin[-1]["content"]
 
