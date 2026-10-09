@@ -3,7 +3,8 @@
 import os
 import sys
 import tempfile
-from collections.abc import Generator
+import time
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -22,6 +23,8 @@ from simulation.sim_calibration import compute_sim_calibration
 
 setup_logging()
 
+_real_sleep = time.sleep
+
 if sys.platform.startswith("linux") and "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 
@@ -33,6 +36,7 @@ _ISOLATED_REAL_PATH = Path(_TEST_CALIB_DIR.name) / "workspace_homography.npz"
 _isolated_settings = Settings.from_env(
     calibration_save_path=_ISOLATED_REAL_PATH,
     calibration_sim_save_path=_ISOLATED_SIM_PATH,
+    gripper_settle_s=0.0,
 )
 set_settings(_isolated_settings)
 
@@ -76,6 +80,8 @@ class MockRobot(RobotInterface):
         self.last_move_duration: float | None = None
         self._stop_requested = False
         self.gripper_reading: GripperReading | None = None
+        self.step_hook: Callable[[int], None] | None = None
+        self.sleep_during_move: bool = False
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Set joint positions immediately.
@@ -103,12 +109,38 @@ class MockRobot(RobotInterface):
             target_qpos: Desired joint angles.
             duration_sec: Simulated move duration in seconds.
             dt: Timestep in seconds.
+
+        Raises:
+            HardwareError: If motion is interrupted.
         """
-        self.qpos = np.asarray(target_qpos, dtype=np.float32)
-        self.move_to_pose_called = True
-        self.last_move_target = self.qpos.copy()
-        self.last_move_duration = duration_sec
-        self.move_history.append((self.qpos.copy(), duration_sec))
+        from robot.errors import HardwareError
+
+        self._stop_requested = False
+        target_qpos = np.asarray(target_qpos, dtype=np.float32)
+        start_qpos = self.qpos.copy()
+        num_steps = max(1, int(duration_sec / dt))
+        steps_written = 0
+        try:
+            for step_idx in range(1, num_steps + 1):
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+                t = step_idx / num_steps
+                alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+                self.qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
+                steps_written += 1
+                if getattr(self, "step_hook", None) is not None:
+                    self.step_hook(step_idx)
+                if getattr(self, "sleep_during_move", False):
+                    time.sleep(dt)
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+
+            self.move_to_pose_called = True
+            self.last_move_target = self.qpos.copy()
+            self.last_move_duration = duration_sec
+            self.move_history.append((self.qpos.copy(), duration_sec))
+        finally:
+            self._stop_requested = False
 
     def get_end_effector_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """Return dummy end-effector Cartesian position and orientation.
