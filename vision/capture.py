@@ -228,6 +228,17 @@ def _stream_video_impl(
 _capture_lock = threading.Lock()
 _capture_thread: threading.Thread | None = None
 _capture_key: tuple[int, str] | None = None
+_camera_alive: bool = False
+
+
+def is_camera_alive() -> bool:
+    """Return True when the camera capture thread is actively running."""
+    return _camera_alive
+
+
+def capture_was_started() -> bool:
+    """Return True if a shared camera capture thread has been started."""
+    return _capture_thread is not None
 
 
 def _capture_alive() -> bool:
@@ -237,11 +248,15 @@ def _capture_alive() -> bool:
 
 def _run_capture(camera_index: int, mode: str, robot: Any | None) -> None:
     """Drain ``stream_video`` so it keeps publishing the frame buffers; frames are discarded."""
+    global _camera_alive
+    _camera_alive = True
     try:
         for _ in stream_video(camera_index=camera_index, mode=mode, robot=robot):
             pass
     except Exception:
         logger.exception(f"Camera capture for index {camera_index} stopped unexpectedly.")
+    finally:
+        _camera_alive = False
 
 
 def _start_capture_locked(camera_index: int, mode: str, robot: Any | None) -> None:
