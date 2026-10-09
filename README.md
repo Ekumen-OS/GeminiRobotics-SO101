@@ -244,6 +244,22 @@ uv run python main.py --task check_environment
 uv run python test_live.py
 ```
 
+### Troubleshooting & Fail-Closed Diagnostics
+
+- **`HardwareError: Could not connect to physical robot on port...`**:
+  - Verify that the physical SO-101 arm is connected via USB and powered.
+  - Check serial device permissions (on Linux, ensure the user belongs to the `dialout` group: `sudo usermod -a -G dialout $USER`).
+  - When running in `--mode real` without hardware, the UI displays `⚠️ Hardware Offline. Arm not connected.` and manual sliders remain disabled. Spatial and joint movement tool calls fail closed with `error_type: "hardware"` rather than assuming target arrival.
+- **`CalibrationUnavailable: Workspace is not calibrated...`**:
+  - Real-world spatial grounding requires active ArUco fiducials. Generate printable markers (`uv run python main.py --task generate_markers`), place the sheet in the camera FOV, and save calibration via the UI.
+- **`PerceptionUnavailable: Camera frame unavailable...`**:
+  - In real mode, the camera stream fails closed if the capture feed stops or frame buffer empties. Check USB camera connection and ensure no other application is holding exclusive lock.
+- **`HardwareError: Motion interrupted`**:
+  - Raised when an in-progress arm trajectory is stopped mid-motion (e.g. operator interrupt,
+    safety trigger, or shutdown). Surfaces as `error_type: "hardware"` with `robot_moved=True`
+    whenever at least one step was written to motors, guaranteeing the model never assumes
+    completed motion on an aborted action.
+
 ## Kinematics & Mathematics Reference
 
 For a complete explanation of Denavit-Hartenberg (DH) parameters, transformation matrices, spatial Jacobians, and under-actuated 5-DOF damped least-squares Inverse Kinematics, consult our documentation:
