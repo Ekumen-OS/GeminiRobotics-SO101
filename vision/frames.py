@@ -58,13 +58,19 @@ def get_latest_raw_jpeg() -> bytes | None:
     with _global_frame_lock:
         frame = _global_latest_raw_frame.copy() if _global_latest_raw_frame is not None else None
 
-    if frame is None:
-        robot = get_active_robot()
-        if _robot_can_render(robot):
-            frame = _SIM_RUNTIME.get_latest_raw_frame(robot)
+    robot = get_active_robot()
+    if not _robot_can_render(robot):
+        from vision.capture import capture_was_started, is_camera_alive
 
-    if frame is None:
-        frame = generate_raw_sim_placeholder_pattern()
+        if frame is None:
+            return None
+        if capture_was_started() and not is_camera_alive():
+            return None
+    else:
+        if frame is None:
+            frame = _SIM_RUNTIME.get_latest_raw_frame(robot)
+        if frame is None:
+            frame = generate_raw_sim_placeholder_pattern()
 
     if frame is None:
         return None

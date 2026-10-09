@@ -11,12 +11,14 @@ import mujoco
 import numpy as np
 
 from robot.constants import JOINT_NAMES, PRESET_POSES
+from robot.errors import RoboticsError
 from robot.registry import get_active_robot, set_active_robot
 
 __all__ = [
     "ensure_centered_meshes",
     "get_active_robot",
     "get_robot_state_dict",
+    "get_ui_joint_positions",
     "set_active_robot",
     "set_target_joints_deg",
 ]
@@ -103,6 +105,27 @@ def set_target_joints_deg(deg: list[float]) -> None:
         _latest_target_rad = [float(v) for v in np.radians(deg, dtype=np.float32)]
 
 
+def get_ui_joint_positions(robot: Any | None = None) -> list[float] | None:
+    """Read current joint state in degrees for UI presentation, returning None on failure.
+
+    Args:
+        robot: Optional robot instance. Defaults to active robot from registry.
+
+    Returns:
+        List of 6 joint angles in degrees, or None if disconnected or read fails.
+    """
+    if robot is None:
+        robot = get_active_robot()
+    if robot is not None and hasattr(robot, "get_joint_positions"):
+        try:
+            curr = robot.get_joint_positions()
+            if len(curr) == len(JOINT_NAMES):
+                return [round(float(np.degrees(v)), 1) for v in curr]
+        except (RoboticsError, OSError, RuntimeError, ValueError):
+            return None
+    return None
+
+
 def get_robot_state_dict() -> dict:
     """Retrieve the latest robot state dictionary for REST/JSON clients.
 
@@ -116,16 +139,20 @@ def get_robot_state_dict() -> dict:
         target_rad = list(_latest_target_rad)
     robot = get_active_robot()
 
-    measured_rad = list(target_rad)
+    measured_deg: list[float] | None = None
+    measured_rad: list[float] | None = None
+    kinematics_rad = list(target_rad)
+
     if robot is not None and hasattr(robot, "get_joint_positions"):
         try:
             curr = robot.get_joint_positions()
             if len(curr) == len(JOINT_NAMES):
                 measured_rad = [float(v) for v in curr]
-        except Exception:
-            pass
-
-    measured_deg = [round(float(np.degrees(v)), 1) for v in measured_rad]
+                measured_deg = [round(float(np.degrees(v)), 1) for v in measured_rad]
+                kinematics_rad = list(measured_rad)
+        except (RoboticsError, OSError, RuntimeError, ValueError):
+            measured_deg = None
+            measured_rad = None
 
     # Compute exact MuJoCo world transforms for all visual geoms and target object
     geoms: list[dict] = []
@@ -150,7 +177,7 @@ def get_robot_state_dict() -> dict:
             # Update kinematics on fallback model
             for i, j_id in enumerate(joint_ids):
                 qpos_adr = m_inst.jnt_qposadr[j_id]
-                d_inst.qpos[qpos_adr] = measured_rad[i]
+                d_inst.qpos[qpos_adr] = kinematics_rad[i]
             mujoco.mj_forward(m_inst, d_inst)
 
         for spec, geom_idx in zip(visual_geom_specs, visual_geom_indices, strict=False):
@@ -174,7 +201,7 @@ def get_robot_state_dict() -> dict:
             t_pos = [round(float(v), 6) for v in d_inst.xpos[target_body_id]]
             w, x, y, z = d_inst.xquat[target_body_id]
             t_quat = [round(float(v), 6) for v in [x, y, z, w]]
-        except Exception:
+        except (KeyError, IndexError, AttributeError):
             t_pos = [round(float(v), 6) for v in d_inst.geom_xpos[-1]]
             t_quat = [0.0, 0.0, 0.0, 1.0]
 

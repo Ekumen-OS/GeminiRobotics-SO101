@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent.vla_controller import VLAController
 from robot.constants import JOINT_NAMES, PRESET_POSES
+from robot.errors import RoboticsError
 from robot.interface import RobotInterface
 from robot.settings import get_settings
 from ui.components.chat import build_chat_interface, wire_chat_events
@@ -184,7 +185,7 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
             curr = robot.get_joint_positions()
             if len(curr) == len(JOINT_NAMES):
                 init_qpos = curr
-        except Exception:
+        except (RoboticsError, OSError, RuntimeError):
             pass
 
     init_deg = [round(float(np.degrees(v)), 1) for v in init_qpos]
@@ -373,7 +374,7 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
         if cfg_path.exists():
             try:
                 return JSONResponse(json.loads(cfg_path.read_text()))
-            except Exception:
+            except (json.JSONDecodeError, OSError):
                 pass
         return JSONResponse({})
 

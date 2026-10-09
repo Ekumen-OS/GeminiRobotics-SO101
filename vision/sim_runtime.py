@@ -19,6 +19,24 @@ from vision.patterns import (
 
 logger = logging.getLogger(__name__)
 
+try:
+    import mujoco
+
+    _SIM_ERRORS = (RuntimeError, ValueError, mujoco.FatalError)
+except (ImportError, AttributeError):
+    _SIM_ERRORS = (RuntimeError, ValueError)
+
+_last_sim_error_time: float = 0.0
+
+
+def _log_sim_error_rate_limited(err: Exception) -> None:
+    """Log simulation stepping/rendering error rate-limited to once per 5 seconds."""
+    global _last_sim_error_time
+    now = time.time()
+    if now - _last_sim_error_time >= 5.0:
+        _last_sim_error_time = now
+        logger.error(f"Sim stepping/rendering error: {err}")
+
 
 def _robot_can_render(robot: Any | None) -> bool:
     """Return True only when ``robot`` really implements ``render_rgb_frame``.
@@ -62,7 +80,7 @@ def _estimate_sim_steps_per_frame(robot: Any | None, frame_interval: float) -> i
         if ts_float <= 0.0:
             return 1
         return max(1, int(round(frame_interval / ts_float)))
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return 1
 
 
@@ -84,6 +102,8 @@ def _sim_frame_with_fallback(
     if _robot_can_render(robot):
         try:
             return robot.render_rgb_frame(width=width, height=height)
+        except _SIM_ERRORS as err:
+            _log_sim_error_rate_limited(err)
         except Exception as err:
             logger.warning(f"Sim render failed. Falling back to placeholder. Cause: {err}")
 
@@ -138,8 +158,8 @@ class _SingletonSimRuntime:
                     if hasattr(robot, "step"):
                         try:
                             robot.step(sim_steps)
-                        except Exception:
-                            pass
+                        except _SIM_ERRORS as e:
+                            _log_sim_error_rate_limited(e)
 
                     raw_frame = _sim_frame_with_fallback(
                         robot=robot,
@@ -153,8 +173,20 @@ class _SingletonSimRuntime:
 
                 if self._frame_sink is not None:
                     self._frame_sink(raw_frame)
-            except Exception:
-                pass
+            except _SIM_ERRORS as e:
+                _log_sim_error_rate_limited(e)
+                with self._frame_lock:
+                    self._latest_raw_frame = None
+                    self._latest_frame = None
+                if self._frame_sink is not None:
+                    self._frame_sink(None)
+            except Exception as exc:
+                logger.exception(f"Unexpected sim runtime loop error: {exc}")
+                with self._frame_lock:
+                    self._latest_raw_frame = None
+                    self._latest_frame = None
+                if self._frame_sink is not None:
+                    self._frame_sink(None)
 
             elapsed = time.time() - start
             if elapsed < frame_interval:
