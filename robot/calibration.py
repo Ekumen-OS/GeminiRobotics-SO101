@@ -15,6 +15,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from robot.errors import CalibrationUnavailable
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ class ArucoWorkspaceCalibrator:
             try:
                 self.config = json.loads(self.config_path.read_text())
                 return
-            except Exception as e:
+            except (json.JSONDecodeError, OSError) as e:
                 warnings.warn(
                     f"[ArucoCalibrator] ⚠️ WARNING: Error parsing config '{self.config_path}': {e}",
                     UserWarning,
@@ -137,7 +138,20 @@ class ArucoWorkspaceCalibrator:
     @property
     def is_calibrated(self) -> bool:
         """Return True if a valid perspective homography matrix is available."""
-        return self.homography_matrix is not None
+        return self.homography_matrix is not None and self.inverse_homography is not None
+
+    def require_calibrated(self) -> None:
+        """Verify that a valid homography transformation matrix is set.
+
+        Raises:
+            CalibrationUnavailable: If workspace is not calibrated.
+        """
+        if not self.is_calibrated:
+            raise CalibrationUnavailable(
+                "Workspace is not calibrated. Please ensure 4 ArUco markers are in view and "
+                "save calibration under the ArUco Workspace Calibration panel before executing "
+                "spatial commands."
+            )
 
     def detect_markers(self, frame_rgb: np.ndarray) -> dict[int, np.ndarray]:
         """Detect ArUco fiducial markers in an RGB frame.
@@ -217,17 +231,20 @@ class ArucoWorkspaceCalibrator:
                 h_mat = cv2.getPerspectiveTransform(src_arr[:4], dst_arr[:4])
 
             if h_mat is not None:
-                self.homography_matrix = h_mat
-                self.inverse_homography = np.linalg.inv(h_mat)
+                inv_h = np.linalg.inv(h_mat)
 
                 # Compute reprojection error
                 src_homo = np.hstack([src_arr, np.ones((len(src_arr), 1), dtype=np.float32)])
                 proj = (h_mat @ src_homo.T).T
                 proj_xy = proj[:, :2] / proj[:, 2:3]
                 err = float(np.mean(np.linalg.norm(proj_xy - dst_arr, axis=1)))
+
+                # Commit atomically only after all calculations succeed
+                self.homography_matrix = h_mat
+                self.inverse_homography = inv_h
                 self.reprojection_error = err
                 return True
-        except Exception as e:
+        except (cv2.error, np.linalg.LinAlgError, ValueError, TypeError) as e:
             logger.error(f"[ArucoCalibrator] Homography computation error: {e}")
 
         return False
@@ -573,13 +590,19 @@ class ArucoWorkspaceCalibrator:
 
         try:
             data = np.load(load_p)
-            self.homography_matrix = data["homography"]
-            self.inverse_homography = data.get(
-                "inverse_homography", np.linalg.inv(data["homography"])
-            )
-            self.reprojection_error = float(data.get("reprojection_error", 0.0))
+            h_mat = data["homography"]
+            if "inverse_homography" in data:
+                inv_h = data["inverse_homography"]
+            else:
+                inv_h = np.linalg.inv(h_mat)
+            reproj_err = float(data.get("reprojection_error", 0.0))
+
+            # Commit atomically only after all computations succeed
+            self.homography_matrix = h_mat
+            self.inverse_homography = inv_h
+            self.reprojection_error = reproj_err
             return True
-        except Exception as e:
+        except (OSError, KeyError, ValueError, TypeError, np.linalg.LinAlgError) as e:
             logger.error(f"[ArucoCalibrator] Error loading calibration from {load_p}: {e}")
             return False
 

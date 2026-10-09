@@ -1,6 +1,7 @@
 """Unified main entry point for GeminiRobotics-SO101 simulation and hardware execution."""
 
 import argparse
+import logging
 import signal
 import subprocess
 import sys
@@ -10,10 +11,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from robot.constants import PRESET_POSES
+from robot.errors import HardwareError
 from robot.logger import setup_logging
 from robot.real_robot import RealSO101Robot
 from robot.settings import Settings, get_settings, set_settings
 from simulation.sim_robot import SO101Robot
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -245,7 +249,13 @@ def _run_once(args: argparse.Namespace) -> None:
         robot.reset("HOME")
     else:
         print(f"Connecting real SO-101 arm on port {port} for Real Mode VLA UI...")
-        robot = RealSO101Robot(port=port)
+        try:
+            robot = RealSO101Robot(port=port)
+        except HardwareError as e:
+            logger.error(f"Hardware connection failed on port {port}: {e}")
+            print(f"\n⚠️ Hardware connection failed on port {port}: {e}")
+            print("Starting UI in degraded/disconnected real mode.")
+            robot = RealSO101Robot(port=port, connect_on_init=False)
 
     # 3. Execute Unified Gradio VLA Web UI server
     try:

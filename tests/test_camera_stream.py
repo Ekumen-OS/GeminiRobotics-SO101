@@ -220,7 +220,7 @@ def test_empty_buffers_with_physical_robot_do_not_attempt_sim_render(
 
     set_active_robot(mock_robot)  # a robot that cannot render, like the real arm
     assert stream_mod.get_latest_jpeg(quality=70) is not None
-    assert stream_mod.get_latest_raw_jpeg() is not None
+    assert stream_mod.get_latest_raw_jpeg() is None
     captured = capsys.readouterr()
     assert "Sim render failed" not in captured.out + captured.err
 

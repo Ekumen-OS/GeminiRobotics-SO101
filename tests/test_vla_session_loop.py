@@ -1,10 +1,11 @@
-"""Regression tests for VLAController live session loop using the fake session fixture."""
+from unittest.mock import AsyncMock, MagicMock
 
 from google.genai import types
 
 from agent.vla_controller import VLAController
 from tests.conftest import (
     MockRobot,
+    _real_sleep,
     fake_live_session,
     text_message,
     tool_call_message,
@@ -154,3 +155,164 @@ def test_clear_history_keeps_system_prompt() -> None:
     assert len(history) == 1
     assert history[0]["role"] == "system"
     assert "Gemini Robotics Assistant" in history[0]["content"]
+
+
+def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> None:
+    """Verify frames are streamed during blocking tool and send_tool_response called once."""
+    import time
+
+    robot = MockRobot()
+    tool_return_time: float = 0.0
+    send_frame_times: list[float] = []
+    tool_response_time: float = 0.0
+
+    # Make move_to_pose block for 1.2s to verify asyncio.to_thread concurrency
+    def slow_move(*args, **kwargs):
+        nonlocal tool_return_time
+        _real_sleep(1.2)
+        tool_return_time = time.monotonic()
+
+    robot.move_to_pose = slow_move
+
+    controller = VLAController(mode="sim", robot=robot)
+    controller._api_available = True
+
+    tool_msg = tool_call_message("open_gripper", {}, "call_slow")
+    messages = [tool_msg, turn_complete_message()]
+    mock_session = fake_live_session(messages)
+
+    orig_send_frame = mock_session.send_frame
+
+    async def tracking_send_frame(frame_bytes):
+        send_frame_times.append(time.monotonic())
+        return await orig_send_frame(frame_bytes)
+
+    orig_send_tool_response = mock_session.send_tool_response
+
+    async def tracking_send_tool_response(responses):
+        nonlocal tool_response_time
+        tool_response_time = time.monotonic()
+        return await orig_send_tool_response(responses)
+
+    mock_session.send_frame = AsyncMock(side_effect=tracking_send_frame)
+    mock_session.send_tool_response = AsyncMock(side_effect=tracking_send_tool_response)
+    controller._session = mock_session
+
+    jpeg_counter = 0
+
+    def frame_provider():
+        nonlocal jpeg_counter
+        jpeg_counter += 1
+        return f"\xff\xd8frame_{jpeg_counter}".encode("latin1")
+
+    list(controller.process_instruction_stream("Open slowly", get_latest_jpeg_fn=frame_provider))
+
+    # A frame was sent during motion (1 fps interval during 1.2s) + post-action frame
+    assert mock_session.send_frame.call_count >= 2
+    # send_tool_response called exactly once
+    assert mock_session.send_tool_response.call_count == 1
+    # Post-action frame is last
+    last_frame_sent = mock_session.send_frame.call_args[0][0]
+    assert last_frame_sent.startswith(b"\xff\xd8frame_")
+
+    # Assert that at least one send_frame call happened before the tool handler returned
+    assert any(t < tool_return_time for t in send_frame_times)
+    # Assert that send_tool_response call happens after the last send_frame
+    assert tool_response_time >= max(send_frame_times)
+
+
+def test_frame_streamer_does_not_delay_tool_response() -> None:
+    """Verify blocking tool taking 0.25s produces tool response within 0.5s of tool returning."""
+    import time
+
+    robot = MockRobot()
+    tool_return_time: float = 0.0
+    tool_response_time: float = 0.0
+
+    def quick_blocking_move(*args, **kwargs):
+        nonlocal tool_return_time
+        _real_sleep(0.25)
+        tool_return_time = time.monotonic()
+
+    robot.move_to_pose = quick_blocking_move
+
+    controller = VLAController(mode="sim", robot=robot)
+    controller._api_available = True
+
+    tool_msg = tool_call_message("open_gripper", {}, "call_quick")
+    messages = [tool_msg, turn_complete_message()]
+    mock_session = fake_live_session(messages)
+
+    orig_send_tool_response = mock_session.send_tool_response
+
+    async def tracking_send_tool_response(responses):
+        nonlocal tool_response_time
+        tool_response_time = time.monotonic()
+        return await orig_send_tool_response(responses)
+
+    mock_session.send_tool_response = AsyncMock(side_effect=tracking_send_tool_response)
+    controller._session = mock_session
+
+    list(
+        controller.process_instruction_stream(
+            "Open quickly", get_latest_jpeg_fn=lambda: b"\xff\xd8quick_frame"
+        )
+    )
+
+    assert mock_session.send_tool_response.call_count == 1
+    assert tool_return_time > 0.0
+    assert tool_response_time > 0.0
+    elapsed_after_return = tool_response_time - tool_return_time
+    assert elapsed_after_return < 0.5, (
+        f"Tool response took {elapsed_after_return:.3f}s after tool return (must be < 0.5s)"
+    )
+
+
+def test_post_action_frame_delivery_failure_marks_function_response_missing() -> None:
+    """Verify post-action frame failure marks post_action_frame='missing' in payload."""
+    robot = MockRobot()
+    controller = VLAController(mode="sim", robot=robot)
+    controller._api_available = True
+
+    tool_msg = tool_call_message("open_gripper", {}, "call_open")
+    messages = [tool_msg, turn_complete_message()]
+    mock_session = fake_live_session(messages)
+
+    async def fail_send_frame(frame_bytes):
+        raise ConnectionError("Network dropped during frame injection")
+
+    mock_session.send_frame = fail_send_frame
+    controller._session = mock_session
+
+    post_frame = b"\xff\xd8fake_post_frame"
+    chunks = list(
+        controller.process_instruction_stream("Open gripper", get_latest_jpeg_fn=lambda: post_frame)
+    )
+    full_output = "".join(chunks)
+
+    assert "⚠️" in full_output
+    assert mock_session.send_tool_response.call_count == 1
+    call_args = mock_session.send_tool_response.call_args[0][0]
+    resp_dict = call_args[0].response
+    assert resp_dict.get("post_action_frame") == "missing"
+
+
+def test_loop_failure_calls_robot_interrupt() -> None:
+    """Verify that a fatal loop failure invokes robot.interrupt()."""
+    robot = MockRobot()
+    robot.interrupt = MagicMock()
+    controller = VLAController(mode="sim", robot=robot)
+    controller._api_available = True
+
+    mock_session = fake_live_session([])
+
+    async def crashing_receive():
+        raise RuntimeError("Fatal connection tear mid-turn")
+        yield  # make it a generator
+
+    mock_session.receive = crashing_receive
+    controller._session = mock_session
+
+    list(controller.process_instruction_stream("Crash turn"))
+
+    robot.interrupt.assert_called_once()

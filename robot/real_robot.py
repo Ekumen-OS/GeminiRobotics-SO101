@@ -5,11 +5,13 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from robot.constants import JOINT_NAMES
 from robot.contracts import GripperReading
+from robot.errors import HardwareError
 from robot.interface import RobotInterface
 from robot.settings import get_settings
 
@@ -52,6 +54,7 @@ class RealSO101Robot(RobotInterface):
         port: str | None = None,
         baudrate: int = 1_000_000,
         calibration_path: str | Path | None = None,
+        connect_on_init: bool = True,
     ):
         """Initialize connection to physical Feetech motors bus with LeRobot calibration.
 
@@ -61,17 +64,21 @@ class RealSO101Robot(RobotInterface):
             baudrate: Motors bus communication baudrate (default: 1,000,000).
             calibration_path: Explicit path to a LeRobot motor calibration JSON file.
                 Defaults to resolve_calibration_path().
+            connect_on_init: Whether to connect to hardware during initialization.
 
         Raises:
             ImportError: If the `lerobot` package is not available.
             FileNotFoundError: If the specified LeRobot calibration file does not exist.
             RuntimeError: If loading the calibration file fails.
-            ConnectionError: If connection to the real robot hardware cannot be established.
+            HardwareError: If connection to the real robot hardware cannot be established.
         """
         self.port = port if port is not None else get_settings().serial_port
         self.baudrate = baudrate
         self.connected = False
+        self.bus: Any = None
         self._bus_lock = threading.Lock()
+        self._last_qpos = np.zeros(6, dtype=np.float32)
+        self._stop_requested = False
 
         if calibration_path is None:
             calibration_path = resolve_calibration_path()
@@ -108,7 +115,7 @@ class RealSO101Robot(RobotInterface):
 
         try:
             calib_data = json.loads(self.calibration_path.read_text())
-        except Exception as e:
+        except (json.JSONDecodeError, OSError) as e:
             raise RuntimeError(
                 f"Could not read calibration file {self.calibration_path}: {e}"
             ) from e
@@ -130,130 +137,122 @@ class RealSO101Robot(RobotInterface):
 
         try:
             self.calibration = {name: MotorCalibration(**cfg) for name, cfg in calib_data.items()}
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
             raise RuntimeError(
                 f"Could not load calibration file {self.calibration_path}: {e}"
             ) from e
         logger.info(f"Loaded LeRobot calibration profile from {self.calibration_path}")
 
-        try:
-            self.bus = FeetechMotorsBus(
-                port=self.port,
-                motors=self.motors,
-                calibration=self.calibration,
-            )
-            self.bus.connect()
-
-            # Ensure torque is enabled so motors actually move
-            self.bus.enable_torque()
-
-            self.connected = True
-            logger.info(f"Successfully connected to real SO-101 arm on port {self.port}.")
-        except Exception as e:
-            port_path = Path(self.port)
-            err_details = [f"Could not connect to physical robot on port {self.port}: {e}"]
-            if port_path.exists() and not (
-                os.access(port_path, os.R_OK) and os.access(port_path, os.W_OK)
-            ):
-                err_details.append(
-                    f"\n[PERMISSION DENIED] Port '{self.port}' exists but lacks read/write "
-                    "permissions for the current user.\n"
-                    "Grant access on Linux with:\n"
-                    f"  1. Immediate fix: sudo chmod 666 {self.port}\n"
-                    "  2. Permanent fix: sudo usermod -a -G dialout $USER "
-                    "(then log out & back in)"
-                )
-            raise ConnectionError("\n".join(err_details)) from e
-
-        self._last_qpos = np.zeros(6, dtype=np.float32)
-        # Initialize _last_qpos with actual current positions if possible
-        if self.connected:
+        if connect_on_init:
+            self.connect()
             self._last_qpos = self.get_joint_positions()
-        self._stop_requested = False
+
+    def connect(self) -> None:
+        """Establish physical connection to Feetech motors bus and enable torque.
+
+        Raises:
+            HardwareError: If connection to the real robot hardware cannot be established.
+        """
+        with self._bus_lock:
+            try:
+                self.bus = FeetechMotorsBus(
+                    port=self.port,
+                    motors=self.motors,
+                    calibration=self.calibration,
+                )
+                self.bus.connect()
+                self.bus.enable_torque()
+                self.connected = True
+                logger.info(f"Successfully connected to real SO-101 arm on port {self.port}.")
+            except Exception as e:
+                self.connected = False
+                port_path = Path(self.port)
+                err_details = [f"Could not connect to physical robot on port {self.port}: {e}"]
+                if port_path.exists() and not (
+                    os.access(port_path, os.R_OK) and os.access(port_path, os.W_OK)
+                ):
+                    err_details.append(
+                        f"\n[PERMISSION DENIED] Port '{self.port}' exists but lacks read/write "
+                        "permissions for the current user.\n"
+                        "Grant access on Linux with:\n"
+                        f"  1. Immediate fix: sudo chmod 666 {self.port}\n"
+                        "  2. Permanent fix: sudo usermod -a -G dialout $USER "
+                        "(then log out & back in)"
+                    )
+                raise HardwareError("\n".join(err_details)) from e
 
     def set_joint_positions(self, qpos: np.ndarray) -> None:
         """Command target joint positions (in radians) to physical motors using calibration.
 
         Args:
             qpos: Target joint angles in radians for 6 joints.
+
+        Raises:
+            HardwareError: If robot is not connected or bus write fails.
         """
         qpos = np.asarray(qpos, dtype=np.float32)
-        self._last_qpos = qpos.copy()
 
         if not self.connected or self.bus is None:
-            return
+            raise HardwareError(
+                f"Cannot set joint positions: robot is not connected on port {self.port}."
+            )
 
-        # If calibration is loaded, convert radians to degrees for LeRobot normalized write
         with self._bus_lock:
-            if self.calibration is not None:
-                joint_degrees = {}
-                for i, joint_name in enumerate(JOINT_NAMES):
-                    deg = float(np.degrees(qpos[i]))
-                    joint_degrees[joint_name] = deg
+            joint_degrees = {}
+            for i, joint_name in enumerate(JOINT_NAMES):
+                deg = float(np.degrees(qpos[i]))
+                joint_degrees[joint_name] = deg
 
-                try:
-                    # Use sync_write to update all joint Goal_Positions cleanly
-                    self.bus.sync_write("Goal_Position", joint_degrees, normalize=True)
-                except Exception as e:
-                    logger.error(f"Error writing joint positions to bus: {e}")
-            else:
-                # Fallback raw position calculation if no calibration profile
-                TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
-                CENTER_TICK = 2048
-                joint_dict = {}
-                for i, joint_name in enumerate(JOINT_NAMES):
-                    tick = int(round(CENTER_TICK + qpos[i] * TICKS_PER_RAD))
-                    joint_dict[joint_name] = tick
+            try:
+                self.bus.sync_write("Goal_Position", joint_degrees, normalize=True)
+            except Exception as e:
+                logger.error(f"Error writing joint positions to bus: {e}")
+                raise HardwareError(f"Failed to write joint positions to bus: {e}") from e
 
-                try:
-                    self.bus.sync_write("Goal_Position", joint_dict, normalize=False)
-                except Exception as e:
-                    logger.error(f"Error writing raw joint positions: {e}")
+            # Update _last_qpos only after a verified successful write
+            self._last_qpos = qpos.copy()
 
     def get_joint_positions(self) -> np.ndarray:
         """Read current joint positions from physical motor encoders in radians.
 
         Returns:
             A numpy array of 6 joint positions in radians.
+
+        Raises:
+            HardwareError: If robot is not connected or bus read fails.
         """
         if not self.connected or self.bus is None:
-            return self._last_qpos.copy()
+            raise HardwareError(
+                f"Cannot read joint positions: robot is not connected on port {self.port}."
+            )
 
         with self._bus_lock:
             try:
-                if self.calibration is not None:
-                    deg_dict = self.bus.sync_read("Present_Position", normalize=True)
-                    qpos = np.zeros(6, dtype=np.float32)
-                    for i, joint_name in enumerate(JOINT_NAMES):
-                        if joint_name in deg_dict:
-                            qpos[i] = np.radians(deg_dict[joint_name])
-                        else:
-                            qpos[i] = self._last_qpos[i]
-                    return qpos
-                else:
-                    TICKS_PER_RAD = 4096.0 / (2.0 * np.pi)
-                    CENTER_TICK = 2048
-                    tick_dict = self.bus.sync_read("Present_Position", normalize=False)
-                    qpos = np.zeros(6, dtype=np.float32)
-                    for i, joint_name in enumerate(JOINT_NAMES):
-                        if joint_name in tick_dict:
-                            qpos[i] = (tick_dict[joint_name] - CENTER_TICK) / TICKS_PER_RAD
-                        else:
-                            qpos[i] = self._last_qpos[i]
-                    return qpos
+                deg_dict = self.bus.sync_read("Present_Position", normalize=True)
             except Exception as e:
                 logger.error(f"Error reading present positions from bus: {e}")
-                return self._last_qpos.copy()
+                raise HardwareError(f"Failed to read present positions from bus: {e}") from e
+
+            qpos = np.zeros(6, dtype=np.float32)
+            for i, joint_name in enumerate(JOINT_NAMES):
+                if joint_name in deg_dict:
+                    qpos[i] = np.radians(deg_dict[joint_name])
+                else:
+                    raise HardwareError(
+                        f"Missing joint '{joint_name}' in Present_Position read from bus."
+                    )
+            return qpos
 
     def disconnect(self) -> None:
         """Disconnect and release the serial bus."""
         if self.connected and self.bus is not None:
             try:
                 self.bus.disconnect()
-                self.connected = False
                 logger.info("Disconnected from physical SO-101 robot arm.")
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")
+            finally:
+                self.connected = False
 
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement."""
@@ -319,21 +318,34 @@ class RealSO101Robot(RobotInterface):
             target_qpos: Target joint angles in radians.
             duration_sec: Duration of the interpolation trajectory in seconds.
             dt: Timestep duration in seconds.
+
+        Raises:
+            HardwareError: If physical communication fails or motion is interrupted.
         """
         import time
 
+        self._stop_requested = False
         target_qpos = np.asarray(target_qpos, dtype=np.float32)
         start_qpos = self.get_joint_positions()
         num_steps = max(1, int(duration_sec / dt))
 
-        for step_idx in range(1, num_steps + 1):
-            if self._stop_requested:
-                break
-            t = step_idx / num_steps
-            # Cosine interpolation for smooth acceleration/deceleration
-            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-            interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-            self.set_joint_positions(interp_qpos)
-            time.sleep(dt)
-
-        self._stop_requested = False
+        steps_written = 0
+        try:
+            for step_idx in range(1, num_steps + 1):
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+                t = step_idx / num_steps
+                # Cosine interpolation for smooth acceleration/deceleration
+                alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+                interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
+                try:
+                    self.set_joint_positions(interp_qpos)
+                except HardwareError as e:
+                    e.robot_moved = step_idx > 1
+                    raise
+                steps_written += 1
+                time.sleep(dt)
+                if self._stop_requested:
+                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+        finally:
+            self._stop_requested = False

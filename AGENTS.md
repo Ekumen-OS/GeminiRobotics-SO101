@@ -29,6 +29,19 @@
   - Mock Gemini Live WebSocket sessions and external hardware appropriately so test suites execute fast, reliably, and deterministically without network dependencies.
   - Confirm 100% pass rate before committing or reporting milestone completion.
 
+- **Typed Errors & Exception Rules**:
+  - Code must raise specific taxonomy errors from `robot/errors.py` (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`) and `agent/errors.py` (`SessionError`).
+  - Broad catches (`except Exception`) are strictly restricted to designated safety boundaries:
+    - `agent/tools.py`: `execute_tool_call` outer boundary (maps to typed `ToolErrorResponse`, halts robot on `HardwareError`).
+    - `agent/vla_controller.py`: `_process_instruction_async` outer catch (halts robot and emits error).
+    - `agent/live_session.py`: `disconnect()` cleanup.
+    - `robot/logger.py`: `emit()` standard logging boundary.
+    - `simulation/sim_robot.py`: `__del__` resource cleanup.
+    - `vision/sim_runtime.py` and `vision/capture.py`: long-lived worker thread loops (logging with `logger.exception`).
+    - `simulation/check_env.py`: diagnostic environment checks.
+    - `ui/components/chat.py`: stream consumer (must call `controller.interrupt()` before appending error).
+  - All other sites must catch specific exception tuples (e.g., `(json.JSONDecodeError, OSError)`, `(KeyError, ValueError)`). Never swallow failures silently with `pass` without honest telemetry.
+
 - **Diagnostic Terminal Logging**:
   - Use the standard ISO-8601 millisecond-precision format:
     `[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`
