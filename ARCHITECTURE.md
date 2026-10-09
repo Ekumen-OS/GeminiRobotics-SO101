@@ -57,7 +57,7 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 
 ---
 
-## 2. Core Feature Inventory (F1 – F12)
+## 2. Core Feature Inventory (F1 – F14)
 
 | # | Feature | Subsystems | Description |
 | --- | --- | --- | --- |
@@ -74,6 +74,7 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
 | **F13**| Physical Grasp Sensor & Classification | `robot/grasp.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry. Pure classifier `classify_grasp` detects jaw stall vs empty air closure with configurable margins and fail-closed safety. |
+| **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/errors.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
 
 ---
 
@@ -128,6 +129,30 @@ Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py
     - `closed_on_air_threshold_deg: float`: threshold (calibrated empty aperture `GRIPPER_EMPTY_APERTURE_DEG`, else `GRIPPER_CLOSE_DEG`, plus `GRASP_EMPTY_MARGIN_DEG`).
     - `load: float | None`: present load register or actuator force.
     - `reason: Literal["closed_on_air", "aperture", "no_load", "sensor_unavailable"]`.
+- **Tool Error Return Payload**:
+  - **Typed contract:** [`ToolErrorResponse`](agent/contracts.py).
+  - Schema:
+    - `error: str`: Human-readable description of the failure cause.
+    - `error_type: Literal["argument", "calibration", "perception", "hardware", "internal"]`: Machine-readable classification of the failure subsystem.
+    - `robot_moved: bool`: Honest indication of whether physical robot actuators moved prior to or during the failure.
+  - When hardware failures occur (`error_type="hardware"`), the executor immediately halts physical motion (`robot.interrupt()`) before returning the error payload.
+
+### 3.4. Failure Policy: Block and Inform
+
+When an operational, perceptual, or hardware boundary fails, the system strictly **fails closed**:
+- **Hardware Failures**: Physical motor bus write or read failures raise `HardwareError`, halt the
+  arm immediately via `robot.interrupt()`, and report `robot_moved` honestly without cached position
+  fallbacks. An interrupt during motion surfaces as `error_type="hardware"`, `robot_moved=true`,
+  never as success.
+- **Calibration Integrity**: Uncalibrated workspaces or corrupted calibration files immediately
+  raise `CalibrationUnavailable`, rejecting spatial motions rather than executing open-loop guesses.
+- **Perception Failures**: Camera frame decoding errors or detection failures raise
+  `PerceptionUnavailable` rather than falling back to synthetic successes or comforting defaults.
+- **Vision Stream Integrity**: Real-mode camera streams NEVER serve simulated or placeholder
+  frames when physical cameras disconnect or buffers empty (`get_latest_raw_jpeg()` returns `None`).
+- **Model Grounding**: Failure payloads are returned to Gemini with typed `error_type` and
+  `robot_moved` flags, enabling the model to reason about errors or halt gracefully. `SessionError`
+  is a controller-level exception for WebSocket session lifecycle, rather than a tool return type.
 
 ---
 

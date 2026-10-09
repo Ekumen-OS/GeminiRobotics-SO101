@@ -14,6 +14,12 @@ from agent.contracts import GripperToolResponse, MoveToSpatialPointResponse
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.contracts import GraspClassification, VisualAlignmentResponse
+from robot.errors import (
+    CalibrationUnavailable,
+    HardwareError,
+    PerceptionUnavailable,
+    ToolArgumentError,
+)
 from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_compat, log_with_tag
@@ -150,19 +156,28 @@ def image_point_to_xyz(
     if calib is not None:
         if is_sim and (getattr(calib, "mode", None) != "sim" or not calib.is_calibrated):
             if target_path.exists():
-                calib.load_calibration(target_path)
-                calib.mode = "sim"
+                if calib.load_calibration(target_path):
+                    calib.mode = "sim"
             else:
                 from simulation.sim_calibration import init_sim_workspace_calibration
 
                 calib = init_sim_workspace_calibration(calibrator=calib)
         elif not is_sim and (getattr(calib, "mode", None) != "real" or not calib.is_calibrated):
             if target_path.exists():
-                calib.load_calibration(target_path)
-                calib.mode = "real"
+                if calib.load_calibration(target_path):
+                    calib.mode = "real"
 
-    if calib is None or not calib.is_calibrated:
-        raise RuntimeError(
+    if calib is None:
+        raise CalibrationUnavailable(
+            "Workspace is not calibrated. Please ensure 4 ArUco markers are in view and "
+            "save calibration under the ArUco Workspace Calibration panel before executing "
+            "spatial commands."
+        )
+
+    if hasattr(calib, "require_calibrated"):
+        calib.require_calibrated()
+    elif getattr(calib, "is_calibrated", None) is False:
+        raise CalibrationUnavailable(
             "Workspace is not calibrated. Please ensure 4 ArUco markers are in view and "
             "save calibration under the ArUco Workspace Calibration panel before executing "
             "spatial commands."
@@ -263,7 +278,7 @@ def _handle_move_to_pose(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     if len(qpos_deg) != 6:
         err_msg = f"move_to_pose expects 6 joint angles, got {len(qpos_deg)}"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
     clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
     qpos_rad = np.radians(clamped_qpos)
     robot.move_to_pose(qpos_rad, duration_sec=duration_sec)
@@ -289,7 +304,7 @@ def _handle_set_joint_positions(ctx: ToolContext, args: dict[str, Any]) -> dict[
     if len(qpos_deg) != 6:
         err_msg = f"set_joint_positions expects 6 joint angles, got {len(qpos_deg)}"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
     clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
     qpos_rad = np.radians(clamped_qpos)
     robot.set_joint_positions(qpos_rad)
@@ -422,7 +437,7 @@ def _handle_move_to_preset(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
         available_poses = list(PRESET_POSES.keys())
         err_msg = f"Unknown preset pose: {pose_name}. Available: {available_poses}"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
     target_rad = PRESET_POSES[pose_name]
     robot.move_to_pose(target_rad, duration_sec=1.0)
     target_deg = [float(v) for v in np.degrees(target_rad)]
@@ -455,7 +470,7 @@ def _handle_get_end_effector_pose(ctx: ToolContext, args: dict[str, Any]) -> dic
     if not hasattr(robot, "get_end_effector_pose"):
         err_msg = "End effector pose is not available in real physical mode."
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
     pos, mat = robot.get_end_effector_pose()
     return {
         "position": pos.tolist(),
@@ -475,32 +490,45 @@ def _refine_point(
 
     Returns:
         Tuple of (possibly refined [y, x] point, matched object dictionary or None).
+
+    Raises:
+        PerceptionUnavailable: If frame provider was supplied but returned None,
+            decoding failed, or visual refinement failed.
     """
     matched_obj: dict[str, Any] | None = None
-    if get_latest_jpeg_fn:
+    if get_latest_jpeg_fn is not None:
+        raw_jpeg = get_latest_jpeg_fn()
+        if raw_jpeg is None:
+            raise PerceptionUnavailable(
+                "Camera frame unavailable for target refinement", robot_moved=False
+            )
+        nparr = np.frombuffer(raw_jpeg, np.uint8)
+        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame_bgr is None:
+            raise PerceptionUnavailable(
+                "Failed to decode camera frame for target refinement", robot_moved=False
+            )
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         try:
-            raw_jpeg = get_latest_jpeg_fn()
-            if raw_jpeg:
-                nparr = np.frombuffer(raw_jpeg, np.uint8)
-                frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if frame_bgr is not None:
-                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    refined_pt, matched_obj = refine_point_to_nearest_object(
-                        point, frame_rgb, calibrator=get_calibrator()
-                    )
-                    if matched_obj is not None and (
-                        abs(refined_pt[0] - point[0]) > 5 or abs(refined_pt[1] - point[1]) > 5
-                    ):
-                        log_with_tag(
-                            logger,
-                            "EXEC",
-                            f"Auto-refined coordinate [{point[0]:.0f}, {point[1]:.0f}] "
-                            f"→ [{refined_pt[0]:.0f}, {refined_pt[1]:.0f}] "
-                            f"(detected {matched_obj['color']} object)",
-                        )
-                        point = refined_pt
+            refined_pt, matched_obj = refine_point_to_nearest_object(
+                point, frame_rgb, calibrator=get_calibrator()
+            )
+            if matched_obj is not None and (
+                abs(refined_pt[0] - point[0]) > 5 or abs(refined_pt[1] - point[1]) > 5
+            ):
+                log_with_tag(
+                    logger,
+                    "EXEC",
+                    f"Auto-refined coordinate [{point[0]:.0f}, {point[1]:.0f}] "
+                    f"→ [{refined_pt[0]:.0f}, {refined_pt[1]:.0f}] "
+                    f"(detected {matched_obj['color']} object)",
+                )
+                point = refined_pt
         except Exception as e:
-            log_with_tag(logger, "WARN", f"Visual refinement skipped: {e}")
+            if isinstance(e, PerceptionUnavailable):
+                e.robot_moved = False
+                raise e
+            raise PerceptionUnavailable(f"Visual refinement failed: {e}", robot_moved=False) from e
     return point, matched_obj
 
 
@@ -556,8 +584,8 @@ def _update_target_overlay(
             set_model_targets(updated)
         else:
             set_model_targets([active_target])
-    except Exception:
-        pass
+    except (TypeError, KeyError, IndexError, ValueError) as e:
+        log_with_tag(logger, "WARN", f"Failed to update target overlay: {e}")
 
 
 def _measure_alignment(
@@ -572,24 +600,39 @@ def _measure_alignment(
 
     Returns:
         VisualAlignmentResponse if successfully computed, else None.
+
+    Raises:
+        PerceptionUnavailable: If frame provider was supplied but returned None,
+            decoding failed, or alignment computation failed or returned None.
     """
-    perception_res: VisualAlignmentResponse | None = None
-    if get_latest_jpeg_fn:
-        try:
-            raw_jpeg = get_latest_jpeg_fn()
-            if raw_jpeg:
-                nparr = np.frombuffer(raw_jpeg, np.uint8)
-                frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if frame_bgr is not None:
-                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    perception_res = compute_visual_alignment(
-                        frame_rgb=frame_rgb,
-                        target_point_1000=point,
-                        tolerance=get_settings().alignment_tolerance_px,
-                        calibrator=get_calibrator(),
-                    )
-        except Exception as e:
-            log_with_tag(logger, "WARN", f"Perception computation skipped: {e}")
+    if get_latest_jpeg_fn is None:
+        return None
+    raw_jpeg = get_latest_jpeg_fn()
+    if raw_jpeg is None:
+        raise PerceptionUnavailable(
+            "Camera frame unavailable for visual verification", robot_moved=True
+        )
+    nparr = np.frombuffer(raw_jpeg, np.uint8)
+    frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame_bgr is None:
+        raise PerceptionUnavailable(
+            "Failed to decode camera frame for visual verification", robot_moved=True
+        )
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    try:
+        perception_res = compute_visual_alignment(
+            frame_rgb=frame_rgb,
+            target_point_1000=point,
+            tolerance=get_settings().alignment_tolerance_px,
+            calibrator=get_calibrator(),
+        )
+    except Exception as e:
+        if isinstance(e, PerceptionUnavailable):
+            e.robot_moved = True
+            raise e
+        raise PerceptionUnavailable(f"Perception computation failed: {e}", robot_moved=True) from e
+    if perception_res is None:
+        raise PerceptionUnavailable("Visual alignment could not be computed", robot_moved=True)
     return perception_res
 
 
@@ -612,13 +655,13 @@ def _handle_move_to_spatial_point(
     if len(point) != 2:
         err_msg = f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
 
     approach = str(args.get("approach", "")).strip().lower().replace("-", "_").replace(" ", "_")
     if not approach or approach not in ("top_down", "horizontal"):
         err_msg = "move_to_spatial_point requires 'approach' parameter ('top_down' or 'horizontal')"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        raise ToolArgumentError(err_msg, robot_moved=False)
 
     point, matched_obj = _refine_point(point, ctx.get_latest_jpeg_fn)
 
@@ -975,32 +1018,70 @@ async def execute_tool_call(
     if robot is None:
         err_msg = "RobotInterface is not initialized or injected."
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        return {"error": err_msg, "error_type": "hardware", "robot_moved": False}
 
-    try:
-        if get_active_robot() is None:
-            set_active_robot(robot)
-    except Exception:
-        pass
+    if get_active_robot() is None:
+        set_active_robot(robot)
 
-    try:
-        spec = TOOL_REGISTRY.get(name)
-        if spec is None:
-            err_msg = f"Unknown tool called: {name}"
-            log_with_tag(logger, "ERROR", err_msg)
-            return {"error": err_msg}
-
-        ctx = ToolContext(
-            robot=robot,
-            get_latest_jpeg_fn=get_latest_jpeg_fn,
-            status_callback=status_callback,
-            mode=mode,
-        )
-        return spec.handler(ctx, args)
-    except Exception as e:
-        err_msg = f"Exception during execution of {name}: {e}"
+    spec = TOOL_REGISTRY.get(name)
+    if spec is None:
+        err_msg = f"Unknown tool called: {name}"
         log_with_tag(logger, "ERROR", err_msg)
-        return {"error": err_msg}
+        return {"error": err_msg, "error_type": "argument", "robot_moved": False}
+
+    ctx = ToolContext(
+        robot=robot,
+        get_latest_jpeg_fn=get_latest_jpeg_fn,
+        status_callback=status_callback,
+        mode=mode,
+    )
+
+    try:
+        result = await asyncio.to_thread(spec.handler, ctx, args)
+        if isinstance(result, dict) and "error" in result and "error_type" not in result:
+            result["error_type"] = "internal"
+            result.setdefault("robot_moved", False)
+        return result
+    except ToolArgumentError as e:
+        log_with_tag(logger, "ERROR", f"Tool argument error during {name}: {e}")
+        return {
+            "error": str(e),
+            "error_type": "argument",
+            "robot_moved": getattr(e, "robot_moved", False),
+        }
+    except CalibrationUnavailable as e:
+        log_with_tag(logger, "ERROR", f"Calibration error during {name}: {e}")
+        return {
+            "error": str(e),
+            "error_type": "calibration",
+            "robot_moved": getattr(e, "robot_moved", False),
+        }
+    except PerceptionUnavailable as e:
+        log_with_tag(logger, "ERROR", f"Perception error during {name}: {e}")
+        return {
+            "error": str(e),
+            "error_type": "perception",
+            "robot_moved": getattr(e, "robot_moved", False),
+        }
+    except HardwareError as e:
+        log_with_tag(logger, "ERROR", f"Hardware error during {name}: {e}")
+        try:
+            robot.interrupt()
+        except Exception as ie:
+            log_with_tag(logger, "WARN", f"Interrupt failed following HardwareError: {ie}")
+        return {
+            "error": str(e),
+            "error_type": "hardware",
+            "robot_moved": getattr(e, "robot_moved", False),
+        }
+    except Exception as e:
+        logger.exception(f"Internal error during {name}: {e}")
+        log_with_tag(logger, "ERROR", f"Exception during execution of {name}: {e}")
+        return {
+            "error": f"Internal error during {name}: {e}",
+            "error_type": "internal",
+            "robot_moved": False,
+        }
 
 
 def execute_tool_call_sync(

@@ -1,8 +1,18 @@
 """Typed contract definitions for Gemini Live API robot tool execution payloads."""
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from robot.contracts import GraspClassification, VisualAlignmentResponse
+
+ErrorType = Literal["argument", "calibration", "perception", "hardware", "internal"]
+
+
+class ToolErrorResponse(TypedDict):
+    """Contract schema for tool execution error payloads defined in ARCHITECTURE.md §3.3."""
+
+    error: str
+    error_type: ErrorType
+    robot_moved: bool
 
 
 class MoveToSpatialPointResponse(TypedDict):
@@ -16,6 +26,8 @@ class MoveToSpatialPointResponse(TypedDict):
     visual_hint: NotRequired[str]
     warnings: NotRequired[list[str]]
     error: NotRequired[str]
+    error_type: NotRequired[ErrorType]
+    robot_moved: NotRequired[bool]
 
 
 class GripperToolResponse(TypedDict):
@@ -29,3 +41,5 @@ class GripperToolResponse(TypedDict):
     grasp: NotRequired[GraspClassification | None]
     warnings: NotRequired[list[str]]
     error: NotRequired[str]
+    error_type: NotRequired[ErrorType]
+    robot_moved: NotRequired[bool]
