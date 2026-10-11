@@ -48,11 +48,12 @@ class MeasuredOffset(TypedDict):
 class VisualAlignmentResponse(TypedDict):
     """Contract schema for compute_visual_alignment payload defined in ARCHITECTURE.md §3.2."""
 
-    gripper_point_1000: list[float]
+    gripper_point_1000: list[float] | None
     target_point_1000: list[float]
-    measured_offset: MeasuredOffset
-    is_aligned: bool
+    measured_offset: MeasuredOffset | None
+    is_aligned: bool | None
     alignment_tolerance: float
+    gripper_source: str
 
 
 class GraspElevationResponse(TypedDict):
