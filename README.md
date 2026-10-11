@@ -117,6 +117,10 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `GRASP_EMPTY_MARGIN_DEG` | `6.0` | Margin in degrees above the empty aperture to classify as `closed_on_air` (threshold = empty aperture + margin). |
 | `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
 | `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
+| `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
+| `GRIPPER_TAG_OFFSET_PX` | `0.0,0.0` | Pixel offset `dx,dy` (x first) from the jaw ArUco tag centre to the point between the fingertips, measured at hover height (step 7 below). |
+| `GRIPPER_LOCATOR_ER2` | `0` | Enable ER2 visual pointing fallback when ArUco jaw marker is not detected (`1` or `0`). |
+| `VISION_SETTLE_S` | `0.3` | Camera stabilization settling delay in seconds before capturing post-action verification frames. |
 | `ROBOT_PORT` / `SO101_PORT` | `/dev/tty.usbmodem...` | Serial device path for physical Feetech bus adapter. |
 | `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
 | `WEB_STREAM_FPS` | `15` | Frame rate for operator MJPEG stream. |
@@ -124,7 +128,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 
 ### Real-Arm Grasp Calibration Checklist
 
-Follow this 4-step procedure when deploying to a physical SO-101 robotic arm to tune the grasp classifier:
+Follow this procedure when deploying to a physical SO-101 robotic arm. Steps 1–5 tune the grasp classifier; steps 6–9 mount the jaw tag and validate the closed loop. All values are read from the `[Tools] [...]` terminal log lines, not from the chat.
 
 1. **Close on Air**: Execute `close_gripper` with no object between jaws. Inspect terminal log `[Tools] [GRASP] aperture=...` and record the fully closed aperture $A_{\text{empty}}$ (e.g., $-74.5^\circ$).
 2. **Close on Object**: Place your standard target object (e.g., 30 mm calibration cube) between the jaws and execute `close_gripper`. Record the stalled aperture $A_{\text{object}}$ (e.g., $-34.5^\circ$).
@@ -133,6 +137,10 @@ Follow this 4-step procedure when deploying to a physical SO-101 robotic arm to 
    $$\text{GRASP\_EMPTY\_MARGIN\_DEG} \approx 0.40 \times \Delta A$$
    *(e.g., $A_{\text{empty}} = -74.5^\circ$, margin $= 0.40 \times 40.0^\circ = 16.0^\circ$, threshold $= -58.5^\circ$). Without the anchor the threshold is measured from $-75^\circ$, which is only correct if your calibration happens to close there.*
 5. **Leave `GRASP_LOAD_MIN` unset** until you have read a few `load=` values from the log: the STS3215 `Present_Load` register is raw sign-magnitude (bit 10 is direction), so a reverse-direction load reads above 1023.
+6. **Mount the Jaw Tag**: Print the jaw-tag page (`uv run python main.py --task generate_markers`): ArUco `DICT_4X4_50`, **ID 10**, ~15 mm, matte. Stick it flat on the top face of the **fixed** jaw, facing the overhead camera. Hover 5 cm over the mat centre and each corner; the tag must be detected in all five places.
+7. **Measure the Tag Offset**: At hover, measure the pixel offset from the tag centre to the point between the fingertips and set `GRIPPER_TAG_OFFSET_PX=<dx>,<dy>` (x first). Until the tag is mounted, the locator falls back to forward kinematics (`gripper_source="kinematic"`), or to ER2 pointing with `GRIPPER_LOCATOR_ER2=1`.
+8. **Validate with `DESCENT_GATE=warn`** (the real-mode default): run five picks of the cube from different spots. Expect `gripper_source="aruco"`, a measured `[dy, dx]` within 25 units on most hovers, a non-zero `applied_correction_1000` on the descent, and a grasp verdict that matches what you see every time.
+9. **Switch to `DESCENT_GATE=block`**: a deliberately misaligned descent must now be refused with `error_type="descent_gate"` instead of executed.
 
 ## Running the Robot (`main.py`)
 
