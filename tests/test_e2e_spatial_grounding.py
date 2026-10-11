@@ -389,8 +389,11 @@ def test_t3_cross_feature_camera_fov_containment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t4_scenario_pick_hover_and_descend_workflow() -> None:
+async def test_t4_scenario_pick_hover_and_descend_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Real-World Scenario 1: Model moves to hover above target, then descends to contact."""
+    monkeypatch.setenv("DESCENT_GATE", "off")
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 

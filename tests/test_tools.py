@@ -278,8 +278,9 @@ async def test_execute_tool_send_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tools_visual_hints_enrichment() -> None:
+async def test_tools_visual_hints_enrichment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test all tool returns contain the expected enriched visual_hint strings."""
+    monkeypatch.setenv("DESCENT_GATE", "off")
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
 
     mock_calibrator = MagicMock()
