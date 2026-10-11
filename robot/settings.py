@@ -75,6 +75,56 @@ class Settings:
     grasp_empty_margin_deg: float = 6.0
     gripper_settle_s: float = 0.6
     grasp_load_min: float | None = None
+    # Closed-loop grasping settings (Phase 3d)
+    descent_gate: str | None = None
+    gripper_tag_offset_px: tuple[float, float] = (0.0, 0.0)
+    gripper_locator_er2: bool = False
+    vision_settle_s: float = 0.3
+
+    def get_descent_gate(self, mode: str = "real") -> str:
+        """Resolve descent gate policy ('block', 'warn', or 'off').
+
+        Defaults to 'block' in sim and 'warn' in real unless explicitly overridden.
+
+        Args:
+            mode: Operational mode ('real' or 'sim').
+
+        Returns:
+            Active descent gate policy string.
+        """
+        env_gate = os.environ.get("DESCENT_GATE")
+        if env_gate:
+            cleaned = env_gate.strip().lower()
+            if cleaned in ("block", "warn", "off"):
+                return cleaned
+        if self.descent_gate in ("block", "warn", "off"):
+            return self.descent_gate
+        return "block" if mode == "sim" else "warn"
+
+    def get_vision_settle_s(self) -> float:
+        """Resolve vision settling duration in seconds.
+
+        Returns:
+            Settling duration in seconds.
+        """
+        env_settle = os.environ.get("VISION_SETTLE_S")
+        if env_settle is not None and env_settle.strip() != "":
+            try:
+                return float(env_settle)
+            except (ValueError, TypeError):
+                pass
+        return self.vision_settle_s
+
+    def get_gripper_locator_er2(self) -> bool:
+        """Resolve whether ER2 visual pointing gripper localization is enabled.
+
+        Returns:
+            True if enabled in environment or settings, else False.
+        """
+        env_er2 = os.environ.get("GRIPPER_LOCATOR_ER2")
+        if env_er2 is not None:
+            return env_er2.strip().lower() in ("1", "true", "yes")
+        return self.gripper_locator_er2
 
     @property
     def credentials_mode(self) -> str:
@@ -332,6 +382,39 @@ class Settings:
             ("GRASP_LOAD_MIN",),
         )
 
+        descent_gate_raw = _resolve_opt_str(overrides.get("descent_gate"), ("DESCENT_GATE",))
+        descent_gate = descent_gate_raw.strip().lower() if descent_gate_raw else None
+        if descent_gate not in ("block", "warn", "off"):
+            descent_gate = None
+
+        gripper_tag_offset_px = cls.gripper_tag_offset_px
+        if overrides.get("gripper_tag_offset_px") is not None:
+            ov = overrides["gripper_tag_offset_px"]
+            if isinstance(ov, (tuple, list)) and len(ov) >= 2:
+                gripper_tag_offset_px = (float(ov[0]), float(ov[1]))
+        else:
+            tag_offset_str = os.environ.get("GRIPPER_TAG_OFFSET_PX")
+            if tag_offset_str and "," in tag_offset_str:
+                try:
+                    parts = [float(p.strip()) for p in tag_offset_str.split(",") if p.strip()]
+                    if len(parts) >= 2:
+                        gripper_tag_offset_px = (parts[0], parts[1])
+                except (ValueError, TypeError):
+                    pass
+
+        gripper_locator_er2 = False
+        if overrides.get("gripper_locator_er2") is not None:
+            gripper_locator_er2 = bool(overrides["gripper_locator_er2"])
+        else:
+            er2_env = os.environ.get("GRIPPER_LOCATOR_ER2", "")
+            gripper_locator_er2 = er2_env.strip().lower() in ("1", "true", "yes")
+
+        vision_settle_s = _resolve_float(
+            overrides.get("vision_settle_s"),
+            ("VISION_SETTLE_S",),
+            cls.vision_settle_s,
+        )
+
         return cls(
             serial_port=serial_port,
             gemini_model_id=gemini_model_id,
@@ -357,6 +440,10 @@ class Settings:
             grasp_empty_margin_deg=grasp_empty_margin_deg,
             gripper_settle_s=gripper_settle_s,
             grasp_load_min=grasp_load_min,
+            descent_gate=descent_gate,
+            gripper_tag_offset_px=gripper_tag_offset_px,
+            gripper_locator_er2=gripper_locator_er2,
+            vision_settle_s=vision_settle_s,
         )
 
 
