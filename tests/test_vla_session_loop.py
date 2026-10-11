@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from google.genai import types
 
 from agent.vla_controller import VLAController
@@ -221,9 +222,11 @@ def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> Non
     assert tool_response_time >= max(send_frame_times)
 
 
-def test_frame_streamer_does_not_delay_tool_response() -> None:
+def test_frame_streamer_does_not_delay_tool_response(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify blocking tool taking 0.25s produces tool response within 0.5s of tool returning."""
     import time
+
+    monkeypatch.setenv("VISION_SETTLE_S", "0.05")
 
     robot = MockRobot()
     tool_return_time: float = 0.0

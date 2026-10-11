@@ -71,6 +71,8 @@ files = [
   "robot/perception.py",
   "agent/tools.py",
   "agent/response_assembler.py",
+  "vision/gripper_locator.py",
+  "agent/guardrails.py",
 ]
 follow_imports = "silent"
 ignore_missing_imports = true

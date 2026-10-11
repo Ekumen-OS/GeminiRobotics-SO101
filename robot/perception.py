@@ -19,6 +19,7 @@ def compute_visual_alignment(
     robot_state: dict[str, Any] | None = None,
     tolerance: float | None = None,
     calibrator: Any | None = None,
+    gripper_source: str | None = None,
 ) -> VisualAlignmentResponse:
     """Calculate measured visual alignment offset between gripper and target object.
 
@@ -31,14 +32,17 @@ def compute_visual_alignment(
             Defaults to settings alignment_tolerance_px.
         calibrator: Optional workspace calibrator used to mask detection to the ArUco
             workspace polygon. None disables the mask.
+        gripper_source: Optional provenance string describing how gripper position
+            was estimated (e.g. 'aruco', 'kinematic', 'er2', 'provided').
 
     Returns:
         Dictionary adhering to ARCHITECTURE.md perception contract:
-            - gripper_point_1000: [y_g, x_g]
+            - gripper_point_1000: [y_g, x_g] or None
             - target_point_1000: [y_t, x_t]
-            - measured_offset: {"dy": float, "dx": float, "distance": float}
-            - is_aligned: bool
+            - measured_offset: {"dy": float, "dx": float, "distance": float} or None
+            - is_aligned: bool or None
             - alignment_tolerance: float
+            - gripper_source: str ('aruco', 'kinematic', 'er2', 'provided', 'none')
     """
     if tolerance is None:
         tolerance = float(get_settings().alignment_tolerance_px)
@@ -62,14 +66,21 @@ def compute_visual_alignment(
     if gripper_point_1000 is not None:
         grip_y = float(gripper_point_1000[0])
         grip_x = float(gripper_point_1000[1])
+        source = gripper_source or "provided"
     elif robot_state and "gripper_point_1000" in robot_state:
         pt = robot_state["gripper_point_1000"]
         grip_y = float(pt[0])
         grip_x = float(pt[1])
+        source = gripper_source or robot_state.get("gripper_source", "provided")
     else:
-        # Fallback to target position if no gripper position is known
-        grip_y = target_y
-        grip_x = target_x
+        return {
+            "gripper_point_1000": None,
+            "target_point_1000": [target_y, target_x],
+            "measured_offset": None,
+            "is_aligned": None,
+            "alignment_tolerance": float(tolerance),
+            "gripper_source": "none",
+        }
 
     dy = float(target_y - grip_y)
     dx = float(target_x - grip_x)
@@ -86,6 +97,7 @@ def compute_visual_alignment(
         },
         "is_aligned": is_aligned,
         "alignment_tolerance": float(tolerance),
+        "gripper_source": source,
     }
 
 

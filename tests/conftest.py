@@ -37,6 +37,7 @@ _isolated_settings = Settings.from_env(
     calibration_save_path=_ISOLATED_REAL_PATH,
     calibration_sim_save_path=_ISOLATED_SIM_PATH,
     gripper_settle_s=0.0,
+    vision_settle_s=0.0,
 )
 set_settings(_isolated_settings)
 
@@ -270,6 +271,7 @@ def fake_live_session(messages: list[Any] | None = None) -> MagicMock:
     mock_session.is_connected = True
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
+    mock_session.send_text = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
     mock_session.disconnect = AsyncMock()
