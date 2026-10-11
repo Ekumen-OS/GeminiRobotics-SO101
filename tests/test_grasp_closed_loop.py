@@ -839,6 +839,7 @@ async def test_er2_locator_uses_generate_content_and_feeds_alignment() -> None:
         assert mock_session.client.aio.models.generate_content.call_count == 1
         gen_kwargs = mock_session.client.aio.models.generate_content.call_args.kwargs
         from robot.settings import get_settings
+
         assert gen_kwargs["model"] == get_settings().gemini_model_id
         assert len(gen_kwargs["contents"]) == 2
 
@@ -903,7 +904,9 @@ def test_hover_bias_correction_preserves_target_for_subsequent_descent() -> None
         "measured_offset": {"dy": 0.0, "dx": 0.0, "distance": 0.0},
     }
     with (
-        patch("agent.tools.image_point_to_xyz", return_value=np.array([0.2, 0.0, 0.05])) as mock_xyz,
+        patch(
+            "agent.tools.image_point_to_xyz", return_value=np.array([0.2, 0.0, 0.05])
+        ) as mock_xyz,
         patch(
             "agent.tools._measure_alignment",
             return_value=(aligned_perception, "aruco", dummy_img),
@@ -918,7 +921,7 @@ def test_hover_bias_correction_preserves_target_for_subsequent_descent() -> None
     # The recorded hover target remains [700, 500] (the object), NOT [730, 470]
     assert state.last_hover_target == [700.0, 500.0]
 
-    # 2. Descend to grasp at [700, 500] -> descent gate check matches last_hover_target within 35 units!
+    # 2. Descend to grasp at [700, 500] -> descent gate matches hover target within 35 units!
     with patch.dict(os.environ, {"DESCENT_GATE": "block"}):
         with patch(
             "agent.tools.image_point_to_xyz", return_value=np.array([0.2, 0.0, 0.0])
