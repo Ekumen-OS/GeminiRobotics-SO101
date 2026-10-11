@@ -4,7 +4,16 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 from robot.contracts import GraspClassification, VisualAlignmentResponse
 
-ErrorType = Literal["argument", "calibration", "perception", "hardware", "internal"]
+ErrorType = Literal[
+    "argument",
+    "calibration",
+    "perception",
+    "hardware",
+    "internal",
+    "descent_gate",
+    "transport_gate",
+    "retry_exhausted",
+]
 
 
 class ToolErrorResponse(TypedDict):
@@ -28,6 +37,11 @@ class MoveToSpatialPointResponse(TypedDict):
     error: NotRequired[str]
     error_type: NotRequired[ErrorType]
     robot_moved: NotRequired[bool]
+    applied_correction_1000: NotRequired[list[float] | None]
+    correction_note: NotRequired[str | None]
+    gripper_source: NotRequired[str | None]
+    grasp_verification: NotRequired[dict[str, Any] | None]
+    guardrail_warning: NotRequired[str | None]
 
 
 class GripperToolResponse(TypedDict):
