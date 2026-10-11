@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ import cv2
 import numpy as np
 
 from agent.contracts import GripperToolResponse, MoveToSpatialPointResponse
+from agent.guardrails import GuardrailState, decide_grasp
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS, PRESET_POSES
 from robot.contracts import GraspClassification, VisualAlignmentResponse
@@ -23,11 +25,16 @@ from robot.errors import (
 from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_compat, log_with_tag
-from robot.perception import compute_visual_alignment
+from robot.perception import compute_visual_alignment, verify_grasp_elevation
 from robot.registry import get_active_robot, set_active_robot
 from robot.settings import get_settings
 from robot.vision_detector import refine_point_to_nearest_object
 from vision import get_calibrator, get_model_targets, set_model_targets
+from vision.gripper_locator import (
+    GripperLocation,
+    locate_gripper_1000,
+    locate_gripper_kinematic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +49,11 @@ def build_move_spatial_response(
     visual_hint: str,
     perception: VisualAlignmentResponse | dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    applied_correction_1000: list[float] | None = None,
+    gripper_source: str | None = None,
+    grasp_verification: dict[str, Any] | None = None,
+    guardrail_warning: str | None = None,
+    correction_note: str | None = None,
 ) -> MoveToSpatialPointResponse:
     """Build a typed response payload for move_to_spatial_point tool execution."""
     resp: MoveToSpatialPointResponse = {
@@ -55,6 +67,18 @@ def build_move_spatial_response(
         resp["perception"] = perception
     if warnings:
         resp["warnings"] = warnings
+    if applied_correction_1000 is not None:
+        resp["applied_correction_1000"] = applied_correction_1000
+    elif correction_note is not None:
+        resp["applied_correction_1000"] = None
+    if correction_note is not None:
+        resp["correction_note"] = correction_note
+    if gripper_source is not None:
+        resp["gripper_source"] = gripper_source
+    if grasp_verification is not None:
+        resp["grasp_verification"] = grasp_verification
+    if guardrail_warning is not None:
+        resp["guardrail_warning"] = guardrail_warning
     return resp
 
 
@@ -230,6 +254,8 @@ class ToolContext:
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None
     status_callback: Callable[[str], None] | None = None
     mode: str | None = None
+    guardrail_state: GuardrailState | None = None
+    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -261,6 +287,51 @@ def _handle_send_message(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     return {"status": "success", "message": message_text}
 
 
+def _check_transport_gate(
+    ctx: ToolContext,
+    target_point: list[float] | None = None,
+) -> dict[str, Any] | None:
+    """Check transport gate condition for motion tools.
+
+    Args:
+        ctx: Tool execution context.
+        target_point: Optional [y, x] target coordinates if checking move_to_spatial_point.
+
+    Returns:
+        Error dictionary if transport gate blocks motion, None if allowed.
+    """
+    state = ctx.guardrail_state
+    if not state or not state.gripper_closed or state.transport_allowed:
+        return None
+
+    if target_point is not None:
+        is_far = True
+        if state.last_grasp_target is not None:
+            dist_to_grasp = math.hypot(
+                target_point[0] - state.last_grasp_target[0],
+                target_point[1] - state.last_grasp_target[1],
+            )
+            is_far = dist_to_grasp > 35.0
+        if not is_far:
+            return None
+    elif state.last_grasp_target is None:
+        return None
+
+    reason = state.last_grasp_reason or "unverified"
+    retry_n = max(1, state.retry_count)
+    err_text = (
+        f"Transport blocked: grasp not verified ({reason}). "
+        f"Open gripper, re-target, retry (attempt {retry_n} of 3)."
+    )
+    return {
+        "status": "error",
+        "error": err_text,
+        "error_type": "transport_gate",
+        "robot_moved": False,
+        "visual_hint": err_text,
+    }
+
+
 def _handle_move_to_pose(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     """Execute move_to_pose tool call.
 
@@ -271,6 +342,18 @@ def _handle_move_to_pose(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     Returns:
         Execution status response or error dictionary.
     """
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
+    gate_err = _check_transport_gate(ctx)
+    if gate_err is not None:
+        return gate_err
+
     robot = ctx.robot
     assert robot is not None
     qpos_deg = args.get("qpos", [])
@@ -298,6 +381,18 @@ def _handle_set_joint_positions(ctx: ToolContext, args: dict[str, Any]) -> dict[
     Returns:
         Execution status response or error dictionary.
     """
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
+    gate_err = _check_transport_gate(ctx)
+    if gate_err is not None:
+        return gate_err
+
     robot = ctx.robot
     assert robot is not None
     qpos_deg = args.get("qpos", [])
@@ -331,7 +426,9 @@ def _handle_get_joint_positions(ctx: ToolContext, args: dict[str, Any]) -> dict[
     return {"qpos_deg": qpos_deg}
 
 
-def _handle_open_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperToolResponse:
+def _handle_open_gripper(
+    ctx: ToolContext, args: dict[str, Any]
+) -> GripperToolResponse | dict[str, Any]:
     """Execute open_gripper tool call.
 
     Args:
@@ -341,6 +438,14 @@ def _handle_open_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperToolR
     Returns:
         GripperToolResponse payload.
     """
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
     robot = ctx.robot
     assert robot is not None
     qpos_rad = robot.get_joint_positions()
@@ -348,6 +453,10 @@ def _handle_open_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperToolR
     qpos_deg[5] = float(GRIPPER_OPEN_DEG)
     clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
     robot.move_to_pose(np.radians(clamped_qpos), duration_sec=0.5)
+
+    if ctx.guardrail_state is not None:
+        ctx.guardrail_state.open_gripper()
+
     reading = robot.read_gripper_state()
     aperture_deg = float(reading["aperture_deg"])
     return build_gripper_response(
@@ -359,7 +468,9 @@ def _handle_open_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperToolR
     )
 
 
-def _handle_close_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperToolResponse:
+def _handle_close_gripper(
+    ctx: ToolContext, args: dict[str, Any]
+) -> GripperToolResponse | dict[str, Any]:
     """Execute close_gripper tool call.
 
     Args:
@@ -369,8 +480,20 @@ def _handle_close_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperTool
     Returns:
         GripperToolResponse payload.
     """
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
     robot = ctx.robot
     assert robot is not None
+
+    if ctx.guardrail_state is not None and ctx.get_latest_jpeg_fn is not None:
+        ctx.guardrail_state.pre_grasp_frame = ctx.get_latest_jpeg_fn()
+
     qpos_rad = robot.get_joint_positions()
     qpos_deg = [float(v) for v in np.degrees(qpos_rad)]
     qpos_deg[5] = float(GRIPPER_CLOSE_DEG)
@@ -410,6 +533,20 @@ def _handle_close_gripper(ctx: ToolContext, args: dict[str, Any]) -> GripperTool
             "Gripper sensor unavailable; grasp NOT verified. Lift and inspect before transporting."
         )
 
+    if ctx.guardrail_state is not None:
+        ctx.guardrail_state.gripper_closed = True
+        ctx.guardrail_state.gripper_state = gripper_state
+        if ctx.guardrail_state.last_grasp_target is None:
+            ctx.guardrail_state.last_grasp_target = ctx.guardrail_state.last_hover_target or [
+                500.0,
+                500.0,
+            ]
+        if grasp["grasped"] is False:
+            ctx.guardrail_state.record_miss_or_unverified("closed_on_air")
+            ctx.guardrail_state.transport_allowed = False
+        else:
+            ctx.guardrail_state.transport_allowed = False
+
     return build_gripper_response(
         gripper_state=gripper_state,
         gripper_deg=float(grasp["aperture_deg"]),
@@ -430,6 +567,18 @@ def _handle_move_to_preset(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
     Returns:
         Execution status response or error dictionary.
     """
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
+    gate_err = _check_transport_gate(ctx)
+    if gate_err is not None:
+        return gate_err
+
     robot = ctx.robot
     assert robot is not None
     pose_name = args.get("pose_name", "HOME").upper()
@@ -590,24 +739,26 @@ def _update_target_overlay(
 
 def _measure_alignment(
     point: list[float],
-    get_latest_jpeg_fn: Callable[[], bytes | None] | None,
-) -> VisualAlignmentResponse | None:
+    ctx: ToolContext,
+) -> tuple[VisualAlignmentResponse | None, str, np.ndarray | None]:
     """Compute visual alignment relative to target in current frame.
+
+    Locates gripper using ArUco jaw tag, ER2 pointing (real mode), or FK fallback.
 
     Args:
         point: 2D image coordinates [y, x].
-        get_latest_jpeg_fn: Optional frame provider.
+        ctx: ToolContext containing frame provider and robot.
 
     Returns:
-        VisualAlignmentResponse if successfully computed, else None.
+        Tuple of (VisualAlignmentResponse or None, gripper_source string, frame_rgb or None).
 
     Raises:
         PerceptionUnavailable: If frame provider was supplied but returned None,
-            decoding failed, or alignment computation failed or returned None.
+            decoding failed, or alignment computation failed.
     """
-    if get_latest_jpeg_fn is None:
-        return None
-    raw_jpeg = get_latest_jpeg_fn()
+    if ctx.get_latest_jpeg_fn is None:
+        return None, "none", None
+    raw_jpeg = ctx.get_latest_jpeg_fn()
     if raw_jpeg is None:
         raise PerceptionUnavailable(
             "Camera frame unavailable for visual verification", robot_moved=True
@@ -619,21 +770,50 @@ def _measure_alignment(
             "Failed to decode camera frame for visual verification", robot_moved=True
         )
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    active_mode = resolve_robot_mode(ctx.robot, ctx.mode)
+    calib = get_calibrator(mode=active_mode)
+
+    # 1. Try jaw ArUco tag
+    loc = locate_gripper_1000(frame_rgb, calibrator=calib, robot=None, fallback_to_fk=False)
+
+    # 2. If not found, and real mode + ER2 enabled: query ER2 pointing
+    if loc is None and active_mode == "real" and get_settings().get_gripper_locator_er2():
+        if ctx.query_er2_locator_fn is not None:
+            try:
+                er2_dict = ctx.query_er2_locator_fn(raw_jpeg)
+                if er2_dict and "gripper_fingertips" in er2_dict:
+                    loc = GripperLocation(
+                        point_1000=er2_dict["gripper_fingertips"],
+                        source="er2",
+                        confidence=0.8,
+                    )
+            except Exception as e:
+                log_with_tag(logger, "WARN", f"ER2 pointing query failed: {e}")
+
+    # 3. If still not found: fallback to FK
+    if loc is None and calib is not None and ctx.robot is not None:
+        loc = locate_gripper_kinematic(calib, ctx.robot, frame_shape=frame_rgb.shape[:2])
+
+    gripper_pt = loc.point_1000 if loc else None
+    gripper_source = loc.source if loc else "none"
+
     try:
         perception_res = compute_visual_alignment(
             frame_rgb=frame_rgb,
             target_point_1000=point,
+            gripper_point_1000=gripper_pt,
             tolerance=get_settings().alignment_tolerance_px,
-            calibrator=get_calibrator(),
+            calibrator=calib,
+            gripper_source=gripper_source,
         )
     except Exception as e:
         if isinstance(e, PerceptionUnavailable):
             e.robot_moved = True
             raise e
         raise PerceptionUnavailable(f"Perception computation failed: {e}", robot_moved=True) from e
-    if perception_res is None:
-        raise PerceptionUnavailable("Visual alignment could not be computed", robot_moved=True)
-    return perception_res
+
+    return perception_res, gripper_source, frame_rgb
 
 
 def _handle_move_to_spatial_point(
@@ -663,26 +843,108 @@ def _handle_move_to_spatial_point(
         log_with_tag(logger, "ERROR", err_msg)
         raise ToolArgumentError(err_msg, robot_moved=False)
 
-    point, matched_obj = _refine_point(point, ctx.get_latest_jpeg_fn)
-
     z_height_cm = float(args.get("z_height_cm", 3.0))
     # Clamp height to reasonable safety bounds [0.0cm, 20.0cm]
     z_height_cm = max(0.0, min(20.0, z_height_cm))
+
+    # 1. Escalation check
+    if ctx.guardrail_state and ctx.guardrail_state.escalated:
+        return {
+            "status": "error",
+            "error": "Grasp failed 3 times — waiting for the user.",
+            "error_type": "retry_exhausted",
+            "robot_moved": False,
+        }
+
+    # 2. Transport gate check:
+    gate_err = _check_transport_gate(ctx, target_point=point)
+    if gate_err is not None:
+        return gate_err
+
+    # 3. Descent gate check:
+    # If moving to contact height (z < 3.0 cm), latest hover measurement
+    # within 35 units must exist and be aligned
+    guardrail_warning = None
+    if z_height_cm < 3.0:
+        mode = resolve_robot_mode(robot, ctx.mode)
+        gate_policy = get_settings().get_descent_gate(mode)
+
+        if gate_policy != "off":
+            has_hover = False
+            if ctx.guardrail_state and ctx.guardrail_state.last_hover_target is not None:
+                dist_to_hover = math.hypot(
+                    point[0] - ctx.guardrail_state.last_hover_target[0],
+                    point[1] - ctx.guardrail_state.last_hover_target[1],
+                )
+                if dist_to_hover <= 35.0 and ctx.guardrail_state.last_hover_is_aligned is not None:
+                    has_hover = True
+
+            if not has_hover:
+                err_text = (
+                    "No visual alignment measurement at hover. Must hover (z>=3cm) and verify "
+                    "alignment before descending."
+                )
+                return {
+                    "status": "error",
+                    "error": err_text,
+                    "error_type": "perception",
+                    "robot_moved": False,
+                    "visual_hint": "Hover (z>=3cm) and observe target alignment before descending.",
+                }
+
+            if ctx.guardrail_state and ctx.guardrail_state.last_hover_is_aligned is False:
+                offset = ctx.guardrail_state.last_hover_offset or [0.0, 0.0]
+                if gate_policy == "block":
+                    corr_hint = (
+                        f"Re-issue the same target [{point[0]:.0f}, {point[1]:.0f}]; "
+                        f"the controller applies the measured correction "
+                        f"[{offset[0]:.1f}, {offset[1]:.1f}] automatically."
+                    )
+                    err_text = (
+                        f"Descent blocked by descent_gate: gripper is misaligned with target by "
+                        f"[dy={offset[0]:.1f}, dx={offset[1]:.1f}] units. {corr_hint}"
+                    )
+                    return {
+                        "status": "error",
+                        "error": err_text,
+                        "error_type": "descent_gate",
+                        "robot_moved": False,
+                        "visual_hint": (
+                            f"Descent blocked: misaligned by "
+                            f"[dy={offset[0]:.1f}, dx={offset[1]:.1f}]. {corr_hint}"
+                        ),
+                    }
+                elif gate_policy == "warn":
+                    guardrail_warning = (
+                        "Gripper was misaligned at hover; descending anyway per DESCENT_GATE=warn."
+                    )
+
+    # 4. Target refinement on requested point, then bias correction (Fix 1)
+    target_point, matched_obj = _refine_point(point, ctx.get_latest_jpeg_fn)
+
+    arm_point = target_point
+    applied_corr = None
+    corr_note = None
+    if ctx.guardrail_state is not None:
+        arm_point, applied_corr, corr_note = ctx.guardrail_state.corrector.consume_correction(
+            target_point
+        )
+
     hover_z = z_height_cm / 100.0
     target_xyz = image_point_to_xyz(
-        point,
+        arm_point,
         hover_z=hover_z,
         mode=resolve_robot_mode(robot, ctx.mode),
     )
     log_with_tag(
         logger,
         "EXEC",
-        f"move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
+        f"move_to_spatial_point: image [{arm_point[0]:.0f}, {arm_point[1]:.0f}] "
         f"(z={z_height_cm:.1f}cm, approach={approach}) → XYZ "
         f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]",
     )
 
-    _update_target_overlay(point, z_height_cm, approach, args.get("label"), matched_obj)
+    _update_target_overlay(target_point, z_height_cm, approach, args.get("label"), matched_obj)
 
     # Use current joints as IK seed for smooth continuation
     current_rad = robot.get_joint_positions()
@@ -702,15 +964,129 @@ def _handle_move_to_spatial_point(
     qpos_rad = np.radians(clamped_qpos)
     robot.move_to_pose(qpos_rad, duration_sec=1.5)
 
-    perception_res = _measure_alignment(point, ctx.get_latest_jpeg_fn)
+    perception_res, gripper_source, frame_rgb = _measure_alignment(target_point, ctx)
 
-    if z_height_cm >= 3.0:
-        visual_hint = (
-            "Arm reached hover position (z>=3cm). "
-            "Visual Verification Loop: Inspect the new camera frame, identify gripper "
-            "position [y_g, x_g] vs target [y_t, x_t], state the relative error [dy, dx], "
-            "and correct or confirm alignment before descending."
+    # Update hover or contact state in guardrail
+    if z_height_cm >= 3.0 and ctx.guardrail_state is not None:
+        ctx.guardrail_state.last_hover_target = [target_point[0], target_point[1]]
+        ctx.guardrail_state.last_hover_is_aligned = (
+            perception_res.get("is_aligned") if perception_res else None
         )
+        mo = perception_res.get("measured_offset") if perception_res else None
+        if mo is not None:
+            offset = [mo["dy"], mo["dx"]]
+            ctx.guardrail_state.last_hover_offset = offset
+            ctx.guardrail_state.corrector.record_hover(target_point, offset)
+        else:
+            ctx.guardrail_state.last_hover_offset = None
+    elif z_height_cm < 3.0 and ctx.guardrail_state is not None:
+        ctx.guardrail_state.last_grasp_target = [target_point[0], target_point[1]]
+
+    # 5. Lift verification (Task 3)
+    is_lift = (
+        z_height_cm >= 3.0
+        and ctx.guardrail_state is not None
+        and ctx.guardrail_state.gripper_closed
+        and ctx.guardrail_state.last_grasp_target is not None
+        and math.hypot(
+            target_point[0] - ctx.guardrail_state.last_grasp_target[0],
+            target_point[1] - ctx.guardrail_state.last_grasp_target[1],
+        )
+        <= 35.0
+    )
+    grasp_verification = None
+    if is_lift and ctx.guardrail_state is not None:
+        # Re-check aperture post-lift
+        reading = robot.read_gripper_state()
+        grasp_class = classify_grasp(reading, get_settings())
+        aperture_vote = grasp_class["grasped"]
+        elevation_vote: bool | None
+
+        if aperture_vote is False:
+            elevation_vote = False
+            verdict_obj = decide_grasp(aperture_grasped=False, elevation_grasped=False)
+        else:
+            if ctx.guardrail_state.pre_grasp_frame is None or frame_rgb is None:
+                elevation_vote = None
+            else:
+                pre_bgr = cv2.imdecode(
+                    np.frombuffer(ctx.guardrail_state.pre_grasp_frame, np.uint8),
+                    cv2.IMREAD_COLOR,
+                )
+                if pre_bgr is None:
+                    elevation_vote = None
+                else:
+                    pre_rgb = cv2.cvtColor(pre_bgr, cv2.COLOR_BGR2RGB)
+                    calib = get_calibrator(mode=resolve_robot_mode(robot, ctx.mode))
+                    try:
+                        elev_res = verify_grasp_elevation(
+                            pre_lift_frame_rgb=pre_rgb,
+                            post_lift_frame_rgb=frame_rgb,
+                            target_point_1000=ctx.guardrail_state.last_grasp_target,
+                            calibrator=calib,
+                        )
+                        elevation_vote = elev_res["grasped"]
+                    except PerceptionUnavailable:
+                        elevation_vote = None
+
+            verdict_obj = decide_grasp(
+                aperture_grasped=aperture_vote,
+                elevation_grasped=elevation_vote,
+            )
+
+        ctx.guardrail_state.transport_allowed = verdict_obj.transport_allowed
+        grasp_verification = verdict_obj.to_dict()
+        if not verdict_obj.transport_allowed:
+            ctx.guardrail_state.record_miss_or_unverified(verdict_obj.reason)
+
+    # Construct honest visual hints reporting measurements or unverified
+    if is_lift and grasp_verification is not None:
+        if grasp_verification["verdict"] == "confirmed":
+            visual_hint = (
+                f"Lift complete (z={z_height_cm:.1f}cm). Grasp confirmed by gripper sensor "
+                "and visual elevation verification. Transport allowed."
+            )
+        elif grasp_verification["verdict"] == "missed":
+            visual_hint = (
+                f"Lift complete (z={z_height_cm:.1f}cm). Grasp missed "
+                f"({grasp_verification['reason']}). Transport blocked. Open gripper, hover, "
+                "re-target, and retry."
+            )
+        else:
+            visual_hint = (
+                f"Lift complete (z={z_height_cm:.1f}cm). Grasp unverified "
+                f"({grasp_verification['reason']}). Transport blocked. Open gripper, hover, "
+                "re-target, and retry."
+            )
+    elif z_height_cm >= 3.0:
+        if perception_res and perception_res.get("is_aligned") is True:
+            mo = perception_res.get("measured_offset")
+            dy = mo["dy"] if mo else 0.0
+            dx = mo["dx"] if mo else 0.0
+            visual_hint = (
+                f"Arm reached hover position (z={z_height_cm:.1f}cm). "
+                f"Visual Verification Loop: Measured alignment confirmed "
+                f"(offset [dy={dy:.1f}, dx={dx:.1f}]). Ready for descent."
+            )
+        elif perception_res and perception_res.get("is_aligned") is False:
+            mo = perception_res.get("measured_offset")
+            dy = mo["dy"] if mo else 0.0
+            dx = mo["dx"] if mo else 0.0
+            visual_hint = (
+                f"Arm reached hover position (z={z_height_cm:.1f}cm). "
+                f"Visual Verification Loop: Measured misalignment "
+                f"(offset [dy={dy:.1f}, dx={dx:.1f}]). "
+                f"Re-issue the same target [{target_point[0]:.0f}, {target_point[1]:.0f}]; "
+                f"the controller applies the measured correction "
+                f"[{dy:.1f}, {dx:.1f}] automatically."
+            )
+        else:
+            visual_hint = (
+                f"Arm reached hover position (z={z_height_cm:.1f}cm). "
+                "Visual Verification Loop: Alignment unverified (gripper not detected). "
+                "Inspect camera frame, evaluate relative error [dy, dx], "
+                "and re-observe before descending."
+            )
     else:
         visual_hint = (
             f"Arm reached contact height (z={z_height_cm:.1f}cm). Visually verify gripper "
@@ -724,6 +1100,11 @@ def _handle_move_to_spatial_point(
         visual_hint=visual_hint,
         perception=perception_res,
         warnings=warnings if warnings else None,
+        applied_correction_1000=applied_corr,
+        gripper_source=gripper_source,
+        grasp_verification=grasp_verification,
+        guardrail_warning=guardrail_warning,
+        correction_note=corr_note,
     )
 
 
@@ -994,6 +1375,8 @@ async def execute_tool_call(
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
     mode: str | None = None,
+    guardrail_state: GuardrailState | None = None,
+    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None,
 ) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Dispatch tool call to the RobotInterface asynchronously.
 
@@ -1004,6 +1387,8 @@ async def execute_tool_call(
         status_callback: Optional callable for streaming status messages to UI.
         mode: Operational mode ('real' or 'sim') selecting the workspace calibration. When
             None it is taken from ``robot.mode``.
+        guardrail_state: Optional GuardrailState for closed-loop safety gating.
+        query_er2_locator_fn: Optional callable for ER2 visual pointing queries.
 
     Returns:
         A dictionary containing the response result to be sent back to Gemini.
@@ -1034,6 +1419,8 @@ async def execute_tool_call(
         get_latest_jpeg_fn=get_latest_jpeg_fn,
         status_callback=status_callback,
         mode=mode,
+        guardrail_state=guardrail_state,
+        query_er2_locator_fn=query_er2_locator_fn,
     )
 
     try:
@@ -1090,6 +1477,8 @@ def execute_tool_call_sync(
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     status_callback: Callable[[str], None] | None = None,
     mode: str | None = None,
+    guardrail_state: GuardrailState | None = None,
+    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None,
 ) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Synchronous convenience wrapper for execute_tool_call."""
     try:
@@ -1109,6 +1498,8 @@ def execute_tool_call_sync(
                     get_latest_jpeg_fn=get_latest_jpeg_fn,
                     status_callback=status_callback,
                     mode=mode,
+                    guardrail_state=guardrail_state,
+                    query_er2_locator_fn=query_er2_locator_fn,
                 ),
             ).result()
     else:
@@ -1119,5 +1510,7 @@ def execute_tool_call_sync(
                 get_latest_jpeg_fn=get_latest_jpeg_fn,
                 status_callback=status_callback,
                 mode=mode,
+                guardrail_state=guardrail_state,
+                query_er2_locator_fn=query_er2_locator_fn,
             )
         )
