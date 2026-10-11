@@ -1,5 +1,6 @@
 """Cartesian Inverse Kinematics (IK) solver for the SO-101 robot arm."""
 
+import threading
 from pathlib import Path
 
 import mujoco
@@ -27,6 +28,7 @@ class CartesianIK:
         if xml_path is None:
             xml_path = Path(__file__).parent.parent / "simulation" / "assets" / "scene.xml"
 
+        self._lock = threading.RLock()
         self.model = mujoco.MjModel.from_xml_path(str(xml_path))
         self.data = mujoco.MjData(self.model)
 
@@ -46,6 +48,23 @@ class CartesianIK:
             self.site_id = self.model.site("gripperframe").id
         except KeyError:
             self.site_id = self.model.site("end_effector").id
+
+    def forward_kinematics(self, qpos_rad: np.ndarray) -> np.ndarray:
+        """Compute Cartesian position of the end-effector site from joint angles.
+
+        Args:
+            qpos_rad: Array of 5 or 6 joint angles in radians.
+
+        Returns:
+            Cartesian [X, Y, Z] coordinate array in meters in robot base frame.
+        """
+        with self._lock:
+            target_ids = self.all_joint_ids if len(qpos_rad) >= 6 else self.joint_ids
+            for i, j_id in enumerate(target_ids):
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                self.data.qpos[qpos_adr] = qpos_rad[i]
+            mujoco.mj_kinematics(self.model, self.data)
+            return self.data.site_xpos[self.site_id].copy()
 
     def solve_ik(
         self,
@@ -80,6 +99,33 @@ class CartesianIK:
         Returns:
             A numpy array of 6 joint angles in radians (including gripper angle).
         """
+        with self._lock:
+            return self._solve_ik_impl(
+                target_pos=target_pos,
+                target_mat=target_mat,
+                initial_qpos=initial_qpos,
+                nominal_qpos=nominal_qpos,
+                preserve_orientation=preserve_orientation,
+                approach=approach,
+                max_iters=max_iters,
+                tol=tol,
+                damping=damping,
+                null_weight=null_weight,
+            )
+
+    def _solve_ik_impl(
+        self,
+        target_pos: np.ndarray,
+        target_mat: np.ndarray | None = None,
+        initial_qpos: np.ndarray | None = None,
+        nominal_qpos: np.ndarray | None = None,
+        preserve_orientation: bool = False,
+        approach: str = "top_down",
+        max_iters: int = 200,
+        tol: float = 1e-4,
+        damping: float = 1e-3,
+        null_weight: float = 1e-3,
+    ) -> np.ndarray:
         if initial_qpos is not None:
             target_ids = self.all_joint_ids if len(initial_qpos) >= 6 else self.joint_ids
             for i, j_id in enumerate(target_ids):

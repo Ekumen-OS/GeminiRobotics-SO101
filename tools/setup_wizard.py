@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from robot.calibration import ArucoWorkspaceCalibrator, _get_default_config_path
-from tools.calibration_sheet import generate_aruco_markers, generate_calibration_sheet
+from tools.calibration_sheet import (
+    generate_aruco_markers,
+    generate_calibration_sheet,
+    generate_jaw_tag_sheet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +167,15 @@ def setup_workspace_interactive(
     if not should_reuse:
         # Generate individual marker PNGs
         print(f"\n📦 Generating printable ArUco markers into '{output_dir}'...")
-        created_markers = generate_aruco_markers(output_dir=output_dir)
+        created_markers = generate_aruco_markers(output_dir=output_dir, marker_ids=[0, 1, 2, 3, 10])
 
         # Generate all-in-one calibration mat sheet
         created_sheet = generate_calibration_sheet(
             config_data=updated_config, output_dir=output_dir
         )
+
+        # Generate 15mm printable jaw tag sheet
+        created_jaw_sheet = generate_jaw_tag_sheet(output_dir=output_dir)
 
         print("\n" + "=" * 65)
         print("🎉 WORKSPACE SETUP & MARKER GENERATION COMPLETE!")
@@ -177,6 +184,7 @@ def setup_workspace_interactive(
         for mf in created_markers:
             print(f"  • Individual Marker : {mf}")
         print(f"  • Full Printable Mat: {created_sheet}")
+        print(f"  • Jaw Tag Sheet     : {created_jaw_sheet}")
     else:
         print("\n" + "=" * 65)
         print("🎉 WORKSPACE DIMENSIONS UPDATED SUCCESSFULLY!")

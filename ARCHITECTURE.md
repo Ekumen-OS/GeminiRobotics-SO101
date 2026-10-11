@@ -65,15 +65,15 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F2** | Homography & Lateral Axis Parity | `config/workspace_homography.npz`, `config/workspace_homography_sim.npz`, `robot/calibration.py` | Lateral $Y$-axis parity guaranteed between real and simulation frames. Target `[760, 484]` maps to $X \approx 0.197$ m, $Y \approx +0.145$ m, yielding inward shoulder pan ($\approx -42^\circ$) inside camera FOV. |
 | **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `vision/calibrator.py`, `robot/registry.py` | `execute_tool_call` receives the controller's `mode` explicitly and otherwise reads `robot.mode` (`resolve_robot_mode`); `image_point_to_xyz` then loads the matching homography. No duck-typing on rendering methods. |
 | **F4** | Reachability & FOV Kinematic Grounding | `robot/cartesian_ik.py`, `robot/calibration.py` | All normalized coordinates $[y, x] \in [0, 1000]$ within the calibrated mat map to collision-free Cartesian poses ($r \le 391$ mm) contained within the camera FOV. |
-| **F5** | Programmatic Perception Metrics Engine | `robot/perception.py`, `robot/vision_detector.py` | Programmatic extraction of measured gripper $[y_g, x_g]$, target $[y_t, x_t]$, relative offset $[dy, dx]$, Euclidean distance, alignment status, and post-lift elevation check. |
-| **F6** | Tool Execution Feedback Enrichment | `agent/tools.py` | `move_to_spatial_point`, `close_gripper`, and `open_gripper` return payloads enriched with verified perceptual measurements and context-sensitive visual hints. |
-| **F7** | Anti-Hallucination Descent Gate | `agent/vla_controller.py`, `agent/tools.py` | Strict controller verification: prevents descent ($z < 3.0$ cm) when measured offset exceeds tolerance ($|dy| > 25$ or $|dx| > 25$), mandating corrective hover moves. |
-| **F8** | Anti-Hallucination Transport Gate & Retry Loop | `agent/vla_controller.py` | Blocks transport if target object remains detected on tabletop post-lift. Enforces an automated retry loop (up to 3 attempts) before escalating to the user. |
+| **F5** | Programmatic Perception Metrics & Gripper Locator Engine | `vision/gripper_locator.py`, `robot/perception.py`, `robot/cartesian_ik.py` | Honest visual gripper locator and perception engine. Locates gripper $[y_g, x_g]$ via jaw ArUco tag 10 in both modes whenever a frame exists, falling back to ER2 pointing query (when `GRIPPER_LOCATOR_ER2=1` in real mode) or forward kinematics (`robot/cartesian_ik.py`). Reports explicit `gripper_source` provenance (`"aruco"`, `"er2"`, `"kinematic"`, or `"none"`), relative offset $[dy, dx]$, and alignment status. |
+| **F6** | Tool Execution Feedback Enrichment & Bias Correction | `agent/tools.py`, `agent/guardrails.py` | `move_to_spatial_point` returns honest alignment and applies one-shot bias correction $P_{\text{corr}} = P + \text{offset}$ (clamped to $\pm 60$ units, reported as `applied_correction_1000`) at descent when hovering above target. `close_gripper` returns dual-evidence grasp classification (`closed`, `closed_empty`, `closed_unverified`); lift motions evaluate post-lift grasp verification with dual votes and multi-modal verdict. |
+| **F7** | Anti-Hallucination Descent Gate | `agent/tools.py`, `agent/guardrails.py` | Enforces alignment before descending ($z < 3.0$ cm). Evaluates `DESCENT_GATE` policy (`warn` vs `block` vs `off`). In sim defaults to `block` (and in real to `warn`). Rejects unaligned descents ($|dy| > 25$ or $|dx| > 25$) or descents attempted without hovering first with `error_type="descent_gate"` and `robot_moved=False`. |
+| **F8** | Anti-Hallucination Transport Gate & Retry Loop | `agent/tools.py`, `agent/vla_controller.py`, `agent/guardrails.py` | Blocks transport motions ($z \ge 3.0$ cm and lateral distance $> 35$ units from grasp location) when grasp verdict is not `grasped` (or empty air closure occurred, or elevation check confirmed object on table) with `error_type="transport_gate"` and `robot_moved=False`. Enforces automated 3-strike retry loop before conversational escalation to user with `error_type="retry_exhausted"`. |
 | **F9** | Clean Diagnostic Logging & UI Separation | `agent/vla_controller.py`, `agent/tools.py`, `ui/components/chat.py` | Standardized ISO-8601 millisecond logs routed to `sys.stdout`/`sys.stderr`. Raw JSON payloads, IK solver iterations, and tracebacks are excluded from Chatbot viewport. |
 | **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
-| **F13**| Physical Grasp Sensor & Classification | `robot/grasp.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry. Pure classifier `classify_grasp` detects jaw stall vs empty air closure with configurable margins and fail-closed safety. |
+| **F13**| Physical Grasp Sensor, Multi-Modal Decision & Elevation Verification | `robot/grasp.py`, `agent/guardrails.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry combined with visual elevation change (`decide_grasp`). Dual-evidence agreement produces unambiguous `grasped` or `empty_dropped` verdicts, while sensor or vision unavailability yields fail-closed unverified states that block transport. |
 | **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/errors.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
 
 ---
@@ -98,10 +98,11 @@ Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py
 
 - **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=None, calibrator=None) -> VisualAlignmentResponse`**:
   - **Typed contract:** [`VisualAlignmentResponse`](robot/contracts.py) (incorporates [`MeasuredOffset`](robot/contracts.py)).
+  - **Fail-Closed Invariant:** When perception fails to locate target or gripper and no fallback is valid, raises `PerceptionUnavailable`.
 - **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0, calibrator=None) -> GraspElevationResponse`**:
   - `calibrator` (both functions): the `ArucoWorkspaceCalibrator` used to mask detection to the workspace polygon. `robot/` never fetches it itself; `agent/tools.py` passes `vision.get_calibrator()`.
   - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
-  - **Fail-Closed Invariant:** If detector raises an exception on either frame, returns `object_elevated=None, object_detected_on_table=False, grasped=None, confidence=0.0`. Never returns fail-open `True`.
+  - **Fail-Closed Invariant:** When detection or frame decoding fails, raises `PerceptionUnavailable`. Tools catch this at the lift and record `grasp_verification.reason="perception_unavailable"` while blocking downstream transport motions.
 
 ### 3.3. Tool Registry & Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
 
@@ -120,7 +121,7 @@ and the model's behavioral prompt.
 Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py`](agent/contracts.py):
 
 - **`move_to_spatial_point` Return Payload**:
-  - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`VisualAlignmentResponse`](robot/contracts.py) under `perception`).
+  - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`VisualAlignmentResponse`](robot/contracts.py) under `perception`, `applied_correction_1000`, and `grasp_verification`).
 - **`close_gripper` / `open_gripper` Return Payload**:
   - **Typed contract:** [`GripperToolResponse`](agent/contracts.py).
   - Incorporates measured `gripper_state` (`"open"`, `"closed"`, `"closed_empty"`, or `"closed_unverified"`), measured `gripper_deg`, context-sensitive `visual_hint`, and optional [`GraspClassification`](robot/contracts.py) under `grasp`:
@@ -133,9 +134,9 @@ Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py
   - **Typed contract:** [`ToolErrorResponse`](agent/contracts.py).
   - Schema:
     - `error: str`: Human-readable description of the failure cause.
-    - `error_type: Literal["argument", "calibration", "perception", "hardware", "internal"]`: Machine-readable classification of the failure subsystem.
+    - `error_type: Literal["argument", "calibration", "perception", "hardware", "internal", "descent_gate", "transport_gate", "retry_exhausted"]`: Machine-readable classification of the failure subsystem or guardrail trigger.
     - `robot_moved: bool`: Honest indication of whether physical robot actuators moved prior to or during the failure.
-  - When hardware failures occur (`error_type="hardware"`), the executor immediately halts physical motion (`robot.interrupt()`) before returning the error payload.
+  - When hardware failures occur (`error_type="hardware"`), the executor immediately halts physical motion (`robot.interrupt()`) before returning the error payload. Guardrail gate rejections (`descent_gate`, `transport_gate`) guarantee `robot_moved=False`.
 
 ### 3.4. Failure Policy: Block and Inform
 
@@ -148,6 +149,15 @@ When an operational, perceptual, or hardware boundary fails, the system strictly
   raise `CalibrationUnavailable`, rejecting spatial motions rather than executing open-loop guesses.
 - **Perception Failures**: Camera frame decoding errors or detection failures raise
   `PerceptionUnavailable` rather than falling back to synthetic successes or comforting defaults.
+- **Descent Gate Rejection (`error_type="descent_gate"`)**: Vertical descent ($z < 3.0$ cm) attempted
+  without prior hover observation or when measured offset exceeds tolerance ($|dy| > 25$ or $|dx| > 25$)
+  is blocked under `DESCENT_GATE=block` (or warned under `warn`). Motion is rejected with `robot_moved=False`.
+- **Transport Gate Rejection (`error_type="transport_gate"`)**: Lateral transport motions attempting to
+  move an unverified or empty grasp ($z \ge 3.0$ cm, distance $> 35$ units from grasp location) are strictly
+  rejected with `robot_moved=False`.
+- **Retry Exhaustion Escalation (`error_type="retry_exhausted"`)**: When automated multi-turn retry attempts
+  reach the strike limit (3 consecutive failed grasps), the controller halts arm motion and returns
+  an escalation failure to Gemini to converse with and notify the human operator.
 - **Vision Stream Integrity**: Real-mode camera streams NEVER serve simulated or placeholder
   frames when physical cameras disconnect or buffers empty (`get_latest_raw_jpeg()` returns `None`).
 - **Model Grounding**: Failure payloads are returned to Gemini with typed `error_type` and

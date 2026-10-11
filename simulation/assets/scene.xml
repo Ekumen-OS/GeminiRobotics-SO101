@@ -17,10 +17,12 @@
         <texture type="2d" name="tex_marker_1" file="../../assets/aruco_markers/marker_1.png" />
         <texture type="2d" name="tex_marker_2" file="../../assets/aruco_markers/marker_2.png" />
         <texture type="2d" name="tex_marker_3" file="../../assets/aruco_markers/marker_3.png" />
+        <texture type="2d" name="tex_marker_10" file="../../assets/aruco_markers/marker_10.png" />
         <material name="mat_marker_0" texture="tex_marker_0" specular="0" shininess="0" />
         <material name="mat_marker_1" texture="tex_marker_1" specular="0" shininess="0" />
         <material name="mat_marker_2" texture="tex_marker_2" specular="0" shininess="0" />
         <material name="mat_marker_3" texture="tex_marker_3" specular="0" shininess="0" />
+        <material name="mat_marker_10" texture="tex_marker_10" specular="0" shininess="0" />
         <material name="mat_boundary" rgba="0.0 0.85 1.0 0.9" specular="0.1" />
     </asset>
 
