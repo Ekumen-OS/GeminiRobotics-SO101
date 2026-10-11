@@ -61,6 +61,20 @@ def make_synthetic_red_cube_frame(
     return frame
 
 
+@pytest.fixture(autouse=True)
+def configure_perception_guardrails_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure perception guardrails environment for tests in this module."""
+    monkeypatch.setenv("DESCENT_GATE", "off")
+
+
+@pytest.fixture
+def mock_robot_with_object() -> MockRobot:
+    """MockRobot that reports an object in the jaws for scripted T4 tests."""
+    robot = MockRobot()
+    robot.gripper_reading = {"aperture_deg": 25.0, "load": 150.0, "source": "measured"}
+    return robot
+
+
 # ==============================================================================
 # TIER 1: ISOLATED FEATURE COVERAGE (F5, F6, F7, F8, F9)
 # ==============================================================================
@@ -782,6 +796,7 @@ async def test_t3_cross_feature_multi_turn_two_step_alignment() -> None:
 async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     """Real-World Scenario 4: Full pick, lift, transport and release sequence."""
     robot = MockRobot()
+    robot.gripper_reading = {"aperture_deg": 25.0, "load": 150.0, "source": "measured"}
     controller = VLAController(mode="sim", robot=robot)
     controller._api_available = True
 
