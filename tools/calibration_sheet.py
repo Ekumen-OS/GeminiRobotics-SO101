@@ -353,3 +353,121 @@ def generate_calibration_sheet(
     cv2.imwrite(str(sheet_file), canvas)
     logger.info(f"[ArUco] Generated true-to-scale calibration sheet: {sheet_file}")
     return sheet_file
+
+
+def generate_jaw_tag_sheet(
+    output_dir: str | Path = "assets/aruco_markers",
+    marker_id: int = 10,
+    tag_size_mm: float = 15.0,
+    dpi: int = 300,
+    dictionary_name: str = "DICT_4X4_50",
+) -> Path:
+    """Generate a printable 1:1 scale jaw ArUco marker sheet.
+
+    Creates a clean printable page with cutting guides and instructions for
+    mounting the 15 mm ArUco marker (ID 10) on the fixed gripper jaw.
+
+    Args:
+        output_dir: Directory where the sheet PNG will be saved.
+        marker_id: Marker ID to generate. Defaults to 10.
+        tag_size_mm: Physical side length of marker in millimeters. Defaults to 15.0.
+        dpi: Print resolution in dots per inch. Defaults to 300 DPI.
+        dictionary_name: ArUco dictionary identifier string.
+
+    Returns:
+        Path to the generated jaw tag sheet PNG file.
+    """
+    out_p = Path(output_dir)
+    out_p.mkdir(parents=True, exist_ok=True)
+
+    w_px = int(round((210.0 / 25.4) * dpi))
+    h_px = int(round((297.0 / 25.4) * dpi))
+    canvas = np.full((h_px, w_px, 3), 255, dtype=np.uint8)
+
+    dict_attr = getattr(cv2.aruco, dictionary_name, cv2.aruco.DICT_4X4_50)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dict_attr)
+    tag_size_px = int(round((tag_size_mm / 25.4) * dpi))
+    marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, tag_size_px)
+    marker_rgb = cv2.cvtColor(marker_img, cv2.COLOR_GRAY2RGB)
+
+    cx = w_px // 2
+    cy = int(h_px * 0.3)
+    x1 = cx - tag_size_px // 2
+    y1 = cy - tag_size_px // 2
+    canvas[y1 : y1 + tag_size_px, x1 : x1 + tag_size_px] = marker_rgb
+
+    cut_pad_px = int(round((5.0 / 25.4) * dpi))
+    bx1 = x1 - cut_pad_px
+    by1 = y1 - cut_pad_px
+    bx2 = x1 + tag_size_px + cut_pad_px
+    by2 = y1 + tag_size_px + cut_pad_px
+    cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (180, 180, 180), 1, cv2.LINE_AA)
+
+    ruler_len_px = int(round((50.0 / 25.4) * dpi))
+    rx = cx - ruler_len_px // 2
+    ry = cy + tag_size_px // 2 + int(round((25.0 / 25.4) * dpi))
+    cv2.line(canvas, (rx, ry), (rx + ruler_len_px, ry), (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.line(canvas, (rx, ry - 10), (rx, ry + 10), (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.line(
+        canvas,
+        (rx + ruler_len_px, ry - 10),
+        (rx + ruler_len_px, ry + 10),
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(
+        canvas,
+        "SO-101 Gripper Jaw ArUco Tag (15 mm, ID 10)",
+        (cx - 280, int(h_px * 0.15)),
+        font,
+        0.8,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "50 mm Scale Line (must measure exactly 50 mm when printed at 100%)",
+        (rx - 80, ry + 25),
+        font,
+        0.45,
+        (60, 60, 60),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "Mounting Instructions:",
+        (cx - 250, ry + 70),
+        font,
+        0.6,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    instructions = [
+        "1. Print this sheet at 100% scale (no fit-to-page / borderless).",
+        "2. Verify the 50 mm line with a physical ruler.",
+        "3. Cut out the 15 mm ArUco marker along the inner border.",
+        "4. Affix marker flat to top face of fixed jaw facing overhead camera.",
+        "5. Calibrate GRIPPER_TAG_OFFSET_PX if needed.",
+    ]
+    for idx, inst in enumerate(instructions):
+        cv2.putText(
+            canvas,
+            inst,
+            (cx - 240, ry + 105 + idx * 30),
+            font,
+            0.45,
+            (50, 50, 50),
+            1,
+            cv2.LINE_AA,
+        )
+
+    sheet_file = out_p / "jaw_tag_sheet.png"
+    cv2.imwrite(str(sheet_file), canvas)
+    logger.info(f"[ArUco] Generated jaw tag sheet: {sheet_file}")
+    return sheet_file
