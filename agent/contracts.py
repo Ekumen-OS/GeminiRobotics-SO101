@@ -2,7 +2,7 @@
 
 from typing import Any, Literal, NotRequired, TypedDict
 
-from robot.contracts import GraspClassification, VisualAlignmentResponse
+from robot.contracts import AlignmentMeasurement, GraspClassification
 
 ErrorType = Literal[
     "argument",
@@ -31,17 +31,18 @@ class MoveToSpatialPointResponse(TypedDict):
     target_xyz_m: NotRequired[list[float]]
     executed_qpos_deg: NotRequired[list[float]]
     approach: NotRequired[str]
-    perception: NotRequired[VisualAlignmentResponse | dict[str, Any]]
+    perception: NotRequired[AlignmentMeasurement | dict[str, Any]]
     visual_hint: NotRequired[str]
     warnings: NotRequired[list[str]]
     error: NotRequired[str]
     error_type: NotRequired[ErrorType]
     robot_moved: NotRequired[bool]
-    applied_correction_1000: NotRequired[list[float] | None]
-    correction_note: NotRequired[str | None]
+    applied_correction_mm: NotRequired[list[float] | None]
+    target_xy_mm: NotRequired[list[float]]
     gripper_source: NotRequired[str | None]
     grasp_verification: NotRequired[dict[str, Any] | None]
     guardrail_warning: NotRequired[str | None]
+    lift_note: NotRequired[str]
 
 
 class GripperToolResponse(TypedDict):

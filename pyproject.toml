@@ -56,6 +56,9 @@ include = ["simulation*", "robot*", "ui*", "agent*", "vision*", "tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: physics-heavy or long tests (run with `uv run pytest -m slow`)"]
+# Slow tests are excluded by default; select them explicitly with `-m slow`.
+addopts = "-m 'not slow'"
 
 [tool.mypy]
 python_version = "3.13"
@@ -73,6 +76,9 @@ files = [
   "agent/response_assembler.py",
   "vision/gripper_locator.py",
   "agent/guardrails.py",
+  "agent/pick_loop.py",
+  "agent/motion.py",
+  "robot/camera_model.py",
 ]
 follow_imports = "silent"
 ignore_missing_imports = true
