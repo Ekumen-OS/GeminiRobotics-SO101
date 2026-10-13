@@ -36,7 +36,7 @@ We established a frozen, type-safe `Settings` dataclass in `robot/settings.py`, 
 class Settings:
     serial_port: str
     gemini_model_id: str
-    alignment_tolerance_px: int = 25
+    alignment_tolerance_mm: float = 4.0
     # ...
 ```
 
@@ -257,9 +257,9 @@ VLA models operating in real-world environments are susceptible to "open-loop sc
 We established a four-pillar anti-hallucination architecture documented in [`ARCHITECTURE.md`](ARCHITECTURE.md):
 
 1. **Homography & Lateral Axis Parity**: Reconciled physical and simulation homographies (`config/workspace_homography.npz` and `config/workspace_homography_sim.npz`) and canonical ArUco corner IDs (`1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`), ensuring targets map to inward shoulder pan motions inside the camera FOV.
-2. **Programmatic Perception Metrics Engine (`robot/perception.py`)**: Computes real-time OpenCV relative offsets $[dy, dx]$, Euclidean distance, and binary alignment flags (`is_aligned` within tolerance $\le 25$).
+2. **Programmatic Perception Metrics Engine (`robot/perception.py`, `vision/gripper_locator.py`)**: Compares the jaw (ArUco tag, parallax removed with a camera model recovered from the homography) with the locked target footprint centre in the table plane, in robot millimetres: `dx_mm`, `dy_mm`, `distance_mm` and `is_aligned` within `ALIGNMENT_TOLERANCE_MM`.
 3. **Enriched Tool Response Payloads (`agent/tools.py`)**: Automatically embeds measured `perception` dictionaries and actionable `visual_hint` instructions into `move_to_spatial_point` and gripper tool execution responses.
-4. **Hard Controller Descent & Transport Gates (`agent/vla_controller.py`)**: Enforces controller verification that blocks descent if measured offset exceeds tolerance ($|dy| > 25$ or $|dx| > 25$) and blocks transport if the object remains on the tabletop post-lift, executing an automated 3-attempt retry loop with graceful user escalation.
+4. **Hard Controller Descent & Transport Gates (`agent/guardrails.py`, `agent/tools.py`)**: An explicit phase machine blocks descent without a measured aligned hover at the locked target and blocks everything but a straight-up lift until the post-lift gripper sensor confirms the grasp (vision can only veto), with an automated 3-attempt retry loop per object and graceful user escalation.
 
 **Why it matters:**
 
