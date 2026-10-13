@@ -13,7 +13,7 @@ from tests.conftest import (
     tool_call_message,
 )
 
-SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
+SNAPSHOT_DIR = Path(__file__).parent.parent / "snapshots"
 
 
 def test_system_prompt_snapshots() -> None:

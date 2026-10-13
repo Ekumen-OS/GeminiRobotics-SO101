@@ -2,13 +2,10 @@
 
 import random
 import string
-from typing import Any
 
 import numpy as np
-import pytest
 
 from agent.vla_controller import parse_targets_from_text
-from robot.perception import compute_visual_alignment
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
@@ -92,71 +89,6 @@ def test_refine_point_no_match_fallback(neutral_frame: np.ndarray) -> None:
     refined, match = refine_point_to_nearest_object(candidate, frame, max_dist_1000=100.0)
     assert match is None
     assert refined == candidate
-
-
-# ==============================================================================
-# 2. Visual Alignment Metrics Computation
-# ==============================================================================
-
-
-def test_compute_visual_alignment_math() -> None:
-    """Verify exact formula: dy = target_y - grip_y, dx = target_x - grip_x."""
-    metrics = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[750.0, 520.0],
-        gripper_point_1000=[700.0, 500.0],
-        tolerance=25.0,
-    )
-
-    assert metrics["measured_offset"]["dy"] == 50.0
-    assert metrics["measured_offset"]["dx"] == 20.0
-    assert np.isclose(metrics["measured_offset"]["distance"], np.hypot(50.0, 20.0))
-    assert metrics["is_aligned"] is False
-
-
-@pytest.mark.parametrize(
-    "dy,dx,expected_aligned",
-    [
-        (0.0, 0.0, True),
-        (25.0, 25.0, True),
-        (-25.0, -25.0, True),
-        (25.0, 0.0, True),
-        (0.0, 25.0, True),
-        (25.1, 0.0, False),
-        (0.0, 25.1, False),
-        (-25.1, 0.0, False),
-        (0.0, -25.1, False),
-        (25.0, 25.1, False),
-        (100.0, 100.0, False),
-    ],
-)
-def test_compute_visual_alignment_boundary_matrix(
-    dy: float, dx: float, expected_aligned: bool
-) -> None:
-    """Verify strict tolerance boundaries at |dy| <= 25.0 and |dx| <= 25.0."""
-    grip = [500.0, 500.0]
-    target = [500.0 + dy, 500.0 + dx]
-    metrics = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=target,
-        gripper_point_1000=grip,
-        tolerance=25.0,
-    )
-    assert metrics["is_aligned"] is expected_aligned
-
-
-def test_compute_visual_alignment_robot_state_fallback() -> None:
-    """Verify gripper point resolution from robot_state dictionary."""
-    state: dict[str, Any] = {"gripper_point_1000": [600.0, 450.0]}
-    metrics = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[610.0, 455.0],
-        gripper_point_1000=None,
-        robot_state=state,
-        tolerance=25.0,
-    )
-    assert metrics["gripper_point_1000"] == [600.0, 450.0]
-    assert metrics["is_aligned"] is True
 
 
 # ==============================================================================

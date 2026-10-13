@@ -406,7 +406,7 @@ async def test_move_to_spatial_point_custom_label() -> None:
 @pytest.mark.asyncio
 async def test_execute_tool_hardware_error_calls_interrupt_and_returns_honestly() -> None:
     """Verify HardwareError from driver calls robot.interrupt() and returns honest error payload."""
-    from tests.test_fail_closed_characterization import _make_mock_real_robot
+    from tests.robot.test_fail_closed_characterization import _make_mock_real_robot
 
     fake_bus = MagicMock()
     fake_bus.sync_read.return_value = {name: 0.0 for name in JOINT_NAMES}
@@ -425,6 +425,7 @@ async def test_execute_tool_hardware_error_calls_interrupt_and_returns_honestly(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("real_sleep")
 async def test_close_gripper_honors_nonzero_settle_setting() -> None:
     """Verify close_gripper executes time.sleep(gripper_settle_s) when setting is non-zero."""
     import dataclasses

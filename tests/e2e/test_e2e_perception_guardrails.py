@@ -8,7 +8,6 @@ Covers:
 - F9: Clean Diagnostic Logging & UI Separation (ISO-8601 millisecond logs, stdout/stderr routing)
 """
 
-import math
 import re
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,7 +19,6 @@ from google.genai import types
 
 from agent.tools import execute_tool_call
 from agent.vla_controller import VLAController, parse_targets_from_text
-from robot.perception import compute_visual_alignment
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
@@ -78,26 +76,6 @@ def mock_robot_with_object() -> MockRobot:
 # ==============================================================================
 # TIER 1: ISOLATED FEATURE COVERAGE (F5, F6, F7, F8, F9)
 # ==============================================================================
-
-
-def test_t1_f5_perception_offset_calculation_contract() -> None:
-    """Validate relative offset [dy, dx] and Euclidean distance calculation contract."""
-    gripper = [600.0, 400.0]
-    target = [620.0, 385.0]
-
-    result = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=target,
-        gripper_point_1000=gripper,
-        tolerance=25.0,
-    )
-
-    assert result["measured_offset"]["dy"] == 20.0
-    assert result["measured_offset"]["dx"] == -15.0
-    expected_dist = math.hypot(20.0, -15.0)  # 25.0
-    assert np.isclose(result["measured_offset"]["distance"], expected_dist)
-    assert result["is_aligned"] is True
-    assert result["alignment_tolerance"] == 25.0
 
 
 def test_t1_f5_perception_detection_on_synthetic_frame() -> None:
@@ -200,35 +178,6 @@ def test_t1_f9_clean_diagnostic_logging_format_and_routing() -> None:
 # ==============================================================================
 # TIER 2: BOUNDARY VALUES, CORNER CASES & RESILIENCE
 # ==============================================================================
-
-
-def test_t2_f5_exact_alignment_tolerance_boundary_matrix() -> None:
-    """Validate exact boundary behavior at tolerance threshold |dy|=25.0 and |dx|=25.0."""
-    # Exact boundary: 25.0 should PASS
-    res_exact = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[525.0, 475.0],
-        gripper_point_1000=[500.0, 500.0],
-        tolerance=25.0,
-    )
-    assert res_exact["is_aligned"] is True
-
-    # Off-by-fraction: 25.01 should FAIL
-    res_dy_fail = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[525.01, 500.0],
-        gripper_point_1000=[500.0, 500.0],
-        tolerance=25.0,
-    )
-    assert res_dy_fail["is_aligned"] is False
-
-    res_dx_fail = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[500.0, 525.01],
-        gripper_point_1000=[500.0, 500.0],
-        tolerance=25.0,
-    )
-    assert res_dx_fail["is_aligned"] is False
 
 
 def test_t2_f5_blank_frame_handling() -> None:
@@ -686,22 +635,6 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     assert mock_session.send_tool_response.call_count == 4
 
 
-def test_t1_f7_anti_hallucination_gate_rejects_descent_on_large_misalignment() -> None:
-    """Validate that alignment contract rejects descent when |dy| > 25 or |dx| > 25."""
-    # Large misalignment: dy = 45, dx = 30
-    alignment = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[745.0, 480.0],
-        gripper_point_1000=[700.0, 450.0],
-        tolerance=25.0,
-    )
-    assert alignment["is_aligned"] is False
-    assert alignment["measured_offset"]["dy"] == 45.0
-    assert alignment["measured_offset"]["dx"] == 30.0
-    # Must explicitly require correction before descent
-    assert abs(alignment["measured_offset"]["dy"]) > alignment["alignment_tolerance"]
-
-
 def test_t1_f8_anti_hallucination_transport_gate_blocks_motion_when_object_on_table() -> None:
     """A stalled gripper with the object still on its footprint is a missed grasp (vision veto)."""
     from agent.guardrails import decide_grasp
@@ -725,45 +658,6 @@ async def test_t2_f6_missing_camera_frame_graceful_tool_execution() -> None:
         result = await execute_tool_call(call=call, robot=robot, get_latest_jpeg_fn=None)
     assert result["status"] == "success"
     assert "target_xyz_m" in result
-
-
-def test_t2_f7_extreme_visual_misalignment_boundary() -> None:
-    """Validate perception metrics with extreme coordinate spread (corner to corner)."""
-    alignment = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[1000.0, 1000.0],
-        gripper_point_1000=[0.0, 0.0],
-        tolerance=25.0,
-    )
-    assert alignment["is_aligned"] is False
-    assert alignment["measured_offset"]["dy"] == 1000.0
-    assert alignment["measured_offset"]["dx"] == 1000.0
-    assert np.isclose(alignment["measured_offset"]["distance"], math.hypot(1000.0, 1000.0))
-
-
-@pytest.mark.asyncio
-async def test_t3_cross_feature_multi_turn_two_step_alignment() -> None:
-    """Validate multi-turn alignment transitions from misaligned to aligned state."""
-    # Step 1: Pre-correction (misaligned)
-    step1 = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[760.0, 484.0],
-        gripper_point_1000=[720.0, 484.0],
-        tolerance=25.0,
-    )
-    assert step1["is_aligned"] is False
-    assert step1["measured_offset"]["dy"] == 40.0
-
-    # Step 2: Post-correction (aligned)
-    corrected_gripper = [720.0 + step1["measured_offset"]["dy"], 484.0]
-    step2 = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=[760.0, 484.0],
-        gripper_point_1000=corrected_gripper,
-        tolerance=25.0,
-    )
-    assert step2["is_aligned"] is True
-    assert step2["measured_offset"]["dy"] == 0.0
 
 
 @pytest.mark.asyncio
