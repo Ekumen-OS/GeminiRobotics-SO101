@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from agent.vla_controller import parse_targets_from_text
-from robot.perception import compute_visual_alignment, verify_grasp_elevation
+from robot.perception import compute_visual_alignment
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
@@ -157,54 +157,6 @@ def test_compute_visual_alignment_robot_state_fallback() -> None:
     )
     assert metrics["gripper_point_1000"] == [600.0, 450.0]
     assert metrics["is_aligned"] is True
-
-
-# ==============================================================================
-# 3. Post-Lift Grasp Elevation Verification
-# ==============================================================================
-
-
-def test_verify_grasp_elevation_success(neutral_frame: np.ndarray) -> None:
-    """Verify confirmed grasp when object is present pre-lift and absent post-lift."""
-    pre_frame = neutral_frame.copy()
-    pre_frame[200:240, 300:340] = [220, 20, 20]  # Object on table
-
-    post_frame = neutral_frame.copy()  # Table is clear (object lifted into air)
-
-    res = verify_grasp_elevation(
-        pre_lift_frame_rgb=pre_frame,
-        post_lift_frame_rgb=post_frame,
-        target_point_1000=[500.0, 500.0],
-    )
-    assert res["object_elevated"] is True
-    assert res["object_detected_on_table"] is False
-    assert res["grasped"] is True
-    assert res["confidence"] == 0.95
-
-
-def test_verify_grasp_elevation_failure(neutral_frame: np.ndarray) -> None:
-    """Verify missed grasp when object remains on tabletop post-lift."""
-    pre_frame = neutral_frame.copy()
-    pre_frame[200:240, 300:340] = [220, 20, 20]
-
-    post_frame = pre_frame.copy()  # Object still on table
-
-    res = verify_grasp_elevation(
-        pre_lift_frame_rgb=pre_frame,
-        post_lift_frame_rgb=post_frame,
-        target_point_1000=[500.0, 500.0],
-    )
-    assert res["object_elevated"] is False
-    assert res["object_detected_on_table"] is True
-    assert res["grasped"] is False
-
-
-def test_verify_grasp_elevation_none_frames() -> None:
-    """Verify graceful handling when frame inputs are None."""
-    res = verify_grasp_elevation(pre_lift_frame_rgb=None, post_lift_frame_rgb=None)
-    assert isinstance(res, dict)
-    assert "object_elevated" in res
-    assert "grasped" in res
 
 
 # ==============================================================================

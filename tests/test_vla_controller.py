@@ -28,7 +28,7 @@ def test_vla_controller_init() -> None:
     assert "z_height_cm" in prompt
     assert "Step-by-Step Pick-and-Place Workflow with Visual Verification" in prompt
     assert "Clear Occlusion" in prompt
-    assert "Relative Position Error" in prompt
+    assert "measured_offset" in prompt
     assert "execute_spav_pick_and_place" not in prompt
 
 
@@ -337,17 +337,18 @@ def test_vla_controller_move_look_correct_system_prompt() -> None:
     assert "Execute exactly ONE physical action per turn" in prompt
     assert "NEVER batch multiple physical commands together" in prompt
 
-    # Rule 2 (LOOK) assertions
+    # Rule 2 (LOOK) assertions: the controller measures, the model reads the measurement
     assert "2. **LOOK (Mandatory Visual Observation Pause)**" in prompt
-    assert "Gripper Position" in prompt
-    assert "Target Position" in prompt
-    assert "Relative Position Error" in prompt
-    assert "[dy, dx] = [target_y - gripper_y, target_x - gripper_x]" in prompt
+    assert "The controller, not you, measures gripper alignment" in prompt
+    assert "`perception.measured_offset`" in prompt
+    assert "NEVER estimate the gripper-to-target offset from the image" in prompt
+    assert "NEVER offset a point yourself" in prompt
 
     # Rule 3 (CORRECT) assertions
     assert "3. **CORRECT (Alignment Verification or Adjustment)**" in prompt
-    assert "If Misaligned (|dy| > 25 or |dx| > 25)" in prompt
-    assert "If Aligned (|dy| <= 25 and |dx| <= 25)" in prompt
+    assert "If `perception.is_aligned` is `false` (offset more than 4 mm)" in prompt
+    assert "If `perception.is_aligned` is `true` (within 4 mm)" in prompt
+    assert "re-issue the SAME hover call" in prompt
     assert "hover height before attempting to descend" in prompt
 
 

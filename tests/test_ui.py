@@ -305,7 +305,7 @@ def test_process_instruction_blocks_and_unblocks_inputs() -> None:
     controller_sim._api_available = True
 
     # Mock process_instruction_stream to yield intermediate chunks
-    def mock_stream(instruction: str, get_latest_jpeg_fn=None):
+    def mock_stream(instruction: str, get_latest_jpeg_fn=None, **kwargs):
         yield "Thinking..."
         yield "Moving arm..."
         yield "Completed task."
@@ -375,7 +375,7 @@ def test_process_instruction_recovers_on_exception() -> None:
     controller_sim = VLAController(mode="sim", robot=None)
     controller_sim._api_available = True
 
-    def mock_failing_stream(instruction: str, get_latest_jpeg_fn=None):
+    def mock_failing_stream(instruction: str, get_latest_jpeg_fn=None, **kwargs):
         yield "Starting task..."
         raise RuntimeError("Simulated WebSocket connection drop")
 

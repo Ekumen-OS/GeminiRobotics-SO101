@@ -1,7 +1,7 @@
 """Tests for physical grasp sensing, classification, and fail-closed guardrails."""
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -11,7 +11,6 @@ from robot.cartesian_ik import CartesianIK
 from robot.constants import GRIPPER_CLOSE_DEG
 from robot.contracts import GripperReading
 from robot.grasp import classify_grasp
-from robot.perception import verify_grasp_elevation
 from robot.real_robot import RealSO101Robot
 from robot.settings import Settings
 from simulation.sim_calibration import compute_sim_calibration
@@ -38,24 +37,6 @@ async def test_close_gripper_measured_empty_flipped() -> None:
     assert res["grasp"]["grasped"] is False
     assert res["grasp"]["reason"] == "closed_on_air"
     assert "Gripper closed on NOTHING" in res.get("visual_hint", "")
-
-
-def test_verify_grasp_elevation_fails_closed_flipped() -> None:
-    """Flipped Task 3 Characterization: detector exceptions must raise PerceptionUnavailable."""
-    from robot.errors import PerceptionUnavailable
-
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    with patch(
-        "robot.perception.detect_workspace_objects",
-        side_effect=RuntimeError("Corrupt frame or detector crash"),
-    ):
-        with pytest.raises(PerceptionUnavailable, match="Pre-lift object detection failed"):
-            verify_grasp_elevation(
-                pre_lift_frame_rgb=frame,
-                post_lift_frame_rgb=frame,
-                target_point_1000=[500.0, 500.0],
-            )
 
 
 # ==============================================================================
@@ -100,7 +81,7 @@ async def test_mock_robot_scriptable_gripper_closed_on_object() -> None:
     assert res["grasp"]["grasped"] is True
     assert res["grasp"]["reason"] == "aperture"
     assert "Gripper stalled at -65.0° — an object is between the jaws" in res["visual_hint"]
-    assert "Lift to 5 cm and visually confirm" in res["visual_hint"]
+    assert "Lift to 5 cm to verify the grasp before transporting" in res["visual_hint"]
 
 
 @pytest.mark.asyncio
@@ -336,12 +317,14 @@ async def test_sim_robot_empty_vs_cube_jaws() -> None:
     hover_pos = np.array([target_pos[0], target_pos[1], 0.06])
     hover_q = ik.solve_ik(hover_pos, initial_qpos=robot.get_joint_positions(), approach="top_down")
     hover_q[5] = np.radians(75.0)
-    robot.move_to_pose(hover_q, duration_sec=0.3)
+    robot.move_to_pose(hover_q, duration_sec=1.0)
 
-    descend_pos = np.array([target_pos[0], target_pos[1], -0.03])
+    # The grasp site is the pad midpoint: z=0 puts the pads beside the cube at table level
+    # (the old z=-0.03 pushed the open jaw into the table).
+    descend_pos = np.array([target_pos[0], target_pos[1], 0.0])
     descend_q = ik.solve_ik(descend_pos, initial_qpos=hover_q, approach="top_down")
     descend_q[5] = np.radians(75.0)
-    robot.move_to_pose(descend_q, duration_sec=0.3)
+    robot.move_to_pose(descend_q, duration_sec=1.0)
 
     res_cube = await execute_tool_call(call=close_call, robot=robot)
     assert res_cube["status"] == "success"
