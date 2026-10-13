@@ -70,9 +70,9 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F7** | Anti-Hallucination Descent Gate | `agent/tools.py`, `agent/guardrails.py` | A descent ($z < 3.0$ cm) needs a *measured hover at the same lock* that is still valid (current FK XY within 10 mm of the commanded hover) and `is_aligned` (jaw within `ALIGNMENT_TOLERANCE_MM`, default 4 mm, of the lock centre). Policy `DESCENT_GATE` is `block` in sim, `warn` in real. A refusal is `error_type="descent_gate"` (misaligned) or `"perception"` (no valid hover), `robot_moved=False`, and its hint names the exact hover call `move_to_spatial_point(point=[y, x], z_height_cm=3.0)` that will succeed; the controller applies the correction, the model must not. With the jaw tag unseen (`is_aligned=null`) `warn` descends with a warning and `block` refuses and escalates immediately (no loop). |
 | **F8** | Pick-Loop Phases, Lift Policy, Transport Gate & Escalation | `agent/guardrails.py`, `agent/tools.py`, `agent/vla_controller.py` | Explicit phases: `APPROACH` → (`close_gripper`) → `HELD_UNVERIFIED` / `CLOSED_EMPTY` → (lift) → `TRANSPORT`. In the held phases only the **lift** and `open_gripper` are allowed: the first upward move (z ≥ 3 cm, raised to ≥ 5 cm) is executed straight up at the current FK XY whatever point the model sent; anything else is `error_type="transport_gate"` whose hint names the lift call and `open_gripper()`. After the lift the **sensor decides, vision can only veto** (`decide_grasp`): post-lift aperture empty → `missed`; object blob of the lock colour still overlapping the lock-time bbox (IoU ≥ 0.5) → `missed (object_still_on_table)`; camera unusable (< 3 of 4 mat markers) → `unverified` and a re-verify, no attempt consumed; else `confirmed`. `TRANSPORT` moves to raw destinations (no refinement, lock, gate or corrector) and re-reads the aperture after every move (a drop → `CLOSED_EMPTY`). `retry_exhausted` after 3 missed/unverified grasps per lock, 3 consecutive refusals, or 4 hovers without a descent; only `open_gripper` and `send_message` work while escalated. Guardrail state is mutated in place under an `epoch` (`begin_instruction`, `on_interrupt`) so a handler thread outliving an interrupt cannot write to the next instruction. |
 | **F9** | Clean Diagnostic Logging & UI Separation | `agent/vla_controller.py`, `agent/tools.py`, `ui/components/chat.py` | Standardized ISO-8601 millisecond logs routed to `sys.stdout`/`sys.stderr`. Raw JSON payloads, IK solver iterations, and tracebacks are excluded from Chatbot viewport. |
-| **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
+| **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/e2e/test_e2e_spatial_grounding.py`, `tests/e2e/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
-| **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
+| **F12**| Adversarial Hardening | `tests/robot/test_cartesian_ik.py`, `tests/robot/test_perception.py`, `tests/ui/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
 | **F13**| Physical Grasp Sensor & Sensor-First Lift Verdict | `robot/grasp.py`, `agent/guardrails.py`, `agent/pick_loop.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry (`classify_grasp`) decide whether the jaws closed on air or stalled on something; the post-lift re-read plus the lock-based vision veto (`vision_vote`) feed `decide_grasp`. Sensor or vision unavailability yields fail-closed unverified states that block transport. The simulated gripper has box finger pads (40 mm gap, 1.5 N·m torque cap) so a 30 mm cube is actually lifted. |
 | **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/errors.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
 
@@ -102,7 +102,6 @@ Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py
 - **`vision_vote(frame_rgb, lock, calibrator)`** ([`agent/pick_loop.py`](agent/pick_loop.py)): `"on_table"`, `"not_seen_on_table"` or `"unavailable"`; fed to **`decide_grasp(aperture_after_lift, vote)`** ([`agent/guardrails.py`](agent/guardrails.py)). `verify_grasp_elevation` no longer exists.
 - **`locate_jaw_xy_mm(frame_rgb, snapshot, qpos_rad, tag_offset_mm=None) -> JawLocation | None`** ([`vision/gripper_locator.py`](vision/gripper_locator.py)): grasp-site XY in robot mm with parallax removed, or `None` (tag unseen, no calibration, no camera model).
 - **`locate_target_footprint(obj, homography, image_shape) -> {centre_xy_mm, centre_1000, width_mm, bbox_px}`** ([`robot/vision_detector.py`](robot/vision_detector.py)); `refine_point_to_nearest_object` returns the footprint centre (default radius 80 units, optional colour filter) and keeps `bottom_contact_1000` on the object dictionary.
-- `compute_visual_alignment(...)` (image-space `[dy, dx]`, [`VisualAlignmentResponse`](robot/contracts.py)) is retained as a stateless helper; production no longer calls it and it never re-detects the target.
   - **Fail-Closed Invariant:** When perception fails to locate the target or the jaw and no fallback is valid, tools raise `PerceptionUnavailable`; a camera frame that never arrives after a motion makes only the *measurement* unavailable (the response carries a warning, no `perception`), not the motion a failure.
 
 ### 3.3. Tool Registry & Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
@@ -223,7 +222,8 @@ All automated tests in `tests/` adhere to an **opaque-box, requirement-driven ve
 When implementing changes or verifying project health, execute:
 
 ```bash
-# 0. Install pre-commit hooks (one-time setup)
+# 0. Sync dependencies and install pre-commit hooks (one-time setup)
+uv sync --all-extras
 uv run pre-commit install
 
 # 1. Run complete automated test suite (slow physics runs are excluded by default)
@@ -232,10 +232,10 @@ uv run pytest tests/ -v
 uv run pytest -m slow -s
 
 # 2. Run focused spatial grounding E2E tests
-uv run pytest tests/test_e2e_spatial_grounding.py -v
+uv run pytest tests/e2e/test_e2e_spatial_grounding.py -v
 
 # 3. Run focused perception guardrails E2E tests
-uv run pytest tests/test_e2e_perception_guardrails.py -v
+uv run pytest tests/e2e/test_e2e_perception_guardrails.py -v
 
 # 4. Run static lint and code formatting check
 uv run ruff check .
@@ -243,6 +243,9 @@ uv run ruff format --check .
 
 # 5. Run static type checking (scope is defined in [tool.mypy] `files` in pyproject.toml)
 uv run mypy
+
+# 6. Run test suite with core coverage gate (fails under 78%)
+uv run pytest tests/ -q --cov=robot --cov=vision --cov=agent --cov-report=term-missing
 ```
 
 ---
@@ -308,7 +311,7 @@ GeminiRobotics-SO101/
 │   ├── app.py                        # FastAPI application mounting Gradio Web UI
 │   ├── state.py                      # Lazy kinematics 3D state synchronization manager
 │   └── components/                   # Gradio chat, controls, and vision viewports
-└── tests/                            # 4-tier suite; sim_pick_harness.py = scripted pick-and-place vs MuJoCo truth
+└── tests/                            # 4-tier suite; tests/e2e/sim_pick_harness.py = scripted pick-and-place vs MuJoCo truth
 ```
 
 ---
@@ -332,4 +335,22 @@ robot  <  simulation  <  vision  <  agent  <  ui
 This architecture is enforced locally by the pre-commit hook (there is no CI) using `import-linter` via `[tool.importlinter]` in `pyproject.toml`:
 - `uv run lint-imports` validates that all layer boundaries and tool isolation contracts are kept.
 - Cycle-dodging function-local imports are strictly prohibited.
+
+---
+
+## 8. Known Loose Ends
+
+- **Real-mode routing fix not hardware-verified:** First real-mode session after PR A: issue one `move_to_spatial_point` and confirm the log shows the real calibration (not `config/workspace_homography_sim.npz`) and the arm lands where the camera says.
+- **Log flood on a failing render:** Rate-limited to once per 5 seconds.
+- **Untested path:** A desktop session with a display (GLFW backend) was not exercised after the EGL change. `tests/simulation/test_headless_gl.py` only asserts the backend choice, not a real GLFW render.
+- **Unreachable code:** The `mode == "sim"` branch of `_stream_video_impl` (`vision/capture.py`) cannot be reached from the app (sim mode never starts a capture thread). Cleaned up in Phase 4 B7.
+- **3e known gaps not in Phase 4:**
+  - UI gripper controls do not update `GuardrailState.last_commanded_gripper`, so the phase derived at the next instruction can be wrong.
+  - `target_ambiguous` is a width proxy (blob > 55 mm), not a real two-object detection.
+  - Transport and place use no correction ($c = 0$), so placement is off by the arm bias (~7 mm at a 1.5° pan offset). Carrying the grasp lock's correction to the destination would fix it.
+  - The real `_wait_for_convergence` tolerance (1.5°, 2 s) is unvalidated on hardware. A joint that gravity holds more than 1.5° off would add 2 s plus a WARN to every move.
+  - `main.py --task test_simulation` needs a display (headless fails; `--task check_environment` passes).
+- **Host-environment note:** `gh` moved from `/usr/bin/gh` to Homebrew, which broke git's HTTPS credential helper until `gh auth setup-git` was re-run. Relevant if `git push` fails with `could not read Username`.
+- **Omission of set_joint_positions in prompt bullet list:** Tool is declared in `ROBOT_TOOL_DECLARATIONS` and handled in `execute_tool_call`, but historically omitted from `agent/prompts/vla_system.md`. Retained with `prompt_line=""` in `TOOL_REGISTRY` to preserve byte-identical prompt output.
+- **Real LeRobot calibration cache:** Lives in `~/.cache/huggingface/lerobot/calibration/robots/so101_follower/`.
 
