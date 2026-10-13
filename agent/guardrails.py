@@ -83,25 +83,33 @@ class GraspVerdict:
         return out
 
 
-def decide_grasp(aperture_after_lift: bool | None, vote: str | None) -> GraspVerdict:
+def decide_grasp(
+    aperture_after_lift: bool | None,
+    vote: str | None,
+    consecutive_unavailable: int = 0,
+) -> GraspVerdict:
     """Decide the grasp outcome after the lift: the sensor decides, vision can only veto.
 
-    ======================  ==========================  ==========================================
-    post-lift aperture      vision vote                 verdict
-    ======================  ==========================  ==========================================
-    False (empty/slipped)   any                         missed (closed_on_air)
-    None (sensor failed)    any                         unverified (sensor_unavailable)
-    True                    on_table                    missed (object_still_on_table)
-    True                    unavailable / None          unverified (perception_unavailable)
-    True                    not_seen_on_table           confirmed (sensor)
-    ======================  ==========================  ==========================================
+    =====================  =============================  ========================================
+    post-lift aperture     vision vote                    verdict
+    =====================  =============================  ========================================
+    False (empty/slipped)  any                            missed (closed_on_air)
+    None (sensor failed)   any                            unverified (sensor_unavailable)
+    True                   on_table                       missed (object_still_on_table)
+    True                   unavail / None (streak < 2)    unverified (perception_unavail, bounded)
+    True                   unavail / None (streak >= 2)   unverified (perception_unavail, consume)
+    True                   not_seen_on_table/no_ref/inco  confirmed (sensor)
+    =====================  =============================  ========================================
 
     An ``unavailable`` vision vote asks for a re-verify (a second lift) and does not consume a
-    retry attempt: the grasp may be fine, the camera just could not say.
+    retry attempt: the grasp may be fine, the camera just could not say. After 2 consecutive
+    unavailable votes on the same grasp, the next one consumes an attempt.
 
     Args:
         aperture_after_lift: ``classify_grasp(...)["grasped"]`` re-read after the lift.
-        vote: 'on_table', 'not_seen_on_table', 'unavailable', or None.
+        vote: 'on_table', 'not_seen_on_table', 'no_reference', 'inconclusive', 'unavailable',
+            or None.
+        consecutive_unavailable: Number of consecutive unavailable votes on this grasp.
 
     Returns:
         GraspVerdict instance.
@@ -112,9 +120,12 @@ def decide_grasp(aperture_after_lift: bool | None, vote: str | None) -> GraspVer
         return GraspVerdict("unverified", None, "sensor_unavailable", False, True, vote)
     if vote == "on_table":
         return GraspVerdict("missed", False, "object_still_on_table", False, True, vote)
-    if vote == "not_seen_on_table":
+    if vote in ("not_seen_on_table", "no_reference", "inconclusive"):
         return GraspVerdict("confirmed", True, "sensor", True, False, vote)
-    return GraspVerdict("unverified", None, "perception_unavailable", False, False, "unavailable")
+    consumes_attempt = bool(consecutive_unavailable >= 2)
+    return GraspVerdict(
+        "unverified", None, "perception_unavailable", False, consumes_attempt, "unavailable"
+    )
 
 
 @dataclass
@@ -161,6 +172,7 @@ class TargetLock:
     centre_1000: list[float]
     bbox_px: list[int] | None = None
     width_mm: float | None = None
+    yaw_deg: float | None = None
     raw_point: list[float] = field(default_factory=list)
     stale: bool = False
     c_mm: tuple[float, float] = (0.0, 0.0)
@@ -199,7 +211,9 @@ class GuardrailState:
         self.last_grasp_reason: str | None = None
         self.last_verdict: dict[str, Any] | None = None
         self.grasp_xy_mm: tuple[float, float] | None = None
+        self.grasp_z_mm: float | None = None
         self.consecutive_refusals = 0
+        self.consecutive_unavailable = 0
         self.escalated = False
         self.escalation_reason: str | None = None
         self.attempt_counted = False
@@ -265,7 +279,6 @@ class GuardrailState:
         with self._lock:
             self.epoch += 1
             self.phase = phase
-            self.target = None
             self.last_motion = None
             self.last_hover = None
             self.consecutive_refusals = 0
@@ -273,18 +286,27 @@ class GuardrailState:
             self.escalation_reason = None
             self.attempt_counted = False
             if phase == Phase.APPROACH:
+                self.target = None
                 self.last_verdict = None
                 self.last_grasp_reason = None
                 self.grasp_xy_mm = None
+                self.grasp_z_mm = None
+                self.consecutive_unavailable = 0
 
     def on_interrupt(self) -> None:
-        """Handle an interrupt: invalidate in-flight handlers and drop the lock and hover.
+        """Handle an interrupt: invalidate in-flight handlers and drop hover and stale lock.
 
-        The phase is kept: an interrupt does not open the gripper.
+        The phase is kept: an interrupt does not open the gripper. If the phase is not
+        APPROACH, the active target lock, grasp location and reason are preserved.
         """
         with self._lock:
             self.epoch += 1
-            self.target = None
+            if self.phase == Phase.APPROACH:
+                self.target = None
+                self.last_grasp_reason = None
+                self.grasp_xy_mm = None
+                self.grasp_z_mm = None
+                self.consecutive_unavailable = 0
             self.last_motion = None
             self.last_hover = None
             self.consecutive_refusals = 0
@@ -322,6 +344,7 @@ class GuardrailState:
         bbox_px: list[int] | None,
         width_mm: float | None,
         raw_point: list[float],
+        yaw_deg: float | None = None,
     ) -> TargetLock:
         """Create and activate a lock on a new object (counters start at zero)."""
         with self._lock:
@@ -332,6 +355,7 @@ class GuardrailState:
                 centre_1000=centre_1000,
                 bbox_px=bbox_px,
                 width_mm=width_mm,
+                yaw_deg=yaw_deg,
                 raw_point=list(raw_point),
             )
             self._next_lock_id += 1
@@ -346,6 +370,7 @@ class GuardrailState:
         centre_1000: list[float],
         bbox_px: list[int] | None,
         width_mm: float | None,
+        yaw_deg: float | None = None,
     ) -> None:
         """Refresh a stale lock from a new detection, keeping its correction and counters."""
         with self._lock:
@@ -353,6 +378,7 @@ class GuardrailState:
             lock.centre_1000 = centre_1000
             lock.bbox_px = bbox_px
             lock.width_mm = width_mm
+            lock.yaw_deg = yaw_deg
             lock.stale = False
             lock.hovers_since_descent = 0
             self.last_hover = None
@@ -389,27 +415,41 @@ class GuardrailState:
             self.last_grasp_reason = reason
             if not consumes_attempt:
                 return
-            if not self.attempt_counted:
-                self.attempt_counted = True
+            if reason == "perception_unavailable":
                 if self.target is not None:
                     self.target.grasp_attempts += 1
-            if self.target is not None and self.target.grasp_attempts >= MAX_GRASP_ATTEMPTS:
-                if not self.escalated:
-                    self.escalate("grasp_attempts")
+                    if self.target.grasp_attempts >= MAX_GRASP_ATTEMPTS and not self.escalated:
+                        self.escalate("grasp_attempts")
+            else:
+                if not self.attempt_counted:
+                    self.attempt_counted = True
+                    if self.target is not None:
+                        self.target.grasp_attempts += 1
+                if self.target is not None and self.target.grasp_attempts >= MAX_GRASP_ATTEMPTS:
+                    if not self.escalated:
+                        self.escalate("grasp_attempts")
 
-    def on_closed(self, phase: Phase, grasp_xy_mm: tuple[float, float] | None) -> None:
+    def on_closed(
+        self,
+        phase: Phase,
+        grasp_xy_mm: tuple[float, float] | None,
+        grasp_z_mm: float | None = None,
+    ) -> None:
         """The gripper was commanded closed.
 
         Args:
             phase: HELD_UNVERIFIED, or CLOSED_EMPTY when the aperture shows empty jaws.
             grasp_xy_mm: Where the grasp happened (FK jaw XY).
+            grasp_z_mm: Height where the grasp happened (FK site Z in mm).
         """
         with self._lock:
             self.phase = phase
             self.last_commanded_gripper = "closed"
             self.grasp_xy_mm = grasp_xy_mm
+            self.grasp_z_mm = grasp_z_mm
             self.last_verdict = None
             self.last_motion = "close"
+            self.consecutive_unavailable = 0
 
     def on_opened(self) -> None:
         """The gripper was commanded open: the cycle ends; a missed lock goes stale."""
@@ -418,9 +458,12 @@ class GuardrailState:
             self.phase = Phase.APPROACH
             self.last_commanded_gripper = "open"
             self.attempt_counted = False
+            self.consecutive_unavailable = 0
             self.last_verdict = None
             self.last_motion = "open"
             self.last_hover = None
+            self.grasp_xy_mm = None
+            self.grasp_z_mm = None
             self.consecutive_refusals = 0
             if was == Phase.TRANSPORT:
                 self.target = None  # released: the cycle is complete

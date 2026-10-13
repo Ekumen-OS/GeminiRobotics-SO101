@@ -35,7 +35,7 @@ SETTLE_TIMEOUT_S = 3.0
 
 # Table XY (m) of the grasp site at the HOME pose, and the radius around it that
 # ``randomize_target`` keeps free so a resting cube is never inside the HOME jaw.
-HOME_JAW_XY_M = (0.175, 0.0)
+HOME_JAW_XY_M = (0.181, 0.0)
 HOME_CLEARANCE_M = 0.06
 
 
