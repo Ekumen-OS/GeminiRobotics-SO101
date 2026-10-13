@@ -298,7 +298,7 @@ async def test_tools_visual_hints_enrichment(monkeypatch: pytest.MonkeyPatch) ->
         hint = hover_res["visual_hint"]
         assert "hover position" in hint
         assert "Visual Verification Loop" in hint
-        assert "[dy, dx]" in hint
+        assert "alignment not measured" in hint
 
         # Contact height < 3.0
         contact_call = DummyToolCall(
