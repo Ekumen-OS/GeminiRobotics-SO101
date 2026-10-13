@@ -358,19 +358,20 @@ def generate_calibration_sheet(
 def generate_jaw_tag_sheet(
     output_dir: str | Path = "assets/aruco_markers",
     marker_id: int = 10,
-    tag_size_mm: float = 15.0,
+    tag_size_mm: float = 25.0,
     dpi: int = 300,
     dictionary_name: str = "DICT_4X4_50",
 ) -> Path:
     """Generate a printable 1:1 scale jaw ArUco marker sheet.
 
     Creates a clean printable page with cutting guides and instructions for
-    mounting the 15 mm ArUco marker (ID 10) on the fixed gripper jaw.
+    mounting the 25 mm ArUco marker (ID 10) on the gripper housing (see README, "Jaw tag").
 
     Args:
         output_dir: Directory where the sheet PNG will be saved.
         marker_id: Marker ID to generate. Defaults to 10.
-        tag_size_mm: Physical side length of marker in millimeters. Defaults to 15.0.
+        tag_size_mm: Physical side length of marker in millimeters. Defaults to 25.0: smaller
+            tags are detected in only a fraction of poses at 640x480.
         dpi: Print resolution in dots per inch. Defaults to 300 DPI.
         dictionary_name: ArUco dictionary identifier string.
 
@@ -420,7 +421,7 @@ def generate_jaw_tag_sheet(
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(
         canvas,
-        "SO-101 Gripper Jaw ArUco Tag (15 mm, ID 10)",
+        f"SO-101 Gripper Jaw ArUco Tag ({tag_size_mm:g} mm, ID {marker_id})",
         (cx - 280, int(h_px * 0.15)),
         font,
         0.8,
@@ -451,9 +452,9 @@ def generate_jaw_tag_sheet(
     instructions = [
         "1. Print this sheet at 100% scale (no fit-to-page / borderless).",
         "2. Verify the 50 mm line with a physical ruler.",
-        "3. Cut out the 15 mm ArUco marker along the inner border.",
-        "4. Affix marker flat to top face of fixed jaw facing overhead camera.",
-        "5. Calibrate GRIPPER_TAG_OFFSET_PX if needed.",
+        f"3. Cut out the {tag_size_mm:g} mm ArUco marker along the inner border.",
+        "4. Mount it on the gripper housing, facing the camera, clear of the fingers.",
+        "5. Measure its centre against the grasp site and set GRIPPER_TAG_LOCAL_OFFSET_MM.",
     ]
     for idx, inst in enumerate(instructions):
         cv2.putText(
