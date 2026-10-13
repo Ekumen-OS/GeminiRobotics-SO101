@@ -65,15 +65,15 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F2** | Homography & Lateral Axis Parity | `config/workspace_homography.npz`, `config/workspace_homography_sim.npz`, `robot/calibration.py` | Lateral $Y$-axis parity guaranteed between real and simulation frames. Target `[760, 484]` maps to $X \approx 0.197$ m, $Y \approx +0.145$ m, yielding inward shoulder pan ($\approx -42^\circ$) inside camera FOV. |
 | **F3** | Calibrator Mode Context Routing | `agent/tools.py`, `vision/calibrator.py`, `robot/registry.py` | `execute_tool_call` receives the controller's `mode` explicitly and otherwise reads `robot.mode` (`resolve_robot_mode`); `image_point_to_xyz` then loads the matching homography. No duck-typing on rendering methods. |
 | **F4** | Reachability & FOV Kinematic Grounding | `robot/cartesian_ik.py`, `robot/calibration.py` | All normalized coordinates $[y, x] \in [0, 1000]$ within the calibrated mat map to collision-free Cartesian poses ($r \le 391$ mm) contained within the camera FOV. |
-| **F5** | Programmatic Perception Metrics & Gripper Locator Engine | `vision/gripper_locator.py`, `robot/perception.py`, `robot/cartesian_ik.py` | Honest visual gripper locator and perception engine. Locates gripper $[y_g, x_g]$ via jaw ArUco tag 10 in both modes whenever a frame exists, falling back to ER2 pointing query (when `GRIPPER_LOCATOR_ER2=1` in real mode) or forward kinematics (`robot/cartesian_ik.py`). Reports explicit `gripper_source` provenance (`"aruco"`, `"er2"`, `"kinematic"`, or `"none"`), relative offset $[dy, dx]$, and alignment status. |
-| **F6** | Tool Execution Feedback Enrichment & Bias Correction | `agent/tools.py`, `agent/guardrails.py` | `move_to_spatial_point` returns honest alignment and applies one-shot bias correction $P_{\text{corr}} = P + \text{offset}$ (clamped to $\pm 60$ units, reported as `applied_correction_1000`) at descent when hovering above target. `close_gripper` returns dual-evidence grasp classification (`closed`, `closed_empty`, `closed_unverified`); lift motions evaluate post-lift grasp verification with dual votes and multi-modal verdict. |
-| **F7** | Anti-Hallucination Descent Gate | `agent/tools.py`, `agent/guardrails.py` | Enforces alignment before descending ($z < 3.0$ cm). Evaluates `DESCENT_GATE` policy (`warn` vs `block` vs `off`). In sim defaults to `block` (and in real to `warn`). Rejects unaligned descents ($|dy| > 25$ or $|dx| > 25$) or descents attempted without hovering first with `error_type="descent_gate"` and `robot_moved=False`. |
-| **F8** | Anti-Hallucination Transport Gate & Retry Loop | `agent/tools.py`, `agent/vla_controller.py`, `agent/guardrails.py` | Blocks transport motions ($z \ge 3.0$ cm and lateral distance $> 35$ units from grasp location) when grasp verdict is not `grasped` (or empty air closure occurred, or elevation check confirmed object on table) with `error_type="transport_gate"` and `robot_moved=False`. Enforces automated 3-strike retry loop before conversational escalation to user with `error_type="retry_exhausted"`. |
+| **F5** | Programmatic Perception Metrics, Camera Model & Jaw Locator | `vision/gripper_locator.py`, `robot/camera_model.py`, `robot/calibration.py`, `robot/perception.py`, `robot/vision_detector.py`, `robot/cartesian_ik.py` | Everything is compared **in the table plane, in robot millimetres**. The target is a *footprint centre* (`locate_target_footprint`: the bottom edge of the blob through the homography, plus half its width along the edge normal; 0.6 mm mean / 1.1 mm max at yaw 0 in sim). The jaw is located from the ArUco **jaw tag** (ID 10, 25 mm): its pixel is intersected with the plane at the tag height from forward kinematics using a pinhole camera recovered from the homography plus a nominal `CAMERA_HFOV_DEG` (`PinholeCamera.from_homography`), the parallax being removed as $xy = C_{xy} + (H(u,v) - C_{xy})\,(C_z - h)/C_z$ (identity at $h = 0$, so target and jaw share one geometry), then the FK-rotated tag-to-site offset (`GRIPPER_TAG_LOCAL_OFFSET_MM`) is subtracted. `gripper_source` is `"aruco"` (or `"kinematic"` when the tag is not seen: FK is self-consistent with the IK and cannot see calibration or encoder bias, so `is_aligned` is then `null`). ER2 pointing (`GRIPPER_LOCATOR_ER2=1`, real mode, model `ER2_LOCATOR_MODEL`) is **report-only** (`er2_gripper_point_1000`). The homography, its inverse, the reprojection error and the camera are one immutable `GeometrySnapshot` replaced in a single assignment (`ArucoWorkspaceCalibrator.geometry_snapshot()`); the derived camera centre is logged once at INFO (`[Calibration] [CAMERA] centre_mm=[x, y, z] hfov=...`). |
+| **F6** | Tool Execution Feedback, Target Lock & mm Bias Corrector | `agent/tools.py`, `agent/guardrails.py`, `agent/pick_loop.py`, `agent/motion.py` | The object being picked is a `TargetLock` created once from the frame captured *before* the move and matched by table position (within 40 mm) on every later request, never re-refined. `move_to_spatial_point` hovers and descends at `lock centre + c_mm`; after a measured hover the residual $r$ = lock centre − jaw updates the per-lock correction $c \leftarrow c + r$ (jaw-tag source only, $|r| \le 30$ mm, `BIAS_CORRECTION=1`; reported as `applied_correction_mm`), so a constant bias converges in one update. The first move from a low pose (site < 3 cm) to a target > 30 mm away is split into lift / travel (≥ 6 cm) / descend. Measurements wait for a frame captured *after* the arm converged (`vision/frames.get_raw_jpeg_after`; sim `move_to_pose` steps until joints converge, `RealSO101Robot` waits on `Present_Position` and logs `convergence timeout` otherwise). `close_gripper` returns the measured grasp classification (`closed`, `closed_empty`, `closed_unverified`). |
+| **F7** | Anti-Hallucination Descent Gate | `agent/tools.py`, `agent/guardrails.py` | A descent ($z < 3.0$ cm) needs a *measured hover at the same lock* that is still valid (current FK XY within 10 mm of the commanded hover) and `is_aligned` (jaw within `ALIGNMENT_TOLERANCE_MM`, default 4 mm, of the lock centre). Policy `DESCENT_GATE` is `block` in sim, `warn` in real. A refusal is `error_type="descent_gate"` (misaligned) or `"perception"` (no valid hover), `robot_moved=False`, and its hint names the exact hover call `move_to_spatial_point(point=[y, x], z_height_cm=3.0)` that will succeed; the controller applies the correction, the model must not. With the jaw tag unseen (`is_aligned=null`) `warn` descends with a warning and `block` refuses and escalates immediately (no loop). |
+| **F8** | Pick-Loop Phases, Lift Policy, Transport Gate & Escalation | `agent/guardrails.py`, `agent/tools.py`, `agent/vla_controller.py` | Explicit phases: `APPROACH` → (`close_gripper`) → `HELD_UNVERIFIED` / `CLOSED_EMPTY` → (lift) → `TRANSPORT`. In the held phases only the **lift** and `open_gripper` are allowed: the first upward move (z ≥ 3 cm, raised to ≥ 5 cm) is executed straight up at the current FK XY whatever point the model sent; anything else is `error_type="transport_gate"` whose hint names the lift call and `open_gripper()`. After the lift the **sensor decides, vision can only veto** (`decide_grasp`): post-lift aperture empty → `missed`; object blob of the lock colour still overlapping the lock-time bbox (IoU ≥ 0.5) → `missed (object_still_on_table)`; camera unusable (< 3 of 4 mat markers) → `unverified` and a re-verify, no attempt consumed; else `confirmed`. `TRANSPORT` moves to raw destinations (no refinement, lock, gate or corrector) and re-reads the aperture after every move (a drop → `CLOSED_EMPTY`). `retry_exhausted` after 3 missed/unverified grasps per lock, 3 consecutive refusals, or 4 hovers without a descent; only `open_gripper` and `send_message` work while escalated. Guardrail state is mutated in place under an `epoch` (`begin_instruction`, `on_interrupt`) so a handler thread outliving an interrupt cannot write to the next instruction. |
 | **F9** | Clean Diagnostic Logging & UI Separation | `agent/vla_controller.py`, `agent/tools.py`, `ui/components/chat.py` | Standardized ISO-8601 millisecond logs routed to `sys.stdout`/`sys.stderr`. Raw JSON payloads, IK solver iterations, and tracebacks are excluded from Chatbot viewport. |
 | **F10**| Comprehensive 4-Tier E2E Test Suite | `tests/test_e2e_spatial_grounding.py`, `tests/test_e2e_perception_guardrails.py` | 4-tier opaque-box test suite verifying all features across isolation, boundaries, cross-feature interactions, and full real-world scenarios. |
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/test_cartesian_ik.py`, `tests/test_perception.py`, `tests/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
-| **F13**| Physical Grasp Sensor, Multi-Modal Decision & Elevation Verification | `robot/grasp.py`, `agent/guardrails.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry combined with visual elevation change (`decide_grasp`). Dual-evidence agreement produces unambiguous `grasped` or `empty_dropped` verdicts, while sensor or vision unavailability yields fail-closed unverified states that block transport. |
+| **F13**| Physical Grasp Sensor & Sensor-First Lift Verdict | `robot/grasp.py`, `agent/guardrails.py`, `agent/pick_loop.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry (`classify_grasp`) decide whether the jaws closed on air or stalled on something; the post-lift re-read plus the lock-based vision veto (`vision_vote`) feed `decide_grasp`. Sensor or vision unavailability yields fail-closed unverified states that block transport. The simulated gripper has box finger pads (40 mm gap, 1.5 N·m torque cap) so a 30 mm cube is actually lifted. |
 | **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/errors.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
 
 ---
@@ -96,13 +96,14 @@ Any agent modifying the codebase MUST preserve the following schemas and functio
 
 Payload definitions are formalized as `TypedDict` models in [`robot/contracts.py`](robot/contracts.py):
 
-- **`compute_visual_alignment(frame_rgb, target_point_1000, gripper_point_1000=None, robot_state=None, tolerance=None, calibrator=None) -> VisualAlignmentResponse`**:
-  - **Typed contract:** [`VisualAlignmentResponse`](robot/contracts.py) (incorporates [`MeasuredOffset`](robot/contracts.py)).
-  - **Fail-Closed Invariant:** When perception fails to locate target or gripper and no fallback is valid, raises `PerceptionUnavailable`.
-- **`verify_grasp_elevation(pre_lift_frame_rgb, post_lift_frame_rgb, target_point_1000=None, max_table_presence_dist=80.0, calibrator=None) -> GraspElevationResponse`**:
-  - `calibrator` (both functions): the `ArucoWorkspaceCalibrator` used to mask detection to the workspace polygon. `robot/` never fetches it itself; `agent/tools.py` passes `vision.get_calibrator()`.
-  - **Typed contract:** [`GraspElevationResponse`](robot/contracts.py).
-  - **Fail-Closed Invariant:** When detection or frame decoding fails, raises `PerceptionUnavailable`. Tools catch this at the lift and record `grasp_verification.reason="perception_unavailable"` while blocking downstream transport motions.
+- **`compute_alignment_mm(target_xy_mm, jaw_xy_mm, source, tolerance_mm=None) -> AlignmentMeasurement`**:
+  - **Typed contract:** [`AlignmentMeasurement`](robot/contracts.py): `gripper_xy_mm`, `target_xy_mm`, `measured_offset` (`dx_mm`, `dy_mm`, `distance_mm`; target minus jaw), `is_aligned`, `alignment_tolerance_mm`, `gripper_source`, and the report-only `er2_gripper_point_1000`.
+  - **Invariant:** `is_aligned` is `true`/`false` only for the jaw-tag source (Euclidean distance against the tolerance); the kinematic fallback and an unlocated jaw give `null`.
+- **`vision_vote(frame_rgb, lock, calibrator)`** ([`agent/pick_loop.py`](agent/pick_loop.py)): `"on_table"`, `"not_seen_on_table"` or `"unavailable"`; fed to **`decide_grasp(aperture_after_lift, vote)`** ([`agent/guardrails.py`](agent/guardrails.py)). `verify_grasp_elevation` no longer exists.
+- **`locate_jaw_xy_mm(frame_rgb, snapshot, qpos_rad, tag_offset_mm=None) -> JawLocation | None`** ([`vision/gripper_locator.py`](vision/gripper_locator.py)): grasp-site XY in robot mm with parallax removed, or `None` (tag unseen, no calibration, no camera model).
+- **`locate_target_footprint(obj, homography, image_shape) -> {centre_xy_mm, centre_1000, width_mm, bbox_px}`** ([`robot/vision_detector.py`](robot/vision_detector.py)); `refine_point_to_nearest_object` returns the footprint centre (default radius 80 units, optional colour filter) and keeps `bottom_contact_1000` on the object dictionary.
+- `compute_visual_alignment(...)` (image-space `[dy, dx]`, [`VisualAlignmentResponse`](robot/contracts.py)) is retained as a stateless helper; production no longer calls it and it never re-detects the target.
+  - **Fail-Closed Invariant:** When perception fails to locate the target or the jaw and no fallback is valid, tools raise `PerceptionUnavailable`; a camera frame that never arrives after a motion makes only the *measurement* unavailable (the response carries a warning, no `perception`), not the motion a failure.
 
 ### 3.3. Tool Registry & Executor (`agent/tools.py`) ↔ Gemini FunctionResponse
 
@@ -121,7 +122,7 @@ and the model's behavioral prompt.
 Payload definitions are formalized as `TypedDict` models in [`agent/contracts.py`](agent/contracts.py):
 
 - **`move_to_spatial_point` Return Payload**:
-  - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`VisualAlignmentResponse`](robot/contracts.py) under `perception`, `applied_correction_1000`, and `grasp_verification`).
+  - **Typed contract:** [`MoveToSpatialPointResponse`](agent/contracts.py) (incorporates optional [`AlignmentMeasurement`](robot/contracts.py) under `perception`, `applied_correction_mm`, `target_xy_mm`, `gripper_source`, `grasp_verification` (`verdict`, `reason`, `vision`, `transport_allowed`), `guardrail_warning` and, for a lift, `lift_note`).
 - **`close_gripper` / `open_gripper` Return Payload**:
   - **Typed contract:** [`GripperToolResponse`](agent/contracts.py).
   - Incorporates measured `gripper_state` (`"open"`, `"closed"`, `"closed_empty"`, or `"closed_unverified"`), measured `gripper_deg`, context-sensitive `visual_hint`, and optional [`GraspClassification`](robot/contracts.py) under `grasp`:
@@ -149,15 +150,19 @@ When an operational, perceptual, or hardware boundary fails, the system strictly
   raise `CalibrationUnavailable`, rejecting spatial motions rather than executing open-loop guesses.
 - **Perception Failures**: Camera frame decoding errors or detection failures raise
   `PerceptionUnavailable` rather than falling back to synthetic successes or comforting defaults.
-- **Descent Gate Rejection (`error_type="descent_gate"`)**: Vertical descent ($z < 3.0$ cm) attempted
-  without prior hover observation or when measured offset exceeds tolerance ($|dy| > 25$ or $|dx| > 25$)
-  is blocked under `DESCENT_GATE=block` (or warned under `warn`). Motion is rejected with `robot_moved=False`.
-- **Transport Gate Rejection (`error_type="transport_gate"`)**: Lateral transport motions attempting to
-  move an unverified or empty grasp ($z \ge 3.0$ cm, distance $> 35$ units from grasp location) are strictly
-  rejected with `robot_moved=False`.
-- **Retry Exhaustion Escalation (`error_type="retry_exhausted"`)**: When automated multi-turn retry attempts
-  reach the strike limit (3 consecutive failed grasps), the controller halts arm motion and returns
-  an escalation failure to Gemini to converse with and notify the human operator.
+- **Descent Gate Rejection (`error_type="descent_gate"` / `"perception"`)**: A vertical descent
+  ($z < 3.0$ cm) without a measured, still-valid, aligned hover at the same lock is blocked under
+  `DESCENT_GATE=block` (warned under `warn`) with `robot_moved=False`. Reasons: `descent_gate`
+  (measured misalignment in mm), `perception` (no valid hover, or a measurement judged implausible:
+  more than 30 mm between jaw tag and target, `robot_moved=True`), `target_ambiguous` (a blob wider
+  than one graspable object, `error_type="perception"`). Every refusal names the exact next call.
+- **Transport Gate Rejection (`error_type="transport_gate"`)**: In `HELD_UNVERIFIED` / `CLOSED_EMPTY`
+  every motion except the lift (straight up, z ≥ 3 cm) is rejected with `robot_moved=False`; the hint
+  names the lift call and `open_gripper()`.
+- **Retry Exhaustion Escalation (`error_type="retry_exhausted"`)**: 3 missed or unverified grasps at one
+  lock, 3 consecutive refusals without a successful motion, 4 hovers without a descent, or an unobservable
+  alignment under `DESCENT_GATE=block` halt arm motion and tell Gemini to notify the human operator.
+  `open_gripper` and `send_message` stay available.
 - **Vision Stream Integrity**: Real-mode camera streams NEVER serve simulated or placeholder
   frames when physical cameras disconnect or buffers empty (`get_latest_raw_jpeg()` returns `None`).
 - **Model Grounding**: Failure payloads are returned to Gemini with typed `error_type` and
@@ -182,13 +187,13 @@ All automated tests in `tests/` adhere to an **opaque-box, requirement-driven ve
 │  - Homography Projection ↔ Inverse Kinematics ↔ Camera FOV Consistency      │
 │  - Programmatic Perception Metric Extraction ↔ Tool Feedback Enrichment     │
 │  - Descent Gate Rejection ↔ Corrective Offset Hint ↔ Re-alignment Move      │
-│  - Post-Lift Grasp Elevation Check ↔ Transport Guardrail Blocking           │
+│  - Post-Lift Sensor Verdict + Vision Veto ↔ Transport Guardrail Blocking    │
 │  - UI Event Blocking ↔ Model Stream Execution ↔ Guaranteed Interactive Reset│
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                   TIER 2: BOUNDARY VALUES, CORNER CASES & RESILIENCE        │
 │  - Extreme Normalized Coordinates ([0,0], [1000,1000], Negative, >1000)     │
 │  - Workspace Mat Physical Boundary Edges & Out-of-Reach Kinematic Limits    │
-│  - Alignment Tolerance Boundaries (|dy|=25.0, |dy|=25.1, |dx|=25.0, dx=25.1)│
+│  - Alignment Tolerance Boundaries (distance_mm vs ALIGNMENT_TOLERANCE_MM)   │
 │  - Partial Marker Occlusion, Missing Calibration Config & Corrupt NPZ Files │
 │  - Coordinate Parser Fuzzing with Malformed LLM Speech & Mixed Delta Tokens │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -197,8 +202,8 @@ All automated tests in `tests/` adhere to an **opaque-box, requirement-driven ve
 │  - Homography Forward (Gemini→Base XYZ) & Inverse (Base XYZ→Pixel) Mapping  │
 │  - Mode-Aware Calibrator Context Routing (Sim vs Real)                      │
 │  - Red Cube [760, 484] Canonical Grounding & Shoulder Pan Sign Verification │
-│  - Visual Alignment Metrics Calculation (dy, dx, distance, is_aligned)      │
-│  - Grasp Elevation Verification (object_elevated, object_detected_on_table) │
+│  - Alignment Metrics in mm (dx_mm, dy_mm, distance_mm, is_aligned)          │
+│  - Lift Verdict Table (aperture × vision vote → confirmed/missed/unverified)│
 │  - Tool Response Schemas & Visual Hint Injection                            │
 │  - ISO-8601 Millisecond Timestamp Formatting & Stdout/Stderr Routing        │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -221,8 +226,10 @@ When implementing changes or verifying project health, execute:
 # 0. Install pre-commit hooks (one-time setup)
 uv run pre-commit install
 
-# 1. Run complete automated test suite
+# 1. Run complete automated test suite (slow physics runs are excluded by default)
 uv run pytest tests/ -v
+#    ...and the slow 10-placement pick-and-place scenarios (prints the metrics table)
+uv run pytest -m slow -s
 
 # 2. Run focused spatial grounding E2E tests
 uv run pytest tests/test_e2e_spatial_grounding.py -v
@@ -259,7 +266,8 @@ GeminiRobotics-SO101/
 │   ├── contracts.py                  # Subsystem TypedDict contracts for perception payloads
 │   ├── registry.py                   # Thread-safe global active-robot registry
 │   ├── calibration.py                # ArUco detection, homography & coordinate transformations
-│   ├── perception.py                 # Visual alignment [dy, dx] & grasp elevation metrics
+│   ├── camera_model.py               # Pinhole camera from the homography + nominal intrinsics
+│   ├── perception.py                 # Alignment in robot mm (and the legacy image-space helper)
 │   ├── vision_detector.py            # HSV salient color segmentation & contour detection
 │   ├── cartesian_ik.py               # Numerical damped least-squares inverse kinematics
 │   ├── real_robot.py                 # Physical SO-101 Feetech servo driver (via LeRobot)
@@ -268,13 +276,15 @@ GeminiRobotics-SO101/
 │   └── theory.md                     # Mathematical derivations for kinematics and homography
 ├── simulation/
 │   ├── assets/scene.xml              # MuJoCo scene definition with camera & ArUco markers
+│   ├── assets/so101.xml              # Robot MJCF: finger pads, grasp-site TCP, 25 mm jaw tag
 │   ├── sim_robot.py                  # MuJoCo simulation robot wrapper
 │   ├── sim_calibration.py            # Synthetic homography calibrator for virtual camera
 │   └── env.py                        # Gym-style RL environment wrapper
 ├── vision/
 │   ├── camera.py                     # Camera enumeration, V4L2 device inspection & backend selection
 │   ├── capture.py                    # Shared capture thread manager & stream_video loop
-│   ├── frames.py                     # Dual-buffer engine (pristine raw vs operator annotated)
+│   ├── frames.py                     # Dual-buffer engine (pristine raw vs operator annotated) + frame timestamps
+│   ├── gripper_locator.py            # Jaw-tag locator: parallax-free grasp-site XY in mm
 │   ├── calibrator.py                 # Calibrator singleton registry (real & sim modes)
 │   ├── targets.py                    # Model-target blackboard & sleek bounding box overlay
 │   ├── overlays.py                   # Dynamic operator overlay toggles & accessors
@@ -286,6 +296,9 @@ GeminiRobotics-SO101/
 │   │   └── vla_system.md             # Externalized VLA system prompt template
 │   ├── live_session.py               # Gemini Live WebSocket session manager
 │   ├── response_assembler.py         # Pure streaming response markdown assembler
+│   ├── guardrails.py                 # Pick-loop phases, TargetLock, escalation, grasp verdict
+│   ├── pick_loop.py                  # Lift vision vote and refusal-hint builders
+│   ├── motion.py                     # Safe approach segments & cancellable multi-segment runs
 │   ├── tools.py                      # Tool registry, declarations, handlers & prompt generation
 │   └── vla_controller.py             # Closed-loop visual verification loop & guardrails
 ├── tools/
@@ -295,7 +308,7 @@ GeminiRobotics-SO101/
 │   ├── app.py                        # FastAPI application mounting Gradio Web UI
 │   ├── state.py                      # Lazy kinematics 3D state synchronization manager
 │   └── components/                   # Gradio chat, controls, and vision viewports
-└── tests/                            # Comprehensive 4-tier automated test suite
+└── tests/                            # 4-tier suite; sim_pick_harness.py = scripted pick-and-place vs MuJoCo truth
 ```
 
 ---

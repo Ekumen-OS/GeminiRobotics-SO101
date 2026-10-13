@@ -174,7 +174,7 @@ def setup_workspace_interactive(
             config_data=updated_config, output_dir=output_dir
         )
 
-        # Generate 15mm printable jaw tag sheet
+        # Generate the 25 mm printable jaw tag sheet
         created_jaw_sheet = generate_jaw_tag_sheet(output_dir=output_dir)
 
         print("\n" + "=" * 65)

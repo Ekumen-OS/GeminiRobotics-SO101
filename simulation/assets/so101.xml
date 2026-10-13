@@ -101,19 +101,34 @@
                 <geom type="mesh" class="collision" pos="0.0077 0.0001 -0.0234" quat="0.707107 -0.707107 1.66015e-15 6.45094e-15" mesh="sts3215_03a_v1" material="sts3215_03a_v1_material" />
                 
                 <geom type="mesh" class="visual" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material" />
-                <geom type="mesh" class="collision" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material" friction="2.0 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" />
+                <geom type="mesh" class="collision" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material" contype="0" conaffinity="0" />
                 
-                <site name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17" size="0.001" type="sphere" rgba="0 0 0 0" group="3" />
+                <!-- TCP: midpoint between the two finger pads at cube-centre height. The URDF frame sat on the
+                     fixed finger's inner face (x=-7.9 mm, z=-98.1 mm), so an IK target at an object's centre
+                     put that finger inside the object. -->
+                <site name="gripperframe" pos="0.007 0 -0.103" quat="0.707107 -0 0.707107 -2.37788e-17" size="0.001" type="sphere" rgba="0 0 0 0" group="3" />
+                <!-- Fixed finger pad (box, collides with the object only; never with the other pad or the floor). Its inner face is
+                     20 mm from the grasp site: the gap between the pads is 40 mm for a 30 mm object -->
+                <geom name="pad_fixed" class="collision" type="box" pos="-0.0145 0 -0.089" size="0.0015 0.007 0.014" friction="1.5 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" contype="2" conaffinity="0" rgba="0.2 0.8 0.2 0.3" />
                 
-                <!-- ArUco Jaw Tag (ID 10) for closed-loop visual gripper localization -->
-                <geom name="aruco_jaw_tag" type="box" pos="-0.0079 0.020 -0.090" quat="1 0 0 0" size="0.018 0.018 0.0005" material="mat_marker_10" contype="0" conaffinity="0" />
+                <!-- ArUco Jaw Tag (ID 10), 25 mm square, standing on the +y flank of the gripper (normal = gripper +y, i.e. towards the
+                     workspace camera), 27 mm out from the centreline and 63 mm above the fingertip level, clear of both
+                     fingers. A tag on top of the housing is hidden behind the wrist servo from the workspace camera (0/12
+                     detections); this mount is detected in 12/12 poses at 640x480 and leaves the cube visible at a 3 cm hover.
+                     Tag centre minus grasp site, in the gripper frame (x = jaw closing direction, y = hinge axis,
+                     z = towards the wrist): (-7, +27, +63) mm. -->
+                <geom name="aruco_jaw_tag" type="box" pos="0 0.027 -0.04" quat="0.7071068 -0.7071068 0 0" size="0.0125 0.0125 0.0005" material="mat_marker_10" contype="0" conaffinity="0" />
                 
                 <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.679118 0.679118 -0.196975 0.196975">
                   <joint axis="0 0 1" name="gripper" type="hinge" range="-1.309 1.309" class="sts3215" />
                   <inertial pos="-0.00157495 -0.0300244 0.0192755" mass="0.012" fullinertia="6.61427e-06 1.89032e-06 5.28738e-06 -3.19807e-07 -5.90717e-09 -1.09945e-07" />
                   
                   <geom type="mesh" class="visual" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material" />
-                  <geom type="mesh" class="collision" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material" friction="2.0 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" />
+                  <geom type="mesh" class="collision" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material" contype="0" conaffinity="0" />
+                  <!-- Moving finger pad: vertical (parallel to the fixed pad) when the jaw stalls on a 30 mm object (gripper about -22 deg).
+                       The open gap is 40 mm (fixed pad face 20 mm from the grasp site), so a cube centred on the site has 5 mm
+                       of clearance to the fixed pad while the jaws descend; closing then slides it 5 mm against the fixed pad. -->
+                  <geom name="pad_moving" class="collision" type="box" pos="-0.013457 -0.064227 0.0188" quat="0.704225 -0.704225 0.063774 -0.063774" size="0.0015 0.007 0.014" friction="1.5 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" contype="4" conaffinity="0" rgba="0.2 0.8 0.2 0.3" />
                 </body>
               </body>
             </body>
@@ -150,13 +165,16 @@
     <material name="wrist_roll_follower_so101_v1_material" rgba="0.95 0.95 0.95 1" />
     <material name="moving_jaw_so101_v1_material" rgba="0.95 0.95 0.95 1" />
   </asset>
+  <!-- The gripper torque is capped at 1.5 N.m (the other joints keep 3.35). At the full 3.35 N.m the pads
+       squeeze a 30 mm cube out of the grip while it is lifted; below ~1.2 the jaw closes too slowly
+       to have stalled by the time the arm lifts. -->
   <actuator>
     <position class="sts3215" name="shoulder_pan" joint="shoulder_pan" forcerange="-3.35 3.35" ctrlrange="-1.524 1.524" />
     <position class="sts3215" name="shoulder_lift" joint="shoulder_lift" forcerange="-3.35 3.35" ctrlrange="-1.840 1.840" />
     <position class="sts3215" name="elbow_flex" joint="elbow_flex" forcerange="-3.35 3.35" ctrlrange="-1.705 1.705" />
     <position class="sts3215" name="wrist_flex" joint="wrist_flex" forcerange="-3.35 3.35" ctrlrange="-1.784 1.784" />
     <position class="sts3215" name="wrist_roll" joint="wrist_roll" forcerange="-3.35 3.35" ctrlrange="-2.932 2.932" />
-    <position class="sts3215" name="gripper" joint="gripper" forcerange="-3.35 3.35" ctrlrange="-1.309 1.309" />
+    <position class="sts3215" name="gripper" joint="gripper" forcerange="-1.5 1.5" ctrlrange="-1.309 1.309" />
   </actuator>
   <equality />
 </mujoco>

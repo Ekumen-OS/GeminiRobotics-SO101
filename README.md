@@ -118,8 +118,12 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
 | `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
 | `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
-| `GRIPPER_TAG_OFFSET_PX` | `0.0,0.0` | Pixel offset `dx,dy` (x first) from the jaw ArUco tag centre to the point between the fingertips, measured at hover height (step 7 below). |
-| `GRIPPER_LOCATOR_ER2` | `0` | Enable ER2 visual pointing fallback when ArUco jaw marker is not detected (`1` or `0`). |
+| `ALIGNMENT_TOLERANCE_MM` | `4.0` | Jaw-to-target distance (robot mm, table plane) under which a hover counts as aligned (`is_aligned`) and a descent is allowed. |
+| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-7,27,63` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default is the simulated mount; measure it on the real arm. |
+| `CAMERA_HFOV_DEG` | `70.0` | Nominal horizontal field of view of the workspace camera, used to recover the camera position from the table homography (a ±10 % error costs only a few mm). Check the logged `[Calibration] [CAMERA] centre_mm=[x, y, z]` against a tape measure. |
+| `BIAS_CORRECTION` | `1` | Learn a per-target correction from jaw-tag residuals at the hover (`1`) or never correct (`0`, for A/B runs). |
+| `GRIPPER_LOCATOR_ER2` | `0` | Ask ER2 to point at the fingertips (`1` or `0`). Report-only: the point appears as `perception.er2_gripper_point_1000` and never decides alignment. |
+| `ER2_LOCATOR_MODEL` | `gemini-robotics-er-2-preview` | Model for that pointing query (`generate_content`; the streaming Live model does not serve it). |
 | `VISION_SETTLE_S` | `0.3` | Camera stabilization settling delay in seconds before capturing post-action verification frames. |
 | `ROBOT_PORT` / `SO101_PORT` | `/dev/tty.usbmodem...` | Serial device path for physical Feetech bus adapter. |
 | `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
@@ -137,10 +141,24 @@ Follow this procedure when deploying to a physical SO-101 robotic arm. Steps 1�
    $$\text{GRASP\_EMPTY\_MARGIN\_DEG} \approx 0.40 \times \Delta A$$
    *(e.g., $A_{\text{empty}} = -74.5^\circ$, margin $= 0.40 \times 40.0^\circ = 16.0^\circ$, threshold $= -58.5^\circ$). Without the anchor the threshold is measured from $-75^\circ$, which is only correct if your calibration happens to close there.*
 5. **Leave `GRASP_LOAD_MIN` unset** until you have read a few `load=` values from the log: the STS3215 `Present_Load` register is raw sign-magnitude (bit 10 is direction), so a reverse-direction load reads above 1023.
-6. **Mount the Jaw Tag**: Print the jaw-tag page (`uv run python main.py --task generate_markers`): ArUco `DICT_4X4_50`, **ID 10**, ~15 mm, matte. Stick it flat on the top face of the **fixed** jaw, facing the overhead camera. Hover 5 cm over the mat centre and each corner; the tag must be detected in all five places.
-7. **Measure the Tag Offset**: At hover, measure the pixel offset from the tag centre to the point between the fingertips and set `GRIPPER_TAG_OFFSET_PX=<dx>,<dy>` (x first). Until the tag is mounted, the locator falls back to forward kinematics (`gripper_source="kinematic"`), or to ER2 pointing with `GRIPPER_LOCATOR_ER2=1`.
-8. **Validate with `DESCENT_GATE=warn`** (the real-mode default): run five picks of the cube from different spots. Expect `gripper_source="aruco"`, a measured `[dy, dx]` within 25 units on most hovers, a non-zero `applied_correction_1000` on the descent, and a grasp verdict that matches what you see every time.
+6. **Mount the Jaw Tag**: Print the jaw-tag page (`uv run python main.py --task generate_markers`): ArUco `DICT_4X4_50`, **ID 10**, **25 mm** (smaller tags are detected in only a fraction of poses at 640×480), matte, and mount it as described in [Jaw tag](#jaw-tag). Hover 5 cm over the mat centre and each corner; the tag must be detected in all five places (watch `/api/stream`).
+7. **Measure the Tag Offset and Check the Camera**: Measure the tag-centre-to-grasp-site offset with a ruler in the gripper frame and set `GRIPPER_TAG_LOCAL_OFFSET_MM=<x>,<y>,<z>`. Set `CAMERA_HFOV_DEG` from the camera's datasheet and compare the logged camera centre (`[Calibration] [CAMERA] centre_mm=...`) with a tape measure (height above the mat above all). Until the tag is mounted the locator falls back to forward kinematics (`gripper_source="kinematic"`, `is_aligned=null`).
+8. **Validate with `DESCENT_GATE=warn`** (the real-mode default): run five picks of the cube from different spots. Expect `gripper_source="aruco"`, a measured offset `measured_offset` (`dx_mm`, `dy_mm`) that falls to within `ALIGNMENT_TOLERANCE_MM` after the second hover, a non-zero `applied_correction_mm` on that second hover and the descent, and a `grasp_verification` that matches what you see every time. Search the log for `convergence timeout`: it means the servos did not reach the commanded pose within 2 s, so measurements may be taken too early.
 9. **Switch to `DESCENT_GATE=block`**: a deliberately misaligned descent must now be refused with `error_type="descent_gate"` instead of executed.
+
+### Jaw tag
+
+The closed loop measures where the gripper really is with one ArUco tag on the gripper, compared with the target in robot millimetres (see `vision/gripper_locator.py`).
+
+- **Tag**: `DICT_4X4_50`, **ID 10**, **25 mm** square, matte, flat (`uv run python main.py --task generate_markers` prints it at 1:1; verify the 50 mm scale line on the printout).
+- **Where (simulation mount, a printable bracket on the real arm)**: on the flank of the gripper that faces the workspace camera, beside the round moving-jaw pivot horn and clear of both fingers: 27 mm out from the gripper centreline and 40 mm below the top of the servo block, i.e. about 63 mm above the fingertip level when the gripper points straight down. A tag on top of the housing was tried and is hidden behind the wrist servo for a camera at the side (0/12 detections); a tag next to the fingertips hides the cube (visible cube area 750 → 0–390 px²). The sim mount is detected in 12/12 poses at 640×480 and leaves ≥ 89 % of the cube visible at a 3 cm hover. A real mount depends on where *your* camera is: check the tag in `/api/stream` before trusting it.
+- **Gripper frame for `GRIPPER_TAG_LOCAL_OFFSET_MM`** (measure with the gripper pointing down, jaws open; the offset is *tag centre minus grasp site*):
+  - **origin**: the grasp site: the midpoint between the inner faces of the two finger pads when closed on a 30 mm object, at the level of the pads' lower edge (the fingertip level);
+  - **x**: the jaw closing direction, from the fixed finger towards the moving jaw;
+  - **y**: along the jaw hinge axis, towards the side that carries the moving-jaw pivot horn;
+  - **z**: along the wrist-roll axis from the fingertips towards the wrist (up when the gripper points down).
+- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-7,27,63` (the simulated mount, 1.5 mm accurate against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
+- **Grasp site (TCP) note**: in `simulation/assets/so101.xml` the `gripperframe` site was moved from the URDF position (on the inner face of the *fixed finger*, x = −7.9 mm, z = −98.1 mm in the gripper frame) to the pad midpoint (x = +7 mm, z = −103 mm): with the URDF site an IK target at an object's centre puts the fixed finger inside the object. The IK solver reads the same file in real mode, so a real arm now also reaches the object with the *middle of the jaws*, not the fixed finger. The simulated pads leave 5 mm of clearance to a 30 mm cube on the fixed side; closing slides the cube against the fixed pad.
 
 ## Running the Robot (`main.py`)
 
@@ -215,12 +233,12 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 - **Strict "Move -> Look -> Correct" Visual Verification Loop**:
   - Enforces a mandatory 3-phase cycle for spatial manipulation:
     1. **Move**: Move the arm/gripper towards approach hover altitude above the target object using `move_to_spatial_point`.
-    2. **Look**: Model explicitly pauses, inspects the freshly settled post-action camera frame, detects current gripper position $[y_g, x_g]$ and target coordinates $[y_t, x_t]$, and computes the relative offset error $[dy, dx] = [y_t - y_g, x_t - x_g]$.
-    3. **Correct**: If visual alignment error exceeds threshold ($\| [dy, dx] \| > \epsilon$), the model executes corrective micro-adjustments before descending to grasp depth.
+    2. **Look**: Model explicitly pauses and inspects the freshly settled post-action camera frame to understand the scene, then reads the *measured* alignment from the tool response (`perception.measured_offset` in mm, `is_aligned`, `applied_correction_mm`). The controller, not the model, measures the gripper (jaw tag, parallax removed) and never lets the model offset a point.
+    3. **Correct**: If `is_aligned` is `false`, the model re-issues the same hover call; the controller applies the learned per-target correction and the next measurement should be within tolerance. Only an aligned hover may descend.
 - **Programmatic Perception Feedback & Anti-Hallucination Guardrails (`robot/perception.py`)**:
-  - Automatically calculates real OpenCV visual offsets $[dy, dx]$, distances, and binary alignment flags (`is_aligned` within tolerance $\le 25$) returned in tool payloads.
-  - Enforces strict controller gates blocking table descent when misaligned ($|dy| > 25$ or $|dx| > 25$) and blocking transport if the object remains on the table post-lift.
-  - Automates a 3-attempt grasp retry loop with graceful escalation if missed.
+  - Locks the target object once (footprint centre in robot mm), measures the jaw against it in the table plane (`dx_mm`, `dy_mm`, `distance_mm`, `is_aligned` within `ALIGNMENT_TOLERANCE_MM`) and returns the numbers in the tool payload.
+  - Enforces strict controller gates: no descent without a measured, aligned hover at the same target; after the grasp only the lift (straight up) is allowed until the post-lift gripper sensor confirms the grasp (vision can only veto); transport then moves to a raw destination while the aperture is re-read after every move.
+  - Automates a 3-attempt grasp retry loop per object with graceful escalation (also after 3 consecutive refusals or 4 hovers without a descent).
 - **Post-Action Observation Frame Injection**: Injects a fresh settled camera frame (with a 0.3s physical stabilization delay) immediately after every blocking tool execution before returning `FunctionResponse`, providing ground-truth post-action state for immediate inspection and error correction.
 - **UI Input Blocking & Dynamic Status Indication**: Prevents concurrent user input or race conditions during model turns. When an instruction is submitted, the prompt textbox, execution button, homing button, clear button, and randomize target button are disabled, and the banner transitions to `⏳ Status: Working...`. Once the model finishes its execution turn (or on exception), the UI is safely restored to `🟢 Status: Ready` via a robust `try...finally` block.
 - **Verbose Timestamped Terminal Logging vs. Chatbot CoT**:
@@ -241,6 +259,11 @@ uv run pre-commit install
 
 # 1. Run complete automated unit test suite (Workspace Calibration, Tool Adapters, VLA Controller, UI)
 uv run pytest tests/ -v
+
+# 1b. Run the slow physics scenarios: scripted pick-and-place over 10 seeded cube placements in
+#     MuJoCo (unbiased, and with a hidden 1.5 deg shoulder-pan encoder offset with/without the
+#     corrector), judged against MuJoCo ground truth; prints the metrics table with -s
+uv run pytest -m slow -s
 
 # 2. Verify movement & kinematics via automated X, Y, and Z Cartesian line sweeps
 uv run python main.py --task test_simulation

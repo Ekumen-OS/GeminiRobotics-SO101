@@ -1,7 +1,7 @@
 """Four-tier end-to-end test suite for perception feedback & anti-hallucination guardrails.
 
 Covers:
-- F5: Programmatic Perception Metrics Engine ([dy, dx], distance, is_aligned, grasp elevation)
+- F5: Programmatic Perception Metrics Engine ([dy, dx], distance, is_aligned)
 - F6: Tool Execution Feedback Enrichment (hover hints, grasp verification)
 - F7: Anti-Hallucination Descent Gate (|dy| <= 25, |dx| <= 25)
 - F8: Anti-Hallucination Transport Gate & Retry Loop (3-attempt state machine & escalation)
@@ -20,7 +20,7 @@ from google.genai import types
 
 from agent.tools import execute_tool_call
 from agent.vla_controller import VLAController, parse_targets_from_text
-from robot.perception import compute_visual_alignment, verify_grasp_elevation
+from robot.perception import compute_visual_alignment
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
@@ -115,32 +115,6 @@ def test_t1_f5_perception_detection_on_synthetic_frame() -> None:
     assert abs(bot_x - 484.0) <= 15.0
 
 
-def test_t1_f5_grasp_elevation_verification_contract() -> None:
-    """Validate grasp elevation verification schema and confidence assignment."""
-    pre_frame = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
-    post_frame = np.full((480, 640, 3), 180, dtype=np.uint8)  # Empty table
-    # Successful grasp: object present pre-lift, absent post-lift
-    res_success = verify_grasp_elevation(
-        pre_lift_frame_rgb=pre_frame,
-        post_lift_frame_rgb=post_frame,
-        target_point_1000=[760.0, 484.0],
-    )
-    assert res_success["object_elevated"] is True
-    assert res_success["object_detected_on_table"] is False
-    assert res_success["grasped"] is True
-    assert res_success["confidence"] >= 0.90
-
-    # Failed grasp: object still resting on the table post-lift
-    res_failed = verify_grasp_elevation(
-        pre_lift_frame_rgb=pre_frame,
-        post_lift_frame_rgb=pre_frame,
-        target_point_1000=[760.0, 484.0],
-    )
-    assert res_failed["object_elevated"] is False
-    assert res_failed["object_detected_on_table"] is True
-    assert res_failed["grasped"] is False
-
-
 @pytest.mark.asyncio
 async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     """Validate move_to_spatial_point returns appropriate visual verification hint."""
@@ -155,7 +129,7 @@ async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     assert res_hover["status"] == "success"
     hint = res_hover.get("visual_hint", "")
     assert "Visual Verification Loop" in hint
-    assert "[dy, dx]" in hint
+    assert "alignment not measured" in hint  # no frame provider: the hint does not pretend
 
     # Case 2: Contact height (z_height_cm = 0.0 < 3.0)
     call_contact = DummyToolCall(
@@ -166,7 +140,7 @@ async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     assert res_contact["status"] == "success"
     contact_hint = res_contact.get("visual_hint", "")
     assert "Arm reached contact height" in contact_hint
-    assert "gripper jaws surround the target" in contact_hint
+    assert "close_gripper()" in contact_hint
 
 
 @pytest.mark.asyncio
@@ -191,14 +165,16 @@ async def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
 
 
 def test_t1_f7_system_prompt_mandates_descent_alignment_gate() -> None:
-    """Validate that system prompt contains strict |dy| <= 25 and |dx| <= 25 rules."""
+    """The prompt makes the measured is_aligned the only descent criterion (mm tolerance)."""
     controller = VLAController(mode="sim")
     prompt = controller.get_history()[0]["content"]
 
-    assert "|dy| > 25 or |dx| > 25" in prompt
-    assert "|dy| <= 25 and |dx| <= 25" in prompt
-    assert "Correcting position at hover height" in prompt
+    assert "offset more than 4 mm" in prompt
+    assert "within 4 mm" in prompt
     assert "Descending to grasp" in prompt
+    assert "Only proceed to descend when `is_aligned` is `true`" in prompt
+    assert "z_height_cm=3.0" in prompt  # the hover height of the closed loop
+    assert "[dy, dx]" not in prompt  # no more image-space offsets for the model to compute
 
 
 def test_t1_f9_clean_diagnostic_logging_format_and_routing() -> None:
@@ -727,16 +703,14 @@ def test_t1_f7_anti_hallucination_gate_rejects_descent_on_large_misalignment() -
 
 
 def test_t1_f8_anti_hallucination_transport_gate_blocks_motion_when_object_on_table() -> None:
-    """Validate that grasp verification marks grasp as unverified if object is on table."""
-    frame_with_cube = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
-    verify_result = verify_grasp_elevation(
-        pre_lift_frame_rgb=frame_with_cube,
-        post_lift_frame_rgb=frame_with_cube,  # Object still resting on table surface
-        target_point_1000=[760.0, 484.0],
-    )
-    assert verify_result["object_elevated"] is False
-    assert verify_result["grasped"] is False
-    assert verify_result["object_detected_on_table"] is True
+    """A stalled gripper with the object still on its footprint is a missed grasp (vision veto)."""
+    from agent.guardrails import decide_grasp
+
+    verdict = decide_grasp(aperture_after_lift=True, vote="on_table")
+    assert verdict.verdict == "missed"
+    assert verdict.reason == "object_still_on_table"
+    assert verdict.transport_allowed is False
+    assert verdict.grasped is False
 
 
 @pytest.mark.asyncio

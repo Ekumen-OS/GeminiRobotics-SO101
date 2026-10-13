@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from robot.constants import JOINT_NAMES
 from robot.contracts import GripperReading
 from robot.errors import HardwareError
 from robot.interface import RobotInterface
+from robot.logger import log_with_tag
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,13 @@ try:
     LEROBOT_AVAILABLE = True
 except ImportError:
     LEROBOT_AVAILABLE = False
+
+# After a trajectory the arm joints must reach the goal within this many degrees...
+CONVERGENCE_TOL_DEG = 1.5
+# ...within this long (s), polled this often; otherwise a WARN naming the per-joint error is logged
+# ("convergence timeout") and the move returns anyway: the servos may simply not reach the goal.
+CONVERGENCE_TIMEOUT_S = 2.0
+CONVERGENCE_POLL_S = 0.03
 
 # Fields every motor entry must define with a concrete value for the file to be usable.
 _REQUIRED_CALIB_FIELDS = ("id", "drive_mode", "homing_offset", "range_min", "range_max")
@@ -48,6 +57,7 @@ class RealSO101Robot(RobotInterface):
     """Wrapper class for physical SO-101 robot arm using Feetech STS3215 servos."""
 
     mode = "real"
+    convergence_timeout_s: float = CONVERGENCE_TIMEOUT_S
 
     def __init__(
         self,
@@ -256,6 +266,7 @@ class RealSO101Robot(RobotInterface):
 
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement."""
+        self.interrupt_epoch += 1
         self._stop_requested = True
 
     def read_gripper_state(self) -> GripperReading:
@@ -311,6 +322,7 @@ class RealSO101Robot(RobotInterface):
         target_qpos: np.ndarray,
         duration_sec: float = 1.0,
         dt: float = 0.02,
+        cancel_epoch: int | None = None,
     ) -> None:
         """Smoothly interpolate from current joint positions to target joint positions.
 
@@ -318,12 +330,13 @@ class RealSO101Robot(RobotInterface):
             target_qpos: Target joint angles in radians.
             duration_sec: Duration of the interpolation trajectory in seconds.
             dt: Timestep duration in seconds.
+            cancel_epoch: ``interrupt_epoch`` captured before a multi-segment motion started.
 
         Raises:
             HardwareError: If physical communication fails or motion is interrupted.
         """
-        import time
-
+        if cancel_epoch is not None and cancel_epoch != self.interrupt_epoch:
+            raise HardwareError("Motion interrupted", robot_moved=False)
         self._stop_requested = False
         target_qpos = np.asarray(target_qpos, dtype=np.float32)
         start_qpos = self.get_joint_positions()
@@ -347,5 +360,43 @@ class RealSO101Robot(RobotInterface):
                 time.sleep(dt)
                 if self._stop_requested:
                     raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+            self._wait_for_convergence(target_qpos)
         finally:
             self._stop_requested = False
+
+    def _wait_for_convergence(self, target_qpos: np.ndarray) -> None:
+        """Wait until the arm joints have reached the goal (the servos lag the commanded sweep).
+
+        The measurement frame that follows a move must show the arm where it ended up, so the
+        move does not return while ``Present_Position`` is still travelling. The gripper is
+        excluded: it legitimately stalls on a grasped object.
+
+        Args:
+            target_qpos: Goal joint angles in radians.
+
+        Raises:
+            HardwareError: If a position read fails or the motion is interrupted while waiting.
+        """
+        timeout = float(self.convergence_timeout_s)
+        if timeout <= 0.0:
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._stop_requested:
+                raise HardwareError("Motion interrupted", robot_moved=True)
+            present = self.get_joint_positions()
+            error_deg = np.degrees(np.abs(present[:5] - target_qpos[:5]))
+            if float(error_deg.max()) < CONVERGENCE_TOL_DEG:
+                return
+            if time.monotonic() >= deadline:
+                per_joint = ", ".join(
+                    f"{name}={err:.1f}"
+                    for name, err in zip(JOINT_NAMES[:5], error_deg, strict=False)
+                )
+                log_with_tag(
+                    logger,
+                    "WARN",
+                    f"convergence timeout after {timeout:.1f}s; per-joint error (deg): {per_joint}",
+                )
+                return
+            time.sleep(CONVERGENCE_POLL_S)

@@ -10,12 +10,12 @@ These tests document the un-hardened failure paths that Phase 3c will close:
 import threading
 from unittest.mock import MagicMock, patch
 
+import cv2
 import numpy as np
 import pytest
 
 import vision.frames as frames_mod
 from robot.calibration import ArucoWorkspaceCalibrator
-from robot.perception import compute_visual_alignment
 from robot.real_robot import RealSO101Robot
 from robot.registry import set_active_robot
 from tests.conftest import MockRobot
@@ -32,6 +32,7 @@ def _make_mock_real_robot(fake_bus: MagicMock | None = None) -> RealSO101Robot:
     robot.calibration = {"joint": MagicMock()}
     robot._last_qpos = np.zeros(6, dtype=np.float32)
     robot._stop_requested = False
+    robot.convergence_timeout_s = 0.0  # fake buses do not move; no wait for convergence
     return robot
 
 
@@ -162,20 +163,24 @@ def test_calibration_update_homography_atomic_leaves_previous_matrix() -> None:
 
 
 def test_perception_refinement_raises_perception_unavailable_flipped() -> None:
-    """FLIPPED: compute_visual_alignment raises PerceptionUnavailable on refinement error."""
+    """FLIPPED: a detector crash during target refinement raises PerceptionUnavailable.
+
+    Refinement now happens once, in the tool (``_refine_point``); ``compute_visual_alignment``
+    no longer re-detects the target.
+    """
+    from agent.tools import _refine_point
     from robot.errors import PerceptionUnavailable
 
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    ok, enc = cv2.imencode(".jpg", frame)
+    assert ok
     with patch(
-        "robot.perception.refine_point_to_nearest_object",
+        "agent.tools.refine_point_to_nearest_object",
         side_effect=RuntimeError("Salient detector crash"),
     ):
-        with pytest.raises(PerceptionUnavailable, match="Target visual refinement failed"):
-            compute_visual_alignment(
-                frame_rgb=frame,
-                target_point_1000=[500.0, 500.0],
-                gripper_point_1000=[500.0, 500.0],
-            )
+        with pytest.raises(PerceptionUnavailable, match="Visual refinement failed") as exc:
+            _refine_point([500.0, 500.0], lambda: enc.tobytes())
+    assert exc.value.robot_moved is False
 
 
 def test_real_mode_placeholder_frame_fails_closed_flipped() -> None:
@@ -190,24 +195,6 @@ def test_real_mode_placeholder_frame_fails_closed_flipped() -> None:
 
     jpeg = get_latest_raw_jpeg()
     assert jpeg is None
-
-
-def test_verify_grasp_elevation_detector_failure_raises_perception_unavailable_flipped() -> None:
-    """FLIPPED: verify_grasp_elevation raises PerceptionUnavailable on detector failure."""
-    from robot.errors import PerceptionUnavailable
-    from robot.perception import verify_grasp_elevation
-
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    with patch(
-        "robot.perception.detect_workspace_objects",
-        side_effect=RuntimeError("Corrupt frame or detector crash"),
-    ):
-        with pytest.raises(PerceptionUnavailable, match="Pre-lift object detection failed"):
-            verify_grasp_elevation(
-                pre_lift_frame_rgb=frame,
-                post_lift_frame_rgb=frame,
-                target_point_1000=[500.0, 500.0],
-            )
 
 
 def test_driver_write_failure_on_first_step_sets_robot_moved_false() -> None:

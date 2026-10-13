@@ -1,17 +1,28 @@
-"""Visual gripper localization module.
+"""Visual jaw localization: the jaw ArUco tag, parallax removed, in robot millimetres.
 
-Locates the robot gripper in image coordinates using fiducial markers (jaw ArUco tag)
-with forward kinematics (kinematic projection) fallback.
+The tag sits above the table, so its image position is displaced from the grasp site's table
+footprint by parallax that varies with height and position (a constant pixel offset cannot work).
+The locator therefore does not compare image points: it takes the tag's pixel, intersects the
+viewing ray with the horizontal plane at the tag's height (known from forward kinematics), and
+subtracts the tag-to-grasp-site offset rotated by the forward-kinematics orientation. The result
+is the grasp-site XY in the same table-plane millimetres as the target.
 """
 
+import logging
 from dataclasses import dataclass
-from typing import Any
 
 import cv2
 import numpy as np
 
+from robot.calibration import GeometrySnapshot
 from robot.cartesian_ik import CartesianIK
+from robot.errors import CalibrationUnavailable
+from robot.logger import log_with_tag
 from robot.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+JAW_TAG_ID = 10
 
 _ik_singleton: CartesianIK | None = None
 
@@ -24,40 +35,38 @@ def _get_ik() -> CartesianIK:
     return _ik_singleton
 
 
-@dataclass
-class GripperLocation:
-    """Gripper location result with source provenance and confidence.
+@dataclass(frozen=True)
+class JawLocation:
+    """A jaw position measured from the jaw tag.
 
     Attributes:
-        point_1000: [y, x] normalized coordinates in [0, 1000] range.
-        source: Provenance source ('aruco', 'kinematic', 'er2').
-        confidence: Confidence score in [0.0, 1.0].
+        xy_mm: Grasp-site XY in robot mm (parallax removed).
+        tag_pixel: Pixel (u, v) of the tag centre.
+        tag_height_mm: Tag-centre height above the table used for the parallax correction.
+        site_pixel: Pixel of the site's table-plane footprint (for overlays), or None.
+        source: Always 'aruco'.
     """
 
-    point_1000: list[float]
-    source: str
-    confidence: float
+    xy_mm: tuple[float, float]
+    tag_pixel: tuple[float, float]
+    tag_height_mm: float
+    site_pixel: tuple[float, float] | None
+    source: str = "aruco"
 
 
-def locate_gripper_aruco(
-    frame_rgb: np.ndarray,
-    tag_id: int = 10,
-    offset_px: tuple[float, float] = (0.0, 0.0),
-) -> GripperLocation | None:
-    """Locate the gripper in an RGB frame using jaw ArUco tag.
+def detect_jaw_tag(frame_rgb: np.ndarray | None, tag_id: int = JAW_TAG_ID) -> np.ndarray | None:
+    """Detect the jaw ArUco tag and return its four corner pixels.
 
     Args:
-        frame_rgb: RGB image array of shape (H, W, 3).
+        frame_rgb: RGB image array of shape (H, W, 3), or None.
         tag_id: Marker ID to search for (default 10).
-        offset_px: (offset_x, offset_y) pixel shift from marker center to fingertips.
 
     Returns:
-        GripperLocation if marker is detected, else None.
+        (4, 2) float array of corner pixels (u, v), or None if the tag is not visible.
     """
     if frame_rgb is None or getattr(frame_rgb, "size", 0) == 0:
         return None
 
-    h, w = frame_rgb.shape[:2]
     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -75,102 +84,63 @@ def locate_gripper_aruco(
     if ids is not None and len(ids) > 0:
         for i, mid in enumerate(ids.flatten()):
             if int(mid) == tag_id:
-                marker_corners = corners[i].reshape(4, 2)
-                center = np.mean(marker_corners, axis=0)
-                px = float(center[0] + offset_px[0])
-                py = float(center[1] + offset_px[1])
-                y_norm = max(0.0, min(1000.0, (py / h) * 1000.0))
-                x_norm = max(0.0, min(1000.0, (px / w) * 1000.0))
-                return GripperLocation(
-                    point_1000=[float(y_norm), float(x_norm)],
-                    source="aruco",
-                    confidence=0.95,
-                )
-
+                return np.asarray(corners[i], dtype=np.float64).reshape(4, 2)
     return None
 
 
-def locate_gripper_kinematic(
-    calibrator: Any,
-    robot: Any,
-    frame_shape: tuple[int, int] = (480, 640),
-) -> GripperLocation | None:
-    """Locate the gripper using forward kinematics and workspace homography projection.
-
-    Args:
-        calibrator: ArucoWorkspaceCalibrator instance with valid inverse homography.
-        robot: Robot controller providing get_joint_positions().
-        frame_shape: Camera image dimensions as (height, width).
-
-    Returns:
-        GripperLocation if FK projection succeeds, else None.
-    """
-    if robot is None or not hasattr(robot, "get_joint_positions"):
-        return None
-    if calibrator is None or not getattr(calibrator, "is_calibrated", False):
-        return None
-
-    try:
-        qpos_rad = robot.get_joint_positions()
-        if len(qpos_rad) < 5:
-            return None
-
-        ik = _get_ik()
-        ee_xyz = ik.forward_kinematics(qpos_rad)
-        x_mm = float(ee_xyz[0] * 1000.0)
-        y_mm = float(ee_xyz[1] * 1000.0)
-
-        proj = calibrator.robot_mm_to_pixel(x_mm, y_mm)
-        if proj is None:
-            return None
-
-        px, py = proj
-        h, w = frame_shape
-        y_norm = max(0.0, min(1000.0, (py / h) * 1000.0))
-        x_norm = max(0.0, min(1000.0, (px / w) * 1000.0))
-
-        return GripperLocation(
-            point_1000=[float(y_norm), float(x_norm)],
-            source="kinematic",
-            confidence=0.5,
-        )
-    except (RuntimeError, ValueError, TypeError, IndexError):
-        return None
-
-
-def locate_gripper_1000(
+def locate_jaw_xy_mm(
     frame_rgb: np.ndarray | None,
-    calibrator: Any | None = None,
-    robot: Any | None = None,
-    fallback_to_fk: bool = True,
-) -> GripperLocation | None:
-    """Locate gripper position [y, x] in normalized 0-1000 image coordinates.
-
-    Tries jaw ArUco tag detection first. If not found and fallback_to_fk is True,
-    falls back to forward kinematics projected through workspace homography.
+    snapshot: GeometrySnapshot | None,
+    qpos_rad: np.ndarray,
+    tag_offset_mm: tuple[float, float, float] | None = None,
+    ik: CartesianIK | None = None,
+) -> JawLocation | None:
+    """Locate the grasp site in robot millimetres from the jaw tag.
 
     Args:
-        frame_rgb: Optional RGB frame from camera.
-        calibrator: Optional ArucoWorkspaceCalibrator instance.
-        robot: Optional robot controller.
-        fallback_to_fk: Whether to attempt FK fallback if tag is not detected.
+        frame_rgb: Measurement frame.
+        snapshot: Geometry snapshot (homography and camera model) taken for this call.
+        qpos_rad: Measured joint angles (radians); they give the tag height and the gripper
+            orientation. The shoulder-pan encoder bias the corrector fixes is deliberately *not*
+            observable here: the tag pixel is what the camera really saw.
+        tag_offset_mm: Tag centre relative to the grasp site in the gripper frame (mm);
+            defaults to ``settings.gripper_tag_local_offset_mm``.
+        ik: Kinematics solver (shared singleton by default).
 
     Returns:
-        GripperLocation if found, else None.
+        JawLocation, or None if the tag is not visible, the calibration is missing, or there is
+        no camera model to remove the parallax with.
     """
-    settings = get_settings()
+    if snapshot is None:
+        return None
+    corners = detect_jaw_tag(frame_rgb)
+    if corners is None:
+        return None
 
-    if frame_rgb is not None:
-        loc = locate_gripper_aruco(
-            frame_rgb,
-            tag_id=10,
-            offset_px=settings.gripper_tag_offset_px,
-        )
-        if loc is not None:
-            return loc
+    offset = np.asarray(
+        tag_offset_mm if tag_offset_mm is not None else get_settings().gripper_tag_local_offset_mm,
+        dtype=np.float64,
+    )
+    solver = ik if ik is not None else _get_ik()
+    site_m, rotation = solver.gripper_frame_pose(np.asarray(qpos_rad, dtype=np.float64))
+    site_mm = site_m * 1000.0
+    tag_offset_world = rotation @ offset
+    tag_height_mm = float(site_mm[2] + tag_offset_world[2])
 
-    if fallback_to_fk and robot is not None and calibrator is not None:
-        frame_shape = frame_rgb.shape[:2] if frame_rgb is not None else (480, 640)
-        return locate_gripper_kinematic(calibrator, robot, frame_shape=frame_shape)
-
-    return None
+    centre_px = corners.mean(axis=0)
+    try:
+        tag_xy = snapshot.pixel_to_plane_mm(float(centre_px[0]), float(centre_px[1]), tag_height_mm)
+    except CalibrationUnavailable as e:
+        log_with_tag(logger, "WARN", f"Jaw locator unavailable: {e}")
+        return None
+    xy = (float(tag_xy[0] - tag_offset_world[0]), float(tag_xy[1] - tag_offset_world[1]))
+    try:
+        site_px = snapshot.table_mm_to_pixel(xy[0], xy[1])
+    except (ZeroDivisionError, FloatingPointError):
+        site_px = None
+    return JawLocation(
+        xy_mm=xy,
+        tag_pixel=(float(centre_px[0]), float(centre_px[1])),
+        tag_height_mm=tag_height_mm,
+        site_pixel=site_px,
+    )

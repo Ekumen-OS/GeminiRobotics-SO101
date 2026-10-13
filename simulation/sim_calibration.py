@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SCENE_PATH = Path(__file__).resolve().parent / "assets" / "scene.xml"
 
+# Half a pixel: continuous projection coordinates -> ArUco detector pixel-index coordinates.
+PIXEL_CENTRE_OFFSET = 0.5
+
 
 def __getattr__(name: str) -> Any:
     """Dynamically resolve configuration defaults from central Settings."""
@@ -148,7 +151,11 @@ def compute_sim_calibration(
             fovy_deg=fovy_deg,
             img_shape=img_shape,
         )
-        src_pixels.append([px, py])
+        # OpenCV's ArUco detector reports corners in pixel-index coordinates (a pixel's centre is
+        # at an integer), while the projection above is continuous (a pixel spans [i, i+1)). The
+        # calibration this replaces is built from detected marker centres, and the jaw tag is
+        # detected by the same detector, so use the detector's convention: shift by half a pixel.
+        src_pixels.append([px - PIXEL_CENTRE_OFFSET, py - PIXEL_CENTRE_OFFSET])
         dst_robot_mm.append([x_mm, y_mm])
 
     src_arr = np.array(src_pixels, dtype=np.float32)
@@ -169,11 +176,18 @@ def compute_sim_calibration(
     # Persist to disk
     target_save_path = Path(save_path) if save_path else _get_default_sim_save_path()
     target_save_path.parent.mkdir(parents=True, exist_ok=True)
+    hfov_deg = float(
+        np.degrees(
+            2.0 * np.arctan(np.tan(np.radians(fovy_deg) / 2.0) * img_shape[1] / img_shape[0])
+        )
+    )
     np.savez(
         target_save_path,
         homography=homography_matrix,
         inverse_homography=inverse_homography,
         reprojection_error=reprojection_error,
+        hfov_deg=hfov_deg,
+        image_size=np.array([img_shape[1], img_shape[0]]),
     )
     logger.info(
         f"[SimCalibration] Computed synthetic homography (err: {reprojection_error:.6f}mm) "
@@ -215,8 +229,15 @@ def init_sim_workspace_calibration(
     if calibrator is None:
         calibrator = ArucoWorkspaceCalibrator(config_path=config_path)
 
-    calibrator.homography_matrix = h_mat
-    calibrator.inverse_homography = inv_h
-    calibrator.reprojection_error = err
+    loaded = np.load(target_save_path)
+    calibrator.set_geometry(
+        h_mat,
+        inv_h,
+        err,
+        hfov_deg=float(loaded["hfov_deg"]),
+        image_size=(int(loaded["image_size"][0]), int(loaded["image_size"][1])),
+        log_camera=True,
+    )
+    calibrator.mode = "sim"
 
     return calibrator
