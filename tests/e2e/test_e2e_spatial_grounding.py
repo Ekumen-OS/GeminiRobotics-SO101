@@ -61,7 +61,9 @@ def test_t1_f1_config_marker_id_and_corner_definitions() -> None:
 
 def test_t1_f1_scene_xml_fiducial_geometries() -> None:
     """Validate that simulation scene.xml defines ArUco marker geoms matching workspace mat."""
-    scene_xml_path = Path(__file__).resolve().parent.parent / "simulation" / "assets" / "scene.xml"
+    scene_xml_path = (
+        Path(__file__).resolve().parent.parent.parent / "simulation" / "assets" / "scene.xml"
+    )
     assert scene_xml_path.exists(), f"Missing scene.xml at {scene_xml_path}"
     content = scene_xml_path.read_text()
 

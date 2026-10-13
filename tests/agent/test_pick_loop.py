@@ -18,7 +18,9 @@ from agent.guardrails import (
     MAX_HOVERS_PER_LOCK,
     GuardrailState,
     Phase,
+    decide_grasp,
 )
+from agent.pick_loop import vision_vote
 from agent.tools import (
     ToolContext,
     _handle_move_to_pose,
@@ -30,12 +32,12 @@ from agent.vla_controller import VLAController
 from robot.constants import PRESET_POSES
 from robot.vision_detector import detect_workspace_objects
 from tests.conftest import DummyToolCall, MockRobot
-from tests.pick_helpers import (
+from tests.e2e.pick_helpers import (
     next_call_from,
     parse_move_call,
     patch_measurements,
 )
-from tests.sim_pick_harness import DESTINATION_XY_M, SimPickHarness
+from tests.e2e.sim_pick_harness import DESTINATION_XY_M, SimPickHarness
 
 CUBE_XY = (0.24, 0.0)
 
@@ -402,15 +404,27 @@ def test_begin_instruction_mutates_in_place_and_resets_budget() -> None:
     assert state.retry_count == 0
 
 
-def test_interrupt_keeps_phase_but_drops_lock_and_hover() -> None:
-    """An interrupt does not open the gripper; it invalidates the lock, hover and handlers."""
+def test_interrupt_in_approach_drops_lock_and_hover() -> None:
+    """In APPROACH phase, an interrupt drops the lock, hover and handlers."""
+    state = GuardrailState()
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
+    epoch = state.epoch
+    state.on_interrupt()
+    assert state.epoch == epoch + 1
+    assert state.target is None
+    assert state.phase == Phase.APPROACH
+
+
+def test_interrupt_when_held_preserves_lock() -> None:
+    """When held unverified, an interrupt keeps the lock and grasp location."""
     state = GuardrailState()
     state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
     state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
     epoch = state.epoch
     state.on_interrupt()
     assert state.epoch == epoch + 1
-    assert state.target is None
+    assert state.target is not None
+    assert state.grasp_xy_mm == (240.0, 0.0)
     assert state.phase == Phase.HELD_UNVERIFIED
 
 
@@ -452,3 +466,110 @@ def test_lift_below_verification_height_is_raised_to_5cm(harness: SimPickHarness
     assert lift["target_xyz_m"][2] == pytest.approx(0.05)
     assert "raised from 3.0 cm to 5.0 cm" in lift["lift_note"]
     assert lift["grasp_verification"]["verdict"] == "confirmed"
+
+
+def test_held_unverified_survives_new_instruction_and_verifies(harness: SimPickHarness) -> None:
+    """Close on the cube, start a new instruction, lift -> confirmed, with cube really held."""
+    point = harness.image_point_for(*CUBE_XY)
+    _pick_until_lift(harness, point)
+    assert harness.state.phase == Phase.HELD_UNVERIFIED
+    assert harness.state.target is not None
+
+    harness.state.begin_instruction(harness.state.phase)
+    assert harness.state.target is not None
+    assert harness.state.phase == Phase.HELD_UNVERIFIED
+
+    lift = _move(harness, point, 5.0)
+    assert lift["status"] == "success"
+    assert lift["grasp_verification"]["verdict"] == "confirmed"
+    assert harness.cube_xyz()[2] > 0.035
+
+
+def test_held_unverified_survives_interrupt(harness: SimPickHarness) -> None:
+    """Close on the cube, interrupt, lift -> confirmed, with cube really held."""
+    point = harness.image_point_for(*CUBE_XY)
+    _pick_until_lift(harness, point)
+    assert harness.state.phase == Phase.HELD_UNVERIFIED
+    assert harness.state.target is not None
+
+    harness.state.on_interrupt()
+    assert harness.state.target is not None
+    assert harness.state.phase == Phase.HELD_UNVERIFIED
+
+    lift = _move(harness, point, 5.0)
+    assert lift["status"] == "success"
+    assert lift["grasp_verification"]["verdict"] == "confirmed"
+    assert harness.cube_xyz()[2] > 0.035
+
+
+def test_no_lock_reference_lets_sensor_decide(harness: SimPickHarness) -> None:
+    """A usable frame with no lock reference returns no_reference and lets sensor decide."""
+    frame = harness.frame_rgb()
+    calib = harness.calib
+    vote = vision_vote(frame, lock=None, calibrator=calib)
+    assert vote == "no_reference"
+    verdict = decide_grasp(aperture_after_lift=True, vote=vote)
+    assert verdict.verdict == "confirmed"
+    assert verdict.reason == "sensor"
+    assert verdict.to_dict()["vision"] == "no_reference"
+
+    dropped_verdict = decide_grasp(aperture_after_lift=False, vote=vote)
+    assert dropped_verdict.verdict == "missed"
+
+    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    vote_unavail = vision_vote(black_frame, lock=None, calibrator=calib)
+    assert vote_unavail == "unavailable"
+
+
+def test_unavailable_reverify_is_bounded(harness: SimPickHarness) -> None:
+    """After 2 unavailable verdicts, next consumes attempt; after budget, retry_exhausted."""
+    point = harness.image_point_for(*CUBE_XY)
+    _pick_until_lift(harness, point)
+
+    with patch("agent.tools.vision_vote", return_value="unavailable"):
+        res1 = _move(harness, point, 5.0)
+        assert res1["grasp_verification"]["verdict"] == "unverified"
+        assert harness.state.retry_count == 0
+
+        res2 = _move(harness, point, 5.0)
+        assert res2["grasp_verification"]["verdict"] == "unverified"
+        assert harness.state.retry_count == 0
+
+        res3 = _move(harness, point, 5.0)
+        assert res3["grasp_verification"]["verdict"] == "unverified"
+        assert harness.state.retry_count == 1
+
+        res4 = _move(harness, point, 5.0)
+        assert res4["grasp_verification"]["verdict"] == "unverified"
+        assert harness.state.retry_count == 2
+
+        res5 = _move(harness, point, 5.0)
+        assert res5["grasp_verification"]["verdict"] == "unverified"
+        assert harness.state.retry_count == 3
+        assert harness.state.escalated is True
+
+        res6 = _move(harness, point, 5.0)
+        assert res6["error_type"] == "retry_exhausted"
+
+
+def test_repeated_lift_holds_height(harness: SimPickHarness) -> None:
+    """A repeated lift must hold its absolute height (within ±1 mm)."""
+    point = harness.image_point_for(*CUBE_XY)
+    _pick_until_lift(harness, point)
+
+    with patch("agent.tools.vision_vote", return_value="unavailable"):
+        res1 = _move(harness, point, 5.0)
+        z1 = harness.site_xyz()[2]
+        res2 = _move(harness, point, 5.0)
+        z2 = harness.site_xyz()[2]
+        res3 = _move(harness, point, 5.0)
+        z3 = harness.site_xyz()[2]
+
+    assert res1["status"] == "success"
+    assert res2["status"] == "success"
+    assert res3["status"] == "success"
+    assert abs(z1 - 0.05) <= 0.001
+    assert abs(z2 - 0.05) <= 0.001
+    assert abs(z3 - 0.05) <= 0.001
+    assert abs(z2 - z1) <= 0.001
+    assert abs(z3 - z2) <= 0.001

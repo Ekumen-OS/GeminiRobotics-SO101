@@ -158,6 +158,7 @@ def test_clear_history_keeps_system_prompt() -> None:
     assert "Gemini Robotics Assistant" in history[0]["content"]
 
 
+@pytest.mark.slow
 def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> None:
     """Verify frames are streamed during blocking tool and send_tool_response called once."""
     import time
@@ -222,6 +223,7 @@ def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> Non
     assert tool_response_time >= max(send_frame_times)
 
 
+@pytest.mark.usefixtures("real_sleep")
 def test_frame_streamer_does_not_delay_tool_response(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify blocking tool taking 0.25s produces tool response within 0.5s of tool returning."""
     import time

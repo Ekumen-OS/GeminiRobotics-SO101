@@ -13,9 +13,12 @@ import textwrap
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not sys.platform.startswith("linux"), reason="headless EGL default is Linux-only"
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="headless EGL default is Linux-only"
+    ),
+    pytest.mark.slow,
+]
 
 PROBE = textwrap.dedent(
     """

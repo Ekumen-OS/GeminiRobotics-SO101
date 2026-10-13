@@ -10,7 +10,7 @@ from robot.vision_detector import (
     refine_point_to_nearest_object,
 )
 from simulation.sim_calibration import init_sim_workspace_calibration
-from tests.test_sim_physics import _Scene
+from tests.simulation.test_sim_physics import _Scene
 from vision import get_calibrator
 
 
@@ -64,6 +64,57 @@ def test_footprint_centre_error_at_random_yaw_is_reported(sim_scene: _Scene) -> 
         f"footprint centre error random yaw: mean {np.mean(errors):.2f} mm max {max(errors):.2f} mm"
     )
     assert len(errors) == 10
+
+
+def test_footprint_centre_random_yaw_within_4mm_sim(sim_scene: _Scene) -> None:
+    """20 seeded placements, yaw uniform in [0, 90 deg); max error <= 4 mm."""
+    homography = get_calibrator(mode="sim").homography_matrix
+    rng = np.random.default_rng(42)
+    errors: list[float] = []
+    bucket_errors: dict[str, list[float]] = {
+        "0-15": [],
+        "15-30": [],
+        "30-45": [],
+        "45-60": [],
+        "60-75": [],
+        "75-90": [],
+    }
+    for _ in range(20):
+        x, y = float(rng.uniform(0.17, 0.32)), float(rng.uniform(-0.12, 0.12))
+        yaw = float(rng.uniform(0.0, np.pi / 2.0))
+        sim_scene.place(x, y, yaw=yaw)
+        objs = [
+            o
+            for o in detect_workspace_objects(sim_scene.robot.render_rgb_frame(640, 480))
+            if o["color"] == "red"
+        ]
+        assert objs
+        fp = locate_target_footprint(objs[0], homography)
+        truth = sim_scene.cube()[:2] * 1000.0
+        err = float(np.linalg.norm(np.array(fp["centre_xy_mm"]) - truth))
+        errors.append(err)
+        yaw_deg = float(np.degrees(yaw))
+        if yaw_deg < 15.0:
+            bucket_errors["0-15"].append(err)
+        elif yaw_deg < 30.0:
+            bucket_errors["15-30"].append(err)
+        elif yaw_deg < 45.0:
+            bucket_errors["30-45"].append(err)
+        elif yaw_deg < 60.0:
+            bucket_errors["45-60"].append(err)
+        elif yaw_deg < 75.0:
+            bucket_errors["60-75"].append(err)
+        else:
+            bucket_errors["75-90"].append(err)
+
+    print(f"20 random yaw: mean {np.mean(errors):.2f} mm, max {max(errors):.2f} mm")
+    for b_name, b_errs in bucket_errors.items():
+        if b_errs:
+            print(
+                f"  Bucket {b_name} deg (n={len(b_errs)}): "
+                f"mean {np.mean(b_errs):.2f} mm, max {max(b_errs):.2f} mm"
+            )
+    assert max(errors) <= 4.0
 
 
 def test_footprint_beats_bottom_contact_by_a_wide_margin(sim_scene: _Scene) -> None:

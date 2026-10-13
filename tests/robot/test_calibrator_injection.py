@@ -12,7 +12,7 @@ import pytest
 
 from agent.tools import execute_tool_call
 from tests.conftest import DummyToolCall, MockRobot
-from tests.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
+from tests.e2e.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
 
 
 def _red_cube_jpeg() -> bytes:
@@ -57,10 +57,16 @@ def test_vision_vote_forwards_calibrator_to_the_detector() -> None:
     """The post-lift vision vote hands the calibrator to the detector (workspace mask)."""
     from agent.guardrails import TargetLock
     from agent.pick_loop import vision_vote
+    from simulation.sim_calibration import init_sim_workspace_calibration
+    from vision import get_calibrator
+
+    sim_calib = get_calibrator(mode="sim")
+    init_sim_workspace_calibration(calibrator=sim_calib)
 
     calib = MagicMock()
     calib.detect_markers.return_value = {0: 0, 1: 0, 2: 0, 3: 0}
     calib.config = {"marker_ids": {}}
+    calib.geometry_snapshot.return_value.camera = sim_calib.geometry_snapshot().camera
     frame = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
     lock = TargetLock(1, "red", (240.0, 0.0), [760.0, 484.0], bbox_px=[300, 300, 25, 25])
     with patch("agent.pick_loop.detect_workspace_objects", return_value=[]) as detect:
