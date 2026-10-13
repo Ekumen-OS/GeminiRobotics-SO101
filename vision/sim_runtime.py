@@ -19,6 +19,7 @@ from vision.patterns import (
 
 logger = logging.getLogger(__name__)
 
+_SIM_ERRORS: tuple[type[Exception], ...]
 try:
     import mujoco
 
@@ -99,7 +100,7 @@ def _sim_frame_with_fallback(
     Returns:
         RGB frame as uint8 numpy array.
     """
-    if _robot_can_render(robot):
+    if robot is not None and _robot_can_render(robot):
         try:
             return robot.render_rgb_frame(width=width, height=height)
         except _SIM_ERRORS as err:
