@@ -5,7 +5,7 @@ Welcome to the architectural reasoning behind the GeminiRobotics-SO101 repositor
 ## 1. The Strategy Pattern & Interfaces (Abstract Base Classes)
 
 **The Problem:**
-In early iterations, the web UI needed to interact with physical hardware (`RealSO101Robot`), a simulated robot (`SO101Robot`), and a digital twin (`TwinSO101Robot`, since removed). The UI was littered with "duck typing" and fragile `hasattr` checks:
+In early iterations, the web UI needed to interact with physical hardware (`RealSO101Robot`) and a simulated robot (`SO101Robot`). The UI was littered with "duck typing" and fragile `hasattr` checks:
 
 ```python
 if hasattr(robot, "step") and mode != "sim":
@@ -119,7 +119,7 @@ We created a centralized `RobotStateManager` singleton (`ui/state.py`) protected
 **Why it matters:**
 
 - **Concurrency Safety**: Eliminates race conditions across web requests, serial communication, and background streaming threads.
-- **Consistency**: Real-time slider states, 3D digital twin meshes, and physical servos remain in lockstep.
+- **Consistency**: Real-time slider states, 3D simulation meshes, and physical servos remain in lockstep.
 
 ## 7. Perspective Homography & ArUco Workspace Calibration
 
