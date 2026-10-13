@@ -24,7 +24,6 @@ from vision.patterns import (
     generate_no_camera_pattern,
     generate_raw_sim_placeholder_pattern,
 )
-from vision.sim_runtime import get_sim_video_frame
 from vision.targets import draw_model_target_overlay
 
 logger = logging.getLogger(__name__)
@@ -88,35 +87,6 @@ def _stream_video_impl(
     target_height = settings.stream_height
     target_fps = settings.stream_fps
 
-    # Mode SIM: live MuJoCo render without hardware camera dependencies
-    if mode == "sim":
-        calib = get_calibrator(mode="sim")
-        while _current_stream_id == my_stream_id:
-            start = time.time()
-            raw_frame = get_sim_video_frame(robot=robot)
-            with frames_mod._global_frame_lock:
-                frames_mod._global_latest_raw_frame = raw_frame.copy()
-                frames_mod._global_latest_raw_ts = time.monotonic()
-
-            ui_frame = raw_frame.copy()
-            if is_calibration_overlay_enabled() and calib.is_calibrated:
-                ui_frame = calib.draw_workspace_overlay(
-                    ui_frame, detected_markers={}, show_markers=False
-                )
-            if is_target_overlay_enabled():
-                ui_frame = draw_model_target_overlay(ui_frame)
-
-            with frames_mod._global_frame_lock:
-                frames_mod._global_latest_annotated_frame = ui_frame.copy()
-                frames_mod._global_latest_frame = ui_frame.copy()
-
-            yield ui_frame
-
-            elapsed = time.time() - start
-            if elapsed < frame_interval:
-                time.sleep(frame_interval - elapsed)
-        return
-
     # Mode REAL: Live UVC hardware streaming with OpenCV & MJPG codec
     if camera_index == -2:
         no_cam = generate_no_camera_pattern()
@@ -156,7 +126,10 @@ def _stream_video_impl(
                 )
             else:
                 # Enable MJPG hardware video codec to prevent USB firmware FPS throttling
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
+                cap.set(
+                    cv2.CAP_PROP_FOURCC,
+                    cv2.VideoWriter_fourcc("M", "J", "P", "G"),  # type: ignore[attr-defined]  # cv2 stubs omit top-level VideoWriter_fourcc
+                )
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
 
