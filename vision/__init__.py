@@ -34,7 +34,9 @@ from vision.capture import (
 )
 from vision.frames import (
     get_latest_jpeg,
+    get_latest_raw_frame_ts,
     get_latest_raw_jpeg,
+    get_raw_jpeg_after,
     has_published_frame,
 )
 from vision.overlays import (
@@ -79,7 +81,9 @@ __all__ = [
     "get_camera_name",
     "get_default_camera_index",
     "get_latest_jpeg",
+    "get_latest_raw_frame_ts",
     "get_latest_raw_jpeg",
+    "get_raw_jpeg_after",
     "get_model_target_point",
     "get_model_targets",
     "get_sim_video_frame",
