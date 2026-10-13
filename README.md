@@ -22,41 +22,41 @@ We use Python version **3.13.7** and the extremely fast, deterministic package m
 The repository strictly enforces a layered dependency architecture (`robot < simulation < vision < agent < ui`, with operator tooling in `tools/` importing layers below it):
 
 1. **[`/robot`](robot/) (Core Robot Definition, Kinematics & Registry)**
-   - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`constants.py`](robot/constants.py)).
-   - **Kinematics & Theory**: Forward kinematics ([`kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`theory.md`](robot/theory.md)).
-   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
-   - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`perception.py`](robot/perception.py), [`vision_detector.py`](robot/vision_detector.py)).
-   - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
-   - **Active Robot Registry**: Thread-safe global active-robot registry ([`registry.py`](robot/registry.py)).
+   - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`robot/constants.py`](robot/constants.py)).
+   - **Kinematics & Theory**: Forward kinematics ([`robot/kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`robot/cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`robot/theory.md`](robot/theory.md)).
+   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`robot/calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
+   - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`robot/perception.py`](robot/perception.py), [`robot/vision_detector.py`](robot/vision_detector.py)).
+   - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`robot/real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
+   - **Active Robot Registry**: Thread-safe global active-robot registry ([`robot/registry.py`](robot/registry.py)).
 
 2. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
-   - **Physics Simulation**: High-level MuJoCo model manipulation ([`sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulate.py`](simulation/simulate.py)).
-   - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
-   - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`warp_env.py`](simulation/warp_env.py)).
-   - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`test_movement.py`](simulation/test_movement.py)) and system health checks ([`check_env.py`](simulation/check_env.py)).
+   - **Physics Simulation**: High-level MuJoCo model manipulation ([`simulation/sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulation/simulate.py`](simulation/simulate.py)).
+   - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`simulation/sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
+   - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`simulation/env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`simulation/warp_env.py`](simulation/warp_env.py)).
+   - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`simulation/test_movement.py`](simulation/test_movement.py)) and system health checks ([`simulation/check_env.py`](simulation/check_env.py)).
 
 3. **[`/vision`](vision/) (Camera Capture, Dual Buffers & Sim Runtime)**
-   - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`camera.py`](vision/camera.py)).
-   - **Shared Capture Manager**: Multi-consumer shared capture thread and video stream production ([`capture.py`](vision/capture.py)).
-   - **Dual Frame Buffer Engine**: Separation between untouched raw model observations (`get_latest_raw_jpeg`) and operator annotated display frames (`get_latest_jpeg`) ([`frames.py`](vision/frames.py)).
-   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`calibrator.py`](vision/calibrator.py)) and model-target blackboard with sleek corner-notched bounding box overlays ([`targets.py`](vision/targets.py)).
-   - **Simulation Frame Runtime**: Dedicated background sim rendering worker ([`sim_runtime.py`](vision/sim_runtime.py)).
+   - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`vision/camera.py`](vision/camera.py)).
+   - **Shared Capture Manager**: Multi-consumer shared capture thread and video stream production ([`vision/capture.py`](vision/capture.py)).
+   - **Dual Frame Buffer Engine**: Separation between untouched raw model observations (`get_latest_raw_jpeg`) and operator annotated display frames ([`vision/frames.py`](vision/frames.py)).
+   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`vision/calibrator.py`](vision/calibrator.py)) and model-target blackboard with sleek corner-notched bounding box overlays ([`vision/targets.py`](vision/targets.py)).
+   - **Simulation Frame Runtime**: Dedicated background sim rendering worker ([`vision/sim_runtime.py`](vision/sim_runtime.py)).
 
 4. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
-   - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
-   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
-   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
+   - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`agent/live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
+   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`agent/tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
+   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`agent/vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
    - **Verbose Diagnostic Terminal Logging**: ISO-8601 millisecond-precision diagnostic logging (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`) routing model decisions, tool call payloads (`call.args`), and execution results (`result_dict`) to stdout/stderr while keeping Chat UI reasoning clean.
 
 5. **[`/tools`](tools/) (Operator Tooling & Wizards)**
-   - **Printable Calibration Sheets**: True-to-scale workspace calibration mat poster and ArUco marker PNG generator ([`calibration_sheet.py`](tools/calibration_sheet.py)).
-   - **Interactive Setup Wizard**: Terminal CLI wizard configuring table dimensions, clearances, and marker reuse ([`setup_wizard.py`](tools/setup_wizard.py)).
+   - **Printable Calibration Sheets**: True-to-scale workspace calibration mat poster and ArUco marker PNG generator ([`tools/calibration_sheet.py`](tools/calibration_sheet.py)).
+   - **Interactive Setup Wizard**: Terminal CLI wizard configuring table dimensions, clearances, and marker reuse ([`tools/setup_wizard.py`](tools/setup_wizard.py)).
 
 6. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
-   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` and `/api/sim_stream` MJPEG endpoints, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`app.py`](ui/app.py)).
-   - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
-   - **Lazy Kinematics State Management**: Centralized robot state manager and lazy kinematics transforms ([`state.py`](ui/state.py)).
-   - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`components/controls.py`](ui/components/controls.py)).
+   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` and `/api/sim_stream` MJPEG endpoints, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`ui/app.py`](ui/app.py)).
+   - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`ui/assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
+   - **Lazy Kinematics State Management**: Centralized robot state manager and lazy kinematics transforms ([`ui/state.py`](ui/state.py)).
+   - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`ui/components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`ui/components/controls.py`](ui/components/controls.py)).
 
 ## Getting Started
 
@@ -74,9 +74,21 @@ cd GeminiRobotics-SO101
 - Setup the repository environment and install dependencies:
 
 ```bash
-uv sync
+uv sync --all-extras
 source .venv/bin/activate
 ```
+
+### Installation Matrix
+
+Dependencies are split into modular extras so headless, physical, simulation, and RL workflows only install what they need:
+
+| Profile / Target | Description | Exact Install Command |
+|---|---|---|
+| **Core** | Base libraries (`numpy`, `opencv`, `scipy`, `mujoco`, `google-genai`, `dotenv`) | `uv sync` |
+| **Real Arm** | Physical Feetech arm driver, PyTorch & Web UI | `uv sync --extra hw --extra ui` |
+| **Simulation** | MuJoCo 3D simulation viewer & Web UI (`mujoco` in core) | `uv sync --extra sim --extra ui` |
+| **RL (`rl`)** | GPU/CPU batched simulation (`mujoco-warp`, `warp-lang`, `gymnasium`) | `uv sync --extra rl` |
+| **Development / Full** | Complete suite with all drivers, simulators, UI and dev tools | `uv sync --all-extras` |
 
 ### Environment Configuration (`.env`)
 
@@ -119,7 +131,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
 | `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
 | `ALIGNMENT_TOLERANCE_MM` | `4.0` | Jaw-to-target distance (robot mm, table plane) under which a hover counts as aligned (`is_aligned`) and a descent is allowed. |
-| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-7,27,63` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default is the simulated mount; measure it on the real arm. |
+| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-14,27,63` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default is the simulated mount; measure it on the real arm. |
 | `CAMERA_HFOV_DEG` | `70.0` | Nominal horizontal field of view of the workspace camera, used to recover the camera position from the table homography (a ±10 % error costs only a few mm). Check the logged `[Calibration] [CAMERA] centre_mm=[x, y, z]` against a tape measure. |
 | `BIAS_CORRECTION` | `1` | Learn a per-target correction from jaw-tag residuals at the hover (`1`) or never correct (`0`, for A/B runs). |
 | `GRIPPER_LOCATOR_ER2` | `0` | Ask ER2 to point at the fingertips (`1` or `0`). Report-only: the point appears as `perception.er2_gripper_point_1000` and never decides alignment. |
@@ -157,8 +169,8 @@ The closed loop measures where the gripper really is with one ArUco tag on the g
   - **x**: the jaw closing direction, from the fixed finger towards the moving jaw;
   - **y**: along the jaw hinge axis, towards the side that carries the moving-jaw pivot horn;
   - **z**: along the wrist-roll axis from the fingertips towards the wrist (up when the gripper points down).
-- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-7,27,63` (the simulated mount, 1.5 mm accurate against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
-- **Grasp site (TCP) note**: in `simulation/assets/so101.xml` the `gripperframe` site was moved from the URDF position (on the inner face of the *fixed finger*, x = −7.9 mm, z = −98.1 mm in the gripper frame) to the pad midpoint (x = +7 mm, z = −103 mm): with the URDF site an IK target at an object's centre puts the fixed finger inside the object. The IK solver reads the same file in real mode, so a real arm now also reaches the object with the *middle of the jaws*, not the fixed finger. The simulated pads leave 5 mm of clearance to a 30 mm cube on the fixed side; closing slides the cube against the fixed pad.
+- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-14,27,63` (the simulated mount, 1.5 mm accurate against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
+- **Grasp site (TCP) note**: in `simulation/assets/so101.xml` the `gripperframe` site was moved from the URDF position (on the inner face of the *fixed finger*, x = −7.9 mm, z = −98.1 mm in the gripper frame) to the grasp site (x = +14 mm, z = −103 mm): with the URDF site an IK target at an object's centre puts the fixed finger inside the object. The IK solver reads the same file in real mode, so a real arm now reaches the object with the *middle of the jaws*, not the fixed finger. Centred on the TCP, a 30 mm cube clears the fixed finger mesh face (−7.9 mm) by 6.9 mm; the simulated collision pad `pad_fixed` now sits directly on the real finger face, and closing slides the cube against it.
 
 ## Running the Robot (`main.py`)
 
@@ -173,7 +185,6 @@ uv run python main.py
 uv run python main.py --mode real --port /dev/ttyACM0
 
 # Launch Web UI with interactive 3D simulation viewer
-# (the former 'twin' split view was removed; only 'real' and 'sim' are supported)
 uv run python main.py --mode sim
 
 # Development auto-reload (restarts server when Python files change)

@@ -3,11 +3,13 @@
 Kept free of tool plumbing so they can be tested against rendered frames directly.
 """
 
+import math
 from typing import Any
 
 import numpy as np
 
 from agent.guardrails import GuardrailState, Phase, TargetLock
+from robot.camera_model import PinholeCamera
 from robot.vision_detector import detect_workspace_objects
 
 # At least this many of the 4 mat markers must be visible for a frame to be trusted.
@@ -15,12 +17,18 @@ MIN_VISIBLE_MARKERS = 3
 # A blob of the lock colour whose bbox overlaps the lock-time bbox at least this much (IoU) is
 # the object still sitting on its table footprint.
 ON_TABLE_IOU = 0.5
+# If the camera angle predicts an overlap at or above this threshold between table and lift height,
+# vision cannot reliably discriminate the lift, so the sensor decides (inconclusive).
+PREDICTED_IOU_INCONCLUSIVE_THRESHOLD = 0.35
 # The jaw tag cannot be told apart from a wrong calibration below this many mm of residual: never
 # act on a measured offset larger than this (a mis-detection, not a bias).
 IMPLAUSIBLE_RESIDUAL_MM = 30.0
 
 
-def bbox_iou(a: list[int] | tuple[int, ...], b: list[int] | tuple[int, ...]) -> float:
+def bbox_iou(
+    a: list[int] | tuple[int, ...] | list[float] | tuple[float, ...],
+    b: list[int] | tuple[int, ...] | list[float] | tuple[float, ...],
+) -> float:
     """Intersection over union of two (x, y, w, h) boxes.
 
     Args:
@@ -60,26 +68,118 @@ def visible_marker_count(frame_rgb: np.ndarray, calibrator: Any) -> int:
     return sum(1 for mid in expected if mid in detected)
 
 
-def vision_vote(frame_rgb: np.ndarray | None, lock: TargetLock | None, calibrator: Any) -> str:
+def predict_cube_lift_iou(
+    camera: PinholeCamera,
+    centre_xy_mm: tuple[float, float],
+    side_mm: float,
+    yaw_deg: float,
+    lift_height_mm: float,
+) -> float:
+    """Predict the image bounding box IoU of a cube between table height and lift height.
+
+    Args:
+        camera: Pinhole camera model in the robot frame.
+        centre_xy_mm: Footprint centre on the table in robot mm.
+        side_mm: Side length of the cube in mm.
+        yaw_deg: Yaw orientation in degrees.
+        lift_height_mm: Height the cube was lifted in mm.
+
+    Returns:
+        IoU in [0, 1] between the projected box on the table and at the lift height.
+    """
+    cx, cy = centre_xy_mm
+    s = side_mm
+    half = s / 2.0
+    theta = math.radians(yaw_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    corner_offsets = [
+        (-half, -half),
+        (half, -half),
+        (half, half),
+        (-half, half),
+    ]
+    corners_xy = [
+        (cx + dx * cos_t - dy * sin_t, cy + dx * sin_t + dy * cos_t) for dx, dy in corner_offsets
+    ]
+    corners_table = [(x, y, 0.0) for x, y in corners_xy] + [(x, y, s) for x, y in corners_xy]
+    corners_lifted = [(x, y, lift_height_mm) for x, y in corners_xy] + [
+        (x, y, lift_height_mm + s) for x, y in corners_xy
+    ]
+    try:
+        pts_table = [camera.project(p) for p in corners_table]
+        pts_lifted = [camera.project(p) for p in corners_lifted]
+    except (ValueError, ZeroDivisionError):
+        return 1.0
+
+    u_t = [p[0] for p in pts_table]
+    v_t = [p[1] for p in pts_table]
+    box_t = [min(u_t), min(v_t), max(u_t) - min(u_t), max(v_t) - min(v_t)]
+
+    u_l = [p[0] for p in pts_lifted]
+    v_l = [p[1] for p in pts_lifted]
+    box_l = [min(u_l), min(v_l), max(u_l) - min(u_l), max(v_l) - min(v_l)]
+
+    return bbox_iou(box_t, box_l)
+
+
+def vision_vote(
+    frame_rgb: np.ndarray | None,
+    lock: TargetLock | None,
+    calibrator: Any,
+    lift_height_mm: float = 50.0,
+    camera: PinholeCamera | None = None,
+) -> str:
     """Vote on whether the locked object is still on its table footprint after the lift.
 
     Vision can only veto a grasp, and only on positive evidence: a blob of the lock's colour
     that overlaps the lock-time bounding box. Anything that makes the frame unusable (no frame,
-    fewer than 3 of the 4 mat markers, no lock reference) is ``unavailable`` and keeps transport
-    blocked until it is re-verified.
+    fewer than 3 of the 4 mat markers) is ``unavailable`` and keeps transport
+    blocked until it is re-verified. When the frame is usable but there is no lock reference,
+    ``no_reference`` is returned so the gripper sensor decides. When the camera angle cannot
+    distinguish a lifted cube from its footprint (predicted overlap >= 0.35, or no camera
+    model), ``inconclusive`` is returned so the gripper sensor decides.
 
     Args:
         frame_rgb: Post-lift frame, or None.
-        lock: The target lock (provides the colour and the lock-time bbox), or None.
+        lock: The target lock (provides colour, footprint centre, yaw and bbox), or None.
         calibrator: Workspace calibrator.
+        lift_height_mm: Measured lift height in mm (defaults to 50.0).
+        camera: Optional explicit PinholeCamera model (retrieved from calibrator if None).
 
     Returns:
-        'on_table', 'not_seen_on_table' or 'unavailable'.
+        'on_table', 'not_seen_on_table', 'no_reference', 'inconclusive', or 'unavailable'.
     """
-    if frame_rgb is None or lock is None or lock.bbox_px is None or lock.color is None:
+    if frame_rgb is None or calibrator is None:
         return "unavailable"
-    if calibrator is None or visible_marker_count(frame_rgb, calibrator) < MIN_VISIBLE_MARKERS:
+    if visible_marker_count(frame_rgb, calibrator) < MIN_VISIBLE_MARKERS:
         return "unavailable"
+    if lock is None or lock.bbox_px is None or lock.color is None:
+        return "no_reference"
+
+    cam = camera
+    if cam is None:
+        if hasattr(calibrator, "geometry_snapshot"):
+            snap = calibrator.geometry_snapshot()
+            cam = getattr(snap, "camera", None)
+        elif hasattr(calibrator, "camera"):
+            cam = getattr(calibrator, "camera", None)
+
+    if cam is None:
+        return "inconclusive"
+
+    side = lock.width_mm or 30.0
+    yaw = lock.yaw_deg or 0.0
+    pred_iou = predict_cube_lift_iou(
+        camera=cam,
+        centre_xy_mm=lock.centre_xy_mm,
+        side_mm=side,
+        yaw_deg=yaw,
+        lift_height_mm=lift_height_mm,
+    )
+    if pred_iou >= PREDICTED_IOU_INCONCLUSIVE_THRESHOLD:
+        return "inconclusive"
+
     objects = detect_workspace_objects(frame_rgb, calibrator=calibrator)
     for obj in objects:
         if obj["color"] == lock.color and bbox_iou(obj["bbox_px"], lock.bbox_px) >= ON_TABLE_IOU:

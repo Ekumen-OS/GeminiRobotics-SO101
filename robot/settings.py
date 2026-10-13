@@ -81,7 +81,7 @@ class Settings:
     descent_gate: str | None = None
     # Jaw tag centre relative to the grasp site, in the gripper frame (mm): x = jaw closing
     # direction, y = hinge axis, z = towards the wrist. Default: the simulated tag mount.
-    gripper_tag_local_offset_mm: tuple[float, float, float] = (-7.0, 27.0, 63.0)
+    gripper_tag_local_offset_mm: tuple[float, float, float] = (-14.0, 27.0, 63.0)
     # Nominal horizontal field of view (deg) of the workspace camera, for the camera model.
     camera_hfov_deg: float = 70.0
     # Apply the per-lock mm bias correction learned from jaw-tag residuals (1) or not (0).

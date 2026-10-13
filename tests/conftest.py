@@ -52,14 +52,39 @@ robot.calibration.DEFAULT_SIM_SAVE_PATH = _ISOLATED_SIM_PATH
 robot.calibration.DEFAULT_SAVE_PATH = _ISOLATED_REAL_PATH
 
 
-@pytest.fixture(autouse=True)
-def fast_sim_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bypass real-time sleep in headless simulation during automated testing.
+class _FastSimTime:
+    """Wrapper that bypasses simulation time.sleep without altering global time module."""
 
-    Ensures MuJoCo physics steps execute with 100% mathematical fidelity without
-    stalling automated test runner threads on wall-clock time.sleep.
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+    @staticmethod
+    def sleep(_: float) -> None:
+        pass
+
+
+_fast_sim_time = _FastSimTime()
+
+
+@pytest.fixture(autouse=True)
+def no_wall_clock_sleep(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass real-time sleep during automated testing unless real_sleep is requested.
+
+    Ensures tests do not stall automated runner threads on wall-clock time.sleep
+    during simulation steps, real-robot interpolation/convergence, or tool settling.
     """
-    monkeypatch.setattr("simulation.sim_robot.time.sleep", lambda _: None)
+    monkeypatch.setattr("simulation.sim_robot.time", _fast_sim_time)
+    if "real_sleep" in request.fixturenames:
+        return
+    monkeypatch.setattr("robot.real_robot.time.sleep", lambda _: None)
+    monkeypatch.setattr("agent.tools.time.sleep", lambda _: None)
+
+
+@pytest.fixture
+def real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt-out fixture that preserves real time.sleep for timing tests."""
+    monkeypatch.setattr("robot.real_robot.time.sleep", _real_sleep)
+    monkeypatch.setattr("agent.tools.time.sleep", _real_sleep)
 
 
 class MockRobot(RobotInterface):

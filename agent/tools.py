@@ -525,7 +525,8 @@ def _handle_close_gripper(
     robot = ctx.robot
     assert robot is not None
 
-    jaw_xy_mm = _site_xyz(robot)[:2] * 1000.0
+    site = _site_xyz(robot)
+    jaw_xy_mm = site[:2] * 1000.0
     qpos_rad = robot.get_joint_positions()
     qpos_deg = [float(v) for v in np.degrees(qpos_rad)]
     qpos_deg[5] = float(GRIPPER_CLOSE_DEG)
@@ -577,7 +578,11 @@ def _handle_close_gripper(
                 width_mm=None,
                 raw_point=[500.0, 500.0],
             )
-        s.on_closed(phase, (float(jaw_xy_mm[0]), float(jaw_xy_mm[1])))
+        s.on_closed(
+            phase,
+            (float(jaw_xy_mm[0]), float(jaw_xy_mm[1])),
+            grasp_z_mm=float(site[2] * 1000.0),
+        )
         if grasp["grasped"] is False:
             s.record_miss_or_unverified("closed_on_air")
         s.record_motion_success()
@@ -999,6 +1004,7 @@ def _resolve_lock(
                     refreshed["centre_1000"],
                     refreshed["bbox_px"],
                     refreshed["width_mm"],
+                    yaw_deg=refreshed.get("yaw_deg"),
                 ),
             )
             return lock
@@ -1032,6 +1038,7 @@ def _resolve_lock(
                 bbox_px=found["bbox_px"],
                 width_mm=found["width_mm"],
                 raw_point=[float(point[0]), float(point[1])],
+                yaw_deg=found.get("yaw_deg"),
             )
         ),
     )
@@ -1056,6 +1063,7 @@ def _detect_footprint(
         "centre_1000": obj["centre_1000"],
         "bbox_px": obj["bbox_px"],
         "width_mm": obj.get("width_mm"),
+        "yaw_deg": obj.get("yaw_deg"),
     }
 
 
@@ -1472,19 +1480,27 @@ def _lift(
         try:
             raw = _fresh_jpeg(ctx, t_motion_end)
             frame_rgb = _decode_frame(raw, "visual verification", True)
-            vote = vision_vote(frame_rgb, state.target, calib)
+            lift_site = _site_xyz(robot)
+            grasp_z = state.grasp_z_mm if state.grasp_z_mm is not None else 0.0
+            dz_mm = (lift_site[2] * 1000.0) - grasp_z
+            lift_height_mm = max(dz_mm, lift_site[2] * 1000.0, MIN_LIFT_HEIGHT_CM * 10.0)
+            vote = vision_vote(frame_rgb, state.target, calib, lift_height_mm=lift_height_mm)
         except PerceptionUnavailable:
             vote = "unavailable"
         except PERCEPTION_ERRORS as e:
             log_with_tag(logger, "WARN", f"Post-lift vision vote failed: {e}")
             vote = "unavailable"
 
-    verdict = decide_grasp(grasp["grasped"], vote)
+    verdict = decide_grasp(grasp["grasped"], vote, state.consecutive_unavailable)
 
     def commit_verdict(s: GuardrailState) -> None:
         s.last_verdict = verdict.to_dict()
         s.last_motion = "lift"
         s.last_hover = None
+        if vote == "unavailable":
+            s.consecutive_unavailable += 1
+        else:
+            s.consecutive_unavailable = 0
         if verdict.verdict == "confirmed":
             s.phase = Phase.TRANSPORT
         elif verdict.verdict == "missed":
@@ -1768,7 +1784,8 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         prompt_line=(
             "`move_to_spatial_point(point=[y, x], z_height_cm=3.0)`: "
             "Move end-effector to camera-space [y, x] coordinate (0-1000). "
-            "Use z_height_cm=5.0 for hover/transit and z_height_cm=0.0 for table contact."
+            "Use z_height_cm=3.0 to hover over an object before grasping, "
+            "5.0 for lifts and transit, and 0.0 for table contact."
         ),
     ),
 }

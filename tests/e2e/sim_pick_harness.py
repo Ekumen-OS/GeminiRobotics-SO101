@@ -231,6 +231,10 @@ class ScenarioResult:
                 p.jaw_to_cube_at_close_mm is not None and p.jaw_to_cube_at_close_mm <= 3.0
                 for p in self.placements
             ),
+            "jaw_to_cube_at_close_le_4mm": sum(
+                p.jaw_to_cube_at_close_mm is not None and p.jaw_to_cube_at_close_mm <= 4.0
+                for p in self.placements
+            ),
             "placement_error_median_mm": statistics.median(place) if place else None,
             "contradictions": sum(p.contradictions for p in self.placements),
             "lift_refusals": sum(p.lift_refusals for p in self.placements),
@@ -435,18 +439,21 @@ class SimPickHarness:
         self._render_pool.shutdown()
 
     # -- scripted model --------------------------------------------------------------------
-    def run_placement(self, cube_xy: tuple[float, float], seed: int) -> PlacementMetrics:
+    def run_placement(
+        self, cube_xy: tuple[float, float], seed: int, yaw: float = 0.0
+    ) -> PlacementMetrics:
         """Run one scripted pick-and-place from a fresh scene.
 
         Args:
             cube_xy: Cube start position (m).
             seed: RNG seed for the model's pointing noise.
+            yaw: Cube orientation in radians (default 0.0).
 
         Returns:
             Metrics measured against MuJoCo truth.
         """
         rng = np.random.default_rng(seed)
-        self.reset(cube_xy)
+        self.reset(cube_xy, yaw=yaw)
         m = PlacementMetrics(cube_start_xy_m=cube_xy)
         self.log = []
         last_refusal: tuple[str, str] | None = None
@@ -607,6 +614,7 @@ def run_scenario(
     settings_overrides: dict[str, Any] | None = None,
     progress: Callable[[str], None] | None = None,
     descend_after_hover_cap: bool = False,
+    random_yaw: bool = False,
 ) -> ScenarioResult:
     """Run ``n_placements`` seeded placements and collect truth-based metrics.
 
@@ -620,6 +628,7 @@ def run_scenario(
         settings_overrides: Settings fields to override for the run (e.g. bias_correction).
         progress: Optional callback receiving one line per placement.
         descend_after_hover_cap: Descend anyway after the hover cap (corrector-off A/B runs).
+        random_yaw: Whether to sample random yaw in [0, pi/2) for each placement.
 
     Returns:
         ScenarioResult with one PlacementMetrics per run.
@@ -634,7 +643,8 @@ def run_scenario(
         try:
             for i in range(n_placements):
                 xy = (float(rng.uniform(*x_range)), float(rng.uniform(*y_range)))
-                result = harness.run_placement(xy, seed=int(rng.integers(1 << 31)))
+                yaw = float(rng.uniform(0.0, np.pi / 2.0)) if random_yaw else 0.0
+                result = harness.run_placement(xy, seed=int(rng.integers(1 << 31)), yaw=yaw)
                 placements.append(result)
                 if progress is not None:
                     progress(
