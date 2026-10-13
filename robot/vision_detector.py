@@ -23,6 +23,8 @@ COLOR_HSV_RANGES: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {
 }
 
 DEFAULT_MIN_OBJECT_AREA_PX = 100
+# Continuous blob coordinates -> pixel-index coordinates of the ArUco-based homography.
+PIXEL_INDEX_SHIFT = 0.5
 MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
 
@@ -125,6 +127,12 @@ def detect_workspace_objects(
             bot_x = float(bx + (bw / 2.0))
             bot_y = float(by + bh)
 
+            # Extent of the blob's lowest pixel rows: the object's near bottom edge. The bbox
+            # centre is not the bottom-edge centre (vertical edges lean in perspective).
+            pts = cnt.reshape(-1, 2)
+            low = pts[pts[:, 1] >= by + bh - 3]
+            bottom_edge = [float(low[:, 0].min()), float(low[:, 0].max() + 1), float(by + bh)]
+
             # Centroid
             m = cv2.moments(cnt)
             cx = float(m["m10"] / m["m00"]) if m["m00"] != 0 else float(bx + bw / 2.0)
@@ -140,6 +148,7 @@ def detect_workspace_objects(
                     "color": color_name,
                     "area": area,
                     "bbox_px": [int(bx), int(by), int(bw), int(bh)],
+                    "bottom_edge_px": bottom_edge,
                     "bottom_contact_px": [bot_x, bot_y],
                     "bottom_contact_1000": [norm_bot_y, norm_bot_x],
                     "center_1000": [norm_cy, norm_cx],
@@ -151,30 +160,147 @@ def detect_workspace_objects(
     return detected
 
 
+def _apply_homography(homography: np.ndarray, px: float, py: float) -> np.ndarray:
+    """Map an image pixel through a 3x3 homography to a 2D point.
+
+    Args:
+        homography: 3x3 matrix.
+        px: Horizontal pixel coordinate.
+        py: Vertical pixel coordinate.
+
+    Returns:
+        (2,) array.
+
+    Raises:
+        ValueError: If the point maps to infinity.
+    """
+    vec = homography @ np.array([px, py, 1.0], dtype=np.float64)
+    if abs(vec[2]) < 1e-9:
+        raise ValueError("Point maps to infinity under the homography")
+    return np.array([vec[0] / vec[2], vec[1] / vec[2]], dtype=np.float64)
+
+
+def locate_target_footprint(
+    obj: dict[str, Any],
+    homography: np.ndarray,
+    image_shape: tuple[int, int] = (480, 640),
+) -> dict[str, Any]:
+    """Estimate where a detected object stands on the table (its footprint centre).
+
+    The lowest blob pixels are the object's near bottom edge, not its centre (15.7 mm off on a
+    30 mm cube). The footprint centre is the midpoint of that bottom edge (``bottom_edge_px``,
+    falling back to the bbox bottom row) mapped through the table homography, shifted by half
+    the edge width (in mm) along the table-plane normal of that edge, on the side away from the
+    camera.
+
+    Args:
+        obj: Detection from ``detect_workspace_objects`` (needs ``bbox_px``).
+        homography: 3x3 pixel -> robot-mm homography of the table plane.
+        image_shape: Frame dimensions as (height, width), for the normalised result.
+
+    Returns:
+        Dictionary with ``centre_xy_mm`` ([x, y] robot mm), ``centre_1000`` ([y, x] normalised),
+        ``width_mm`` (bottom-edge width) and ``bbox_px``.
+
+    Raises:
+        ValueError: If the homography is singular or the geometry degenerates.
+    """
+    bx, by, bw, bh = obj["bbox_px"]
+    left_px, right_px, bottom_py = obj.get("bottom_edge_px") or [bx, bx + bw, by + bh]
+    # Blob coordinates are continuous (a pixel spans [i, i+1)); the homography is built from
+    # ArUco detections, which use pixel-index coordinates (a pixel's centre is at i).
+    left_px, right_px, bottom_py = (
+        left_px - PIXEL_INDEX_SHIFT,
+        right_px - PIXEL_INDEX_SHIFT,
+        bottom_py - PIXEL_INDEX_SHIFT,
+    )
+    mid_px = (left_px + right_px) / 2.0
+    bottom_mid = _apply_homography(homography, mid_px, bottom_py)
+    bottom_left = _apply_homography(homography, float(left_px), bottom_py)
+    bottom_right = _apply_homography(homography, float(right_px), bottom_py)
+    top_mid = _apply_homography(homography, mid_px, float(by) - PIXEL_INDEX_SHIFT)
+    edge = bottom_right - bottom_left
+    width_mm = float(np.linalg.norm(edge))
+    if width_mm < 1e-9:
+        raise ValueError("Degenerate bbox: the bottom edge has no width")
+    # Away from the camera, perpendicular to the object's own bottom edge in the table plane.
+    # (The bbox top maps to a point displaced by the object's height, so the direction towards
+    # it leans sideways for off-axis objects; the edge normal does not.)
+    normal = np.array([-edge[1], edge[0]]) / width_mm
+    if float(normal @ (top_mid - bottom_mid)) < 0.0:
+        normal = -normal
+    centre = bottom_mid + normal * (width_mm / 2.0)
+
+    inverse = np.linalg.inv(homography)
+    cpx = _apply_homography(inverse, float(centre[0]), float(centre[1])) + PIXEL_INDEX_SHIFT
+    h, w = image_shape
+    centre_1000 = [
+        float(np.clip(cpx[1] / h * 1000.0, 0.0, 1000.0)),
+        float(np.clip(cpx[0] / w * 1000.0, 0.0, 1000.0)),
+    ]
+    return {
+        "centre_xy_mm": [float(centre[0]), float(centre[1])],
+        "centre_1000": centre_1000,
+        "width_mm": width_mm,
+        "bbox_px": [int(bx), int(by), int(bw), int(bh)],
+    }
+
+
+def color_from_label(label: Any) -> str | None:
+    """Return the colour word (red, blue, green, yellow) contained in a tool label, if any.
+
+    Args:
+        label: Free-text label from the model (e.g. "red cube"), or None.
+
+    Returns:
+        Lower-case colour name, or None if the label names no known colour.
+    """
+    if not label:
+        return None
+    words = str(label).lower().replace("-", " ").replace("_", " ").split()
+    for color in COLOR_HSV_RANGES:
+        if color in words:
+            return color
+    return None
+
+
+DEFAULT_REFINE_RADIUS_1000 = 80.0
+
+
 def refine_point_to_nearest_object(
     point_1000: list[float] | tuple[float, float] | np.ndarray,
     frame_rgb: np.ndarray,
-    max_dist_1000: float = 450.0,
+    max_dist_1000: float = DEFAULT_REFINE_RADIUS_1000,
     target_color: str | None = None,
     workspace_polygon_px: np.ndarray | None = None,
     min_area: int = DEFAULT_MIN_OBJECT_AREA_PX,
     calibrator: Any | None = None,
+    homography: np.ndarray | None = None,
 ) -> tuple[list[float], dict[str, Any] | None]:
-    """Refine a candidate VLA target point to the nearest detected tabletop object.
+    """Snap a candidate VLA target point to the nearest detected tabletop object.
+
+    The match distance is measured to the nearest of the object's blob centre, bottom contact
+    and (when a homography is available) footprint centre, so a point anywhere on the object's
+    image matches it. No object farther than ``max_dist_1000`` is ever snapped to.
 
     Args:
         point_1000: Normalized [y, x] coordinate in [0, 1000].
         frame_rgb: RGB frame corresponding to the scene.
-        max_dist_1000: Maximum allowed Euclidean distance in normalized coordinate
-            space to accept a snap refinement.
-        target_color: Optional preferred color name (red, blue, green, yellow).
+        max_dist_1000: Maximum allowed distance in normalized coordinate space.
+        target_color: Optional colour name (red, blue, green, yellow). When given, only objects
+            of that colour can match (no match if none is present).
         workspace_polygon_px: Optional polygon vertices in pixels.
         min_area: Minimum contour pixel area to consider.
-        calibrator: Optional ArucoWorkspaceCalibrator instance.
+        calibrator: Optional ArucoWorkspaceCalibrator instance (workspace mask; also the
+            source of the homography when ``homography`` is not given).
+        homography: Optional 3x3 pixel -> robot-mm homography for the footprint centre.
 
     Returns:
-        Tuple of (refined_point_1000, detected_object_dict_or_None).
-        If no candidate is found within max_dist_1000, returns original point and None.
+        Tuple of (refined_point_1000, detected_object_dict_or_None). The refined point is the
+        object's footprint centre when a homography is available, else its ``bottom_contact_1000``
+        (kept for backward compatibility). The object dict additionally carries ``centre_1000``,
+        ``centre_xy_mm`` and ``width_mm`` when the footprint could be computed.
+        If no candidate is found within ``max_dist_1000``, returns the original point and None.
     """
     if len(point_1000) != 2 or frame_rgb is None or frame_rgb.size == 0:
         return [float(point_1000[0]), float(point_1000[1])], None
@@ -185,37 +311,33 @@ def refine_point_to_nearest_object(
         min_area=min_area,
         calibrator=calibrator,
     )
+    original = [float(point_1000[0]), float(point_1000[1])]
+    if target_color:
+        objects = [obj for obj in objects if obj["color"].lower() == target_color.lower()]
     if not objects:
-        return [float(point_1000[0]), float(point_1000[1])], None
+        return original, None
 
-    py, px = float(point_1000[0]), float(point_1000[1])
+    if homography is None and calibrator is not None:
+        homography = getattr(calibrator, "homography_matrix", None)
 
+    py, px = original
     best_obj: dict[str, Any] | None = None
     best_dist = float("inf")
-
-    # If target_color specified, prioritize matching color
-    candidate_objects = objects
-    if target_color:
-        matching = [obj for obj in objects if obj["color"].lower() == target_color.lower()]
-        if matching:
-            candidate_objects = matching
-
-    for obj in candidate_objects:
-        obj_y, obj_x = obj["bottom_contact_1000"]
-        dist = float(np.hypot(obj_y - py, obj_x - px))
+    for obj in objects:
+        if homography is not None:
+            try:
+                obj.update(locate_target_footprint(obj, homography, frame_rgb.shape[:2]))
+            except (ValueError, np.linalg.LinAlgError):
+                pass
+        anchors = [obj["center_1000"], obj["bottom_contact_1000"]]
+        if "centre_1000" in obj:
+            anchors.append(obj["centre_1000"])
+        dist = min(float(np.hypot(a[0] - py, a[1] - px)) for a in anchors)
         if dist < best_dist and dist <= max_dist_1000:
             best_dist = dist
             best_obj = obj
 
-    if best_obj is not None:
-        return list(best_obj["bottom_contact_1000"]), best_obj
-
-    # If no object within max_dist_1000, fallback to single object if exactly 1 exists
-    if len(candidate_objects) == 1:
-        single_obj = candidate_objects[0]
-        obj_y, obj_x = single_obj["bottom_contact_1000"]
-        dist = float(np.hypot(obj_y - py, obj_x - px))
-        if dist <= 600.0:
-            return list(single_obj["bottom_contact_1000"]), single_obj
-
-    return [py, px], None
+    if best_obj is None:
+        return original, None
+    refined = best_obj.get("centre_1000", best_obj["bottom_contact_1000"])
+    return [float(refined[0]), float(refined[1])], best_obj

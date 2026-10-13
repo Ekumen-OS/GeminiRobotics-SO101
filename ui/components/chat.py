@@ -9,7 +9,7 @@ import numpy as np
 from agent.vla_controller import VLAController
 from robot.errors import CalibrationUnavailable
 from ui.state import get_ui_joint_positions
-from vision import get_calibrator, get_latest_raw_jpeg
+from vision import get_calibrator, get_latest_raw_jpeg, get_raw_jpeg_after
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,9 @@ def wire_chat_events(
 
         try:
             for partial_text in controller.process_instruction_stream(
-                instruction=msg, get_latest_jpeg_fn=get_latest_raw_jpeg
+                instruction=msg,
+                get_latest_jpeg_fn=get_latest_raw_jpeg,
+                get_fresh_jpeg_fn=get_raw_jpeg_after,
             ):
                 history[-1]["content"] = partial_text
                 yield (

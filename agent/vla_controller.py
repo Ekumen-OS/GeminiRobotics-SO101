@@ -1,17 +1,18 @@
 """Controller for managing Vision-Language-Action (VLA) agent interactions."""
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
 import sys
 import threading
-import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from agent.errors import SessionError
@@ -24,13 +25,25 @@ from agent.tools import (
     execute_tool_call,
     render_prompt_tool_list,
 )
-from robot.errors import CalibrationUnavailable
+from robot.errors import CalibrationUnavailable, HardwareError
+from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
 from vision import get_calibrator, set_model_targets
 
 logger = logging.getLogger(__name__)
+
+
+# Failures an ER2 pointing query may raise; anything else is a bug and must surface.
+ER2_QUERY_ERRORS = (
+    genai_errors.APIError,
+    asyncio.TimeoutError,
+    json.JSONDecodeError,
+    ValueError,
+    KeyError,
+    OSError,
+)
 
 
 def _get_gemini_model() -> str:
@@ -50,13 +63,13 @@ def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
 
     Args:
         mode: Operational mode ('real' or 'sim').
-        tolerance: Pixel alignment tolerance. Defaults to settings value.
+        tolerance: Alignment tolerance in millimetres. Defaults to settings value.
 
     Returns:
         Rendered markdown prompt string.
     """
     if tolerance is None:
-        tolerance = get_settings().alignment_tolerance_px
+        tolerance = get_settings().alignment_tolerance_mm
     sim_note = (
         "- In SIM mode, the workspace is pre-calibrated using a fixed virtual camera "
         "matching the physical camera view. ArUco fiducial markers (IDs 0-3) and workspace "
@@ -68,7 +81,7 @@ def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
     template = prompt_path.read_text(encoding="utf-8").rstrip("\n")
     return template.format(
         mode_upper=mode.upper(),
-        tolerance=tolerance,
+        tolerance=f"{tolerance:g}",
         sim_workspace_note=sim_note,
         tool_list=render_prompt_tool_list(),
     )
@@ -189,6 +202,7 @@ class _TurnContext:
     """Context holding queues and callbacks for an instruction processing turn."""
 
     get_latest_jpeg_fn: Callable[[], bytes | None] | None
+    get_fresh_jpeg_fn: Callable[[float, float], bytes | None] | None
     response_queue: asyncio.Queue
     tool_executing_event: asyncio.Event
     tool_status_callback: Callable[[str], None]
@@ -257,7 +271,7 @@ class VLAController:
                 from agent.live_session import create_genai_client
 
                 client = create_genai_client()
-            except Exception as e:
+            except ConnectionError as e:
                 log_with_tag(logger, "WARN", f"Cannot obtain genai client for ER2 locator: {e}")
                 return None
 
@@ -269,7 +283,7 @@ class VLAController:
             image_part = types.Part.from_bytes(data=frame_jpeg, mime_type="image/jpeg")
             resp = await asyncio.wait_for(
                 client.aio.models.generate_content(
-                    model=get_settings().gemini_model_id,
+                    model=get_settings().er2_locator_model,
                     contents=[image_part, prompt_text],
                 ),
                 timeout=5.0,
@@ -281,9 +295,26 @@ class VLAController:
             else:
                 reply_text = str(getattr(resp, "text", resp))
             return parse_er2_pointing_reply(reply_text)
-        except Exception as e:
+        except ER2_QUERY_ERRORS as e:
             log_with_tag(logger, "WARN", f"Failed to query ER2 pointing locator: {e}")
             return None
+
+    def _begin_guardrail_instruction(self) -> None:
+        """Reset per-instruction guardrail state, deriving the phase from the real gripper.
+
+        The state object is mutated in place (its epoch invalidates writes from handler threads
+        still running for the previous instruction). The phase is derived from the last gripper
+        target this session commanded plus the gripper sensor: HOME's partly closed gripper is
+        not a grasp, but a gripper commanded closed that still reads stalled is still holding.
+        """
+        state = self.guardrail_state
+        grasped: bool | None = None
+        if self.robot is not None and state.last_commanded_gripper == "closed":
+            try:
+                grasped = classify_grasp(self.robot.read_gripper_state(), get_settings())["grasped"]
+            except HardwareError as e:
+                log_with_tag(logger, "WARN", f"Gripper read failed at instruction start: {e}")
+        state.begin_instruction(state.derive_phase(grasped, state.last_commanded_gripper))
 
     def _run_loop(self) -> None:
         """Run the background asyncio event loop."""
@@ -418,7 +449,7 @@ class VLAController:
                     self._query_er2_locator_async(jpeg), self._loop
                 )
                 return fut.result(timeout=6.0)
-            except Exception as e:
+            except (concurrent.futures.TimeoutError, RuntimeError) as e:
                 log_with_tag(logger, "WARN", f"ER2 locator query failed: {e}")
                 return None
 
@@ -430,6 +461,7 @@ class VLAController:
             mode=self.mode,
             guardrail_state=self.guardrail_state,
             query_er2_locator_fn=query_er2,
+            get_fresh_jpeg_fn=ctx.get_fresh_jpeg_fn,
         )
 
         post_frame_missing = False
@@ -438,14 +470,7 @@ class VLAController:
             if frame_task:
                 await frame_task
 
-            # Settle: wait for robot motion to complete, then sleep vision_settle_s
-            if self.robot is not None and hasattr(self.robot, "is_moving"):
-                wait_start = time.time()
-                try:
-                    while getattr(self.robot, "is_moving")() and (time.time() - wait_start < 3.0):
-                        await asyncio.sleep(0.05)
-                except Exception:
-                    pass
+            # Post-action observation frame for the model (measurement waits are in the tools)
             settle_s = get_settings().get_vision_settle_s()
             if settle_s > 0:
                 await asyncio.sleep(settle_s)
@@ -483,7 +508,7 @@ class VLAController:
             await ctx.response_queue.put(
                 {
                     "type": "status",
-                    "content": "🛑 Grasp failed 3 times — waiting for the user.",
+                    "content": f"🛑 {self.guardrail_state.escalation_message}",
                 }
             )
 
@@ -573,7 +598,11 @@ class VLAController:
         return False
 
     async def _process_instruction_async(
-        self, instruction: str, get_latest_jpeg_fn, response_queue: asyncio.Queue
+        self,
+        instruction: str,
+        get_latest_jpeg_fn,
+        response_queue: asyncio.Queue,
+        get_fresh_jpeg_fn=None,
     ) -> None:
         """Async core orchestrator for processing an instruction and running the loop.
 
@@ -581,6 +610,8 @@ class VLAController:
             instruction: Prompt text from user.
             get_latest_jpeg_fn: Optional frame provider.
             response_queue: Async queue receiving progressive updates.
+            get_fresh_jpeg_fn: Optional ``(t_after, timeout_s) -> JPEG | None`` frame provider
+                for measurements that must follow a motion.
         """
         if not self._session:
             await response_queue.put({"type": "error", "content": "API unavailable"})
@@ -609,6 +640,7 @@ class VLAController:
 
             ctx = _TurnContext(
                 get_latest_jpeg_fn=get_latest_jpeg_fn,
+                get_fresh_jpeg_fn=get_fresh_jpeg_fn,
                 response_queue=response_queue,
                 tool_executing_event=asyncio.Event(),
                 tool_status_callback=tool_status_callback,
@@ -637,13 +669,16 @@ class VLAController:
                 await response_queue.put(None)
 
     def process_instruction_stream(
-        self, instruction: str, get_latest_jpeg_fn=None
+        self, instruction: str, get_latest_jpeg_fn=None, get_fresh_jpeg_fn=None
     ) -> Generator[str, None, None]:
         """Process a user instruction and yield streaming text/status updates.
 
         Args:
             instruction: The text instruction from the user.
             get_latest_jpeg_fn: Optional callable returning pristine raw camera frame as JPEG bytes.
+            get_fresh_jpeg_fn: Optional callable ``(t_after, timeout_s)`` returning a raw frame
+                captured after ``t_after`` (``time.monotonic()``), used for post-motion
+                measurements.
 
         Yields:
             Progressive response string for Gradio chatbot streaming.
@@ -651,7 +686,7 @@ class VLAController:
         if not instruction.strip():
             return
 
-        self.guardrail_state = GuardrailState()
+        self._begin_guardrail_instruction()
         self.history.append({"role": "user", "content": instruction})
 
         if not self._api_available:
@@ -697,7 +732,9 @@ class VLAController:
 
         # Schedule the async task in the background loop
         self._current_async_task = asyncio.run_coroutine_threadsafe(
-            self._process_instruction_async(instruction, get_latest_jpeg_fn, response_queue),
+            self._process_instruction_async(
+                instruction, get_latest_jpeg_fn, response_queue, get_fresh_jpeg_fn
+            ),
             self._loop,
         )
 
@@ -734,7 +771,7 @@ class VLAController:
 
     def interrupt(self) -> None:
         """Interrupt any ongoing execution and halt the robot."""
-        self.guardrail_state = GuardrailState()
+        self.guardrail_state.on_interrupt()
         if self.robot is not None:
             self.robot.interrupt()
 
