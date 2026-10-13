@@ -17,6 +17,10 @@ class RobotInterface(ABC):
     """
 
     mode: str = "real"
+    # Incremented by every ``interrupt()``. A multi-segment motion captures it once and passes it
+    # back as ``cancel_epoch`` so an interrupt that lands between two ``move_to_pose`` calls is
+    # not lost (``move_to_pose`` clears the in-flight stop flag on entry).
+    interrupt_epoch: int = 0
 
     @abstractmethod
     def set_joint_positions(self, qpos: np.ndarray) -> None:
@@ -49,6 +53,7 @@ class RobotInterface(ABC):
         target_qpos: np.ndarray,
         duration_sec: float = 1.0,
         dt: float = 0.002,
+        cancel_epoch: int | None = None,
     ) -> None:
         """Interpolate smoothly to target positions.
 
@@ -56,6 +61,8 @@ class RobotInterface(ABC):
             target_qpos: Array of target joint angles.
             duration_sec: Duration in seconds.
             dt: Timestep.
+            cancel_epoch: ``interrupt_epoch`` captured before a multi-segment motion started; if
+                the robot has been interrupted since, the move aborts without moving.
         """
         pass
 

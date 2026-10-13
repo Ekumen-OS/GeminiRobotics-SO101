@@ -28,6 +28,16 @@ from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# move_to_pose convergence: every arm joint within 0.5 deg of the goal and slower than 0.02 rad/s
+SETTLE_POS_TOL_RAD = float(np.radians(0.5))
+SETTLE_VEL_TOL_RAD_S = 0.02
+SETTLE_TIMEOUT_S = 3.0
+
+# Table XY (m) of the grasp site at the HOME pose, and the radius around it that
+# ``randomize_target`` keeps free so a resting cube is never inside the HOME jaw.
+HOME_JAW_XY_M = (0.175, 0.0)
+HOME_CLEARANCE_M = 0.06
+
 
 def __getattr__(name: str) -> Any:
     """Dynamically resolve configuration defaults from central Settings."""
@@ -94,6 +104,7 @@ class SO101Robot(RobotInterface):
         self._sim_lock = threading.RLock()
         self._renderer_lock = threading.Lock()
         self._stop_requested = False
+        self.interrupt_epoch = 0
         self._offscreen_warned = False
 
         # Dynamically synchronize marker positions and workspace bounds from JSON config
@@ -205,6 +216,9 @@ class SO101Robot(RobotInterface):
     ) -> np.ndarray:
         """Randomize the target manipulation object position on the tabletop surface.
 
+        Positions within ``HOME_CLEARANCE_M`` of the HOME jaw are rejected (resampled), so
+        returning to HOME or the first hover from HOME never pushes the cube.
+
         Args:
             x_range: Min and max X coordinates in meters (forward from robot base).
             y_range: Min and max Y coordinates in meters (left/right span).
@@ -219,8 +233,14 @@ class SO101Robot(RobotInterface):
                 qpos_adr = self.model.jnt_qposadr[j_id]
                 qvel_adr = self.model.jnt_dofadr[j_id]
 
-                new_x = float(np.random.uniform(x_range[0], x_range[1]))
-                new_y = float(np.random.uniform(y_range[0], y_range[1]))
+                for _ in range(100):
+                    new_x = float(np.random.uniform(x_range[0], x_range[1]))
+                    new_y = float(np.random.uniform(y_range[0], y_range[1]))
+                    if (
+                        np.hypot(new_x - HOME_JAW_XY_M[0], new_y - HOME_JAW_XY_M[1])
+                        >= HOME_CLEARANCE_M
+                    ):
+                        break
                 new_pos = np.array([new_x, new_y, z_height], dtype=np.float64)
 
                 self.data.qpos[qpos_adr : qpos_adr + 3] = new_pos
@@ -344,6 +364,7 @@ class SO101Robot(RobotInterface):
         target_qpos: np.ndarray,
         duration_sec: float = 1.0,
         dt: float = 0.002,
+        cancel_epoch: int | None = None,
     ) -> None:
         """Smoothly interpolate from current joint positions to target joint positions.
 
@@ -351,43 +372,85 @@ class SO101Robot(RobotInterface):
             target_qpos: Target joint angles in radians.
             duration_sec: Duration of the interpolation trajectory in seconds.
             dt: Physics timestep duration in seconds.
+            cancel_epoch: ``interrupt_epoch`` captured before a multi-segment motion started.
 
         Raises:
-            HardwareError: If motion is interrupted.
+            HardwareError: If motion is interrupted (before or during the move).
         """
+        if cancel_epoch is not None and cancel_epoch != self.interrupt_epoch:
+            raise HardwareError("Motion interrupted", robot_moved=False)
         self._stop_requested = False
-        target_qpos = np.asarray(target_qpos, dtype=np.float32)
+        target_qpos = np.asarray(target_qpos, dtype=np.float64)
         start_qpos = self.get_joint_positions()
         num_steps = max(1, int(duration_sec / dt))
         sim_steps = max(1, int(round(dt / self.model.opt.timestep)))
 
         steps_written = 0
         try:
+            # The arm is driven through the position actuators only. Writing qpos directly
+            # (as set_joint_positions does) leaves qvel at zero, so a held object would feel no
+            # friction from the moving pads and would be left behind.
             for step_idx in range(1, num_steps + 1):
                 if self._stop_requested:
                     raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
                 t = step_idx / num_steps
                 alpha = 0.5 * (1.0 - np.cos(np.pi * t))
                 interp_qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
-                self.set_joint_positions(interp_qpos, snap_gripper=False)
+                self._command_ctrl(interp_qpos)
                 steps_written += 1
                 self.step(sim_steps)
                 if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                     self.viewer.sync()
                 time.sleep(dt)
-                if self._stop_requested:
-                    raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
 
-            # Allow position actuators a short smooth settling phase
-            for _ in range(10):
+            # Step until the arm joints converge on the goal (the actuators are lightly damped
+            # and a fixed handful of steps is shorter than one oscillation).
+            self._command_ctrl(target_qpos)
+            max_settle_steps = int(SETTLE_TIMEOUT_S / dt)
+            for _ in range(max_settle_steps):
                 if self._stop_requested:
                     raise HardwareError("Motion interrupted", robot_moved=(steps_written > 0))
+                if self._arm_converged(target_qpos):
+                    break
                 self.step(sim_steps)
                 if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
                     self.viewer.sync()
                 time.sleep(dt)
+            else:
+                logger.warning(
+                    "[SO101Robot] move_to_pose convergence timeout after "
+                    f"{SETTLE_TIMEOUT_S:.1f}s; joint error "
+                    f"{np.degrees(self.get_joint_positions() - target_qpos).round(2).tolist()}°"
+                )
         finally:
             self._stop_requested = False
+
+    def _command_ctrl(self, qpos: np.ndarray) -> None:
+        """Write joint position targets to the actuators without touching qpos.
+
+        Args:
+            qpos: Target joint angles (radians), one per actuator.
+        """
+        with self._sim_lock:
+            for i, act_id in enumerate(self.actuator_ids):
+                self.data.ctrl[act_id] = float(qpos[i])
+
+    def _arm_converged(self, target_qpos: np.ndarray) -> bool:
+        """Report whether the arm joints are on target and at rest and the gripper has stopped.
+
+        The gripper only has to be at rest, not on target: it legitimately stalls on a grasped
+        object, and waiting for it to stop is what makes ``read_gripper_state`` after a close
+        report the settled aperture rather than one mid-closure.
+
+        Args:
+            target_qpos: Target joint angles (radians).
+
+        Returns:
+            True if every arm joint is within the tolerance and slower than the velocity limit.
+        """
+        pos_err = np.abs(self.get_joint_positions()[:5] - target_qpos[:5])
+        vel = np.abs(self.get_joint_velocities())
+        return bool(np.all(pos_err < SETTLE_POS_TOL_RAD) and np.all(vel < SETTLE_VEL_TOL_RAD_S))
 
     def render_rgb_frame(
         self, width: int = 640, height: int = 480, camera: str | int | None = "workspace_cam"
@@ -469,6 +532,7 @@ class SO101Robot(RobotInterface):
 
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement."""
+        self.interrupt_epoch += 1
         self._stop_requested = True
 
     def __del__(self) -> None:
