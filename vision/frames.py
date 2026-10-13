@@ -1,6 +1,7 @@
 """Dual frame buffers, frame presence checks, and JPEG encoders for raw/annotated streams."""
 
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -16,6 +17,9 @@ from vision.sim_runtime import _SIM_RUNTIME, _robot_can_render
 from vision.targets import draw_model_target_overlay
 
 _global_latest_raw_frame: np.ndarray | None = None
+# time.monotonic() at which the raw frame was published (0.0 = never): lets a measurement wait
+# for a frame captured *after* the arm finished moving instead of reading a stale one.
+_global_latest_raw_ts: float = 0.0
 _global_latest_annotated_frame: np.ndarray | None = None
 _global_latest_frame: np.ndarray | None = None
 _global_frame_lock = threading.Lock()
@@ -24,8 +28,10 @@ _global_frame_lock = threading.Lock()
 def _on_sim_frame(raw_frame: np.ndarray | None) -> None:
     """Callback for simulation runtime worker to publish rendered frames to global buffers."""
     global _global_latest_raw_frame, _global_latest_annotated_frame, _global_latest_frame
+    global _global_latest_raw_ts
     with _global_frame_lock:
         _global_latest_raw_frame = raw_frame.copy() if raw_frame is not None else None
+        _global_latest_raw_ts = time.monotonic()
         _global_latest_annotated_frame = raw_frame.copy() if raw_frame is not None else None
         _global_latest_frame = raw_frame.copy() if raw_frame is not None else None
 
@@ -44,6 +50,43 @@ def has_published_frame() -> bool:
                 _global_latest_raw_frame,
             )
         )
+
+
+def get_latest_raw_frame_ts() -> float:
+    """Return the ``time.monotonic()`` publish time of the latest raw frame (0.0 if none)."""
+    with _global_frame_lock:
+        return _global_latest_raw_ts
+
+
+def get_raw_jpeg_after(
+    t_after: float, timeout_s: float = 0.5, poll_s: float = 0.02
+) -> bytes | None:
+    """Return a pristine raw JPEG published after ``t_after``, waiting up to ``timeout_s``.
+
+    Used after a motion: a frame published before the arm arrived shows the arm somewhere else,
+    so a measurement must wait for a newer one. With no capture or sim render thread publishing
+    (nothing could ever arrive) the current frame is returned immediately instead of timing out.
+
+    Args:
+        t_after: ``time.monotonic()`` value the frame must be newer than (end of the motion).
+        timeout_s: Longest wait for a newer frame.
+        poll_s: Poll interval.
+
+    Returns:
+        JPEG bytes, or None if no newer frame arrived in time (the measurement is unavailable).
+    """
+    from vision.capture import capture_was_started, is_camera_alive
+
+    publishing = _SIM_RUNTIME.is_running() or (capture_was_started() and is_camera_alive())
+    if not publishing:
+        return get_latest_raw_jpeg()
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if get_latest_raw_frame_ts() > t_after:
+            return get_latest_raw_jpeg()
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_s)
 
 
 def get_latest_raw_jpeg() -> bytes | None:

@@ -192,6 +192,11 @@ class _SingletonSimRuntime:
             if elapsed < frame_interval:
                 self._stop_event.wait(timeout=max(0.0, frame_interval - elapsed))
 
+    def is_running(self) -> bool:
+        """Return True while the background render thread is alive (frames are published)."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def ensure_started(self, robot: Any | None) -> None:
         """Start worker once and update active robot reference."""
         with self._lock:

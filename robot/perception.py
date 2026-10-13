@@ -3,13 +3,10 @@
 import math
 from typing import Any
 
-import cv2
 import numpy as np
 
-from robot.contracts import GraspElevationResponse, VisualAlignmentResponse
-from robot.errors import PerceptionUnavailable
+from robot.contracts import AlignmentMeasurement, VisualAlignmentResponse
 from robot.settings import get_settings
-from robot.vision_detector import detect_workspace_objects, refine_point_to_nearest_object
 
 
 def compute_visual_alignment(
@@ -24,14 +21,14 @@ def compute_visual_alignment(
     """Calculate measured visual alignment offset between gripper and target object.
 
     Args:
-        frame_rgb: Current RGB camera frame (height, width, 3) or None.
-        target_point_1000: Normalized [y, x] coordinate of target in [0, 1000].
+        frame_rgb: Current RGB camera frame (unused; kept for call-site compatibility).
+        target_point_1000: Normalized [y, x] coordinate of the target in [0, 1000]. Used as
+            given: the target is never re-detected here, callers pass the locked footprint centre.
         gripper_point_1000: Optional explicitly specified normalized [y, x] gripper position.
         robot_state: Optional dictionary containing robot telemetry or joint angles.
         tolerance: Maximum pixel error threshold in normalized [0, 1000] space.
             Defaults to settings alignment_tolerance_px.
-        calibrator: Optional workspace calibrator used to mask detection to the ArUco
-            workspace polygon. None disables the mask.
+        calibrator: Unused (kept for call-site compatibility).
         gripper_source: Optional provenance string describing how gripper position
             was estimated (e.g. 'aruco', 'kinematic', 'er2', 'provided').
 
@@ -50,17 +47,6 @@ def compute_visual_alignment(
         tolerance = float(tolerance)
     target_y = float(target_point_1000[0])
     target_x = float(target_point_1000[1])
-
-    # Refine target using detector if frame is provided and valid
-    if frame_rgb is not None and getattr(frame_rgb, "size", 0) > 0:
-        try:
-            refined_pt, _ = refine_point_to_nearest_object(
-                [target_y, target_x], frame_rgb, max_dist_1000=120.0, calibrator=calibrator
-            )
-            target_y = float(refined_pt[0])
-            target_x = float(refined_pt[1])
-        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
-            raise PerceptionUnavailable(f"Target visual refinement failed: {e}") from e
 
     # Determine gripper coordinate
     if gripper_point_1000 is not None:
@@ -101,65 +87,51 @@ def compute_visual_alignment(
     }
 
 
-def verify_grasp_elevation(
-    pre_lift_frame_rgb: np.ndarray | None,
-    post_lift_frame_rgb: np.ndarray | None,
-    target_point_1000: list[float] | tuple[float, float] | np.ndarray | None = None,
-    max_table_presence_dist: float = 80.0,
-    calibrator: Any | None = None,
-) -> GraspElevationResponse:
-    """Verify whether an object was lifted or remains resting on the table surface.
+def compute_alignment_mm(
+    target_xy_mm: list[float] | tuple[float, float],
+    jaw_xy_mm: list[float] | tuple[float, float] | None,
+    source: str,
+    tolerance_mm: float | None = None,
+) -> AlignmentMeasurement:
+    """Compare the jaw with the locked target in the table plane, in robot millimetres.
+
+    Both points are table-plane positions (the jaw's parallax already removed by the locator),
+    so subtracting them is meaningful. Alignment is only judged when the jaw was actually
+    observed: the kinematic fallback is self-consistent with the IK and cannot see calibration
+    or encoder bias, so it reports ``is_aligned=None`` rather than a flattering True.
 
     Args:
-        pre_lift_frame_rgb: RGB frame prior to lifting or None.
-        post_lift_frame_rgb: RGB frame after lifting motion.
-        target_point_1000: Initial target bottom contact coordinate [y, x] in [0, 1000].
-        max_table_presence_dist: Radius in [0, 1000] units to check for stationary object.
-        calibrator: Optional workspace calibrator used to mask detection to the ArUco
-            workspace polygon. None disables the mask.
+        target_xy_mm: Locked target centre [x, y] in robot mm.
+        jaw_xy_mm: Jaw (grasp site) [x, y] in robot mm, or None if it was not located.
+        source: Jaw locator source ('aruco', 'kinematic', 'none').
+        tolerance_mm: Alignment tolerance; defaults to ``settings.alignment_tolerance_mm``.
 
     Returns:
-        Dictionary adhering to ARCHITECTURE.md grasp verification contract:
-            - object_elevated: bool | None
-            - object_detected_on_table: bool
-            - grasped: bool | None
-            - confidence: float
-
-    Raises:
-        PerceptionUnavailable: If object detection fails on pre-lift or post-lift frames.
+        AlignmentMeasurement payload.
     """
-    object_detected_pre = True
-    object_detected_post = False
-
-    if pre_lift_frame_rgb is not None and getattr(pre_lift_frame_rgb, "size", 0) > 0:
-        try:
-            pre_objs = detect_workspace_objects(pre_lift_frame_rgb, calibrator=calibrator)
-            object_detected_pre = len(pre_objs) > 0
-        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
-            raise PerceptionUnavailable(f"Pre-lift object detection failed: {e}") from e
-
-    if post_lift_frame_rgb is not None and getattr(post_lift_frame_rgb, "size", 0) > 0:
-        try:
-            post_objs = detect_workspace_objects(post_lift_frame_rgb, calibrator=calibrator)
-            if target_point_1000 is not None and len(post_objs) > 0:
-                t_y, t_x = float(target_point_1000[0]), float(target_point_1000[1])
-                for obj in post_objs:
-                    oy, ox = obj["bottom_contact_1000"]
-                    if math.hypot(oy - t_y, ox - t_x) <= max_table_presence_dist:
-                        object_detected_post = True
-                        break
-            else:
-                # If target point not specified, check if any object is still detected on table
-                object_detected_post = len(post_objs) > 0
-        except (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError) as e:
-            raise PerceptionUnavailable(f"Post-lift object detection failed: {e}") from e
-
-    object_elevated = bool(object_detected_pre and not object_detected_post)
-    confidence = 0.95 if object_elevated else 0.85
-
+    tol = float(get_settings().alignment_tolerance_mm if tolerance_mm is None else tolerance_mm)
+    target = [float(target_xy_mm[0]), float(target_xy_mm[1])]
+    if jaw_xy_mm is None:
+        return {
+            "gripper_xy_mm": None,
+            "target_xy_mm": target,
+            "measured_offset": None,
+            "is_aligned": None,
+            "alignment_tolerance_mm": tol,
+            "gripper_source": "none",
+        }
+    jaw = [float(jaw_xy_mm[0]), float(jaw_xy_mm[1])]
+    dx = target[0] - jaw[0]
+    dy = target[1] - jaw[1]
+    distance = float(math.hypot(dx, dy))
+    is_aligned: bool | None = None
+    if source == "aruco":
+        is_aligned = bool(distance <= tol)
     return {
-        "object_elevated": object_elevated,
-        "object_detected_on_table": object_detected_post,
-        "grasped": object_elevated,
-        "confidence": confidence,
+        "gripper_xy_mm": jaw,
+        "target_xy_mm": target,
+        "measured_offset": {"dx_mm": dx, "dy_mm": dy, "distance_mm": distance},
+        "is_aligned": is_aligned,
+        "alignment_tolerance_mm": tol,
+        "gripper_source": source,
     }

@@ -25,6 +25,8 @@ setup_logging()
 
 _real_sleep = time.sleep
 
+GRIPPER_OPEN_RAD = float(np.radians(75.0))
+
 if sys.platform.startswith("linux") and "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 
@@ -102,7 +104,11 @@ class MockRobot(RobotInterface):
         return self.qpos.copy()
 
     def move_to_pose(
-        self, target_qpos: np.ndarray, duration_sec: float = 1.0, dt: float = 0.002
+        self,
+        target_qpos: np.ndarray,
+        duration_sec: float = 1.0,
+        dt: float = 0.002,
+        cancel_epoch: int | None = None,
     ) -> None:
         """Simulate moving to target pose over duration.
 
@@ -110,12 +116,15 @@ class MockRobot(RobotInterface):
             target_qpos: Desired joint angles.
             duration_sec: Simulated move duration in seconds.
             dt: Timestep in seconds.
+            cancel_epoch: Interrupt epoch captured before a multi-segment motion.
 
         Raises:
             HardwareError: If motion is interrupted.
         """
         from robot.errors import HardwareError
 
+        if cancel_epoch is not None and cancel_epoch != self.interrupt_epoch:
+            raise HardwareError("Motion interrupted", robot_moved=False)
         self._stop_requested = False
         target_qpos = np.asarray(target_qpos, dtype=np.float32)
         start_qpos = self.qpos.copy()
@@ -155,6 +164,7 @@ class MockRobot(RobotInterface):
 
     def interrupt(self) -> None:
         """Flag that a stop was requested."""
+        self.interrupt_epoch += 1
         self._stop_requested = True
 
     def close(self) -> None:
@@ -390,3 +400,29 @@ def clean_stream_state() -> Generator[None, None, None]:
     vision_mod.clear_model_targets()
     set_active_robot(orig_robot)
     vision_mod.stop_sim_runtime()
+
+
+@pytest.fixture
+def old_format_real_npz(tmp_path: Path) -> Path:
+    """Build an old-format real-mode calibration file (no hfov_deg / image_size keys).
+
+    ``compute_sim_calibration`` now records the field of view it used, which is exactly what an
+    operator-saved real file from before the camera model does not have.
+
+    Args:
+        tmp_path: Temporary directory fixture provided by pytest.
+
+    Returns:
+        Path to an .npz holding only homography, inverse_homography and reprojection_error.
+    """
+    full = tmp_path / "full.npz"
+    compute_sim_calibration(save_path=full)
+    data = np.load(full)
+    old = tmp_path / "workspace_homography_old.npz"
+    np.savez(
+        old,
+        homography=data["homography"],
+        inverse_homography=data["inverse_homography"],
+        reprojection_error=data["reprojection_error"],
+    )
+    return old

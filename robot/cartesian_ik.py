@@ -66,6 +66,31 @@ class CartesianIK:
             mujoco.mj_kinematics(self.model, self.data)
             return self.data.site_xpos[self.site_id].copy()
 
+    def gripper_frame_pose(self, qpos_rad: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the grasp-site position and the gripper-body orientation from joint angles.
+
+        The gripper frame is the frame the jaw-tag offset is expressed in: x = jaw closing
+        direction, y = hinge axis, z = towards the wrist.
+
+        Args:
+            qpos_rad: Array of 5 or 6 joint angles in radians.
+
+        Returns:
+            Tuple of (site position (3,) in metres, gripper-body rotation (3, 3)) in the robot
+            base frame.
+        """
+        with self._lock:
+            target_ids = self.all_joint_ids if len(qpos_rad) >= 6 else self.joint_ids
+            for i, j_id in enumerate(target_ids):
+                qpos_adr = self.model.jnt_qposadr[j_id]
+                self.data.qpos[qpos_adr] = qpos_rad[i]
+            mujoco.mj_kinematics(self.model, self.data)
+            body_id = self.model.body("gripper").id
+            return (
+                self.data.site_xpos[self.site_id].copy(),
+                self.data.xmat[body_id].reshape(3, 3).copy(),
+            )
+
     def solve_ik(
         self,
         target_pos: np.ndarray,

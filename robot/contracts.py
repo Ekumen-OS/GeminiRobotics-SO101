@@ -1,6 +1,6 @@
 """Typed contract definitions for robot perception outputs."""
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class GripperReading(TypedDict):
@@ -54,12 +54,34 @@ class VisualAlignmentResponse(TypedDict):
     is_aligned: bool | None
     alignment_tolerance: float
     gripper_source: str
+    er2_gripper_point_1000: NotRequired[list[float]]
 
 
-class GraspElevationResponse(TypedDict):
-    """Contract schema for verify_grasp_elevation payload defined in ARCHITECTURE.md §3.2."""
+class MeasuredOffsetMm(TypedDict):
+    """Table-plane displacement from the jaw to the target centre, in robot millimetres."""
 
-    object_elevated: bool | None
-    object_detected_on_table: bool
-    grasped: bool | None
-    confidence: float
+    dx_mm: float
+    dy_mm: float
+    distance_mm: float
+
+
+class AlignmentMeasurement(TypedDict):
+    """Alignment payload of the closed pick loop (ARCHITECTURE.md §3.2), all in robot mm.
+
+    Attributes:
+        gripper_xy_mm: Jaw (grasp site) XY in robot mm, or None if the jaw was not located.
+        target_xy_mm: Locked target centre XY in robot mm.
+        measured_offset: Target centre minus jaw, or None when the jaw is unlocated.
+        is_aligned: True/False when observable; None for the kinematic fallback (FK is blind to
+            calibration and encoder bias) or when the jaw is unlocated.
+        alignment_tolerance_mm: Tolerance used for ``is_aligned``.
+        gripper_source: 'aruco', 'kinematic' or 'none'.
+    """
+
+    gripper_xy_mm: list[float] | None
+    target_xy_mm: list[float]
+    measured_offset: MeasuredOffsetMm | None
+    is_aligned: bool | None
+    alignment_tolerance_mm: float
+    gripper_source: str
+    er2_gripper_point_1000: NotRequired[list[float]]

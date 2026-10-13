@@ -60,6 +60,8 @@ class Settings:
         default_factory=lambda: _PROJECT_ROOT / "config" / "workspace_homography_sim.npz"
     )
     alignment_tolerance_px: int = 25
+    # Closed-loop alignment tolerance in robot millimetres (jaw vs target centre, table plane)
+    alignment_tolerance_mm: float = 4.0
     stream_fps: int = 30
     stream_width: int = 640
     stream_height: int = 480
@@ -77,8 +79,17 @@ class Settings:
     grasp_load_min: float | None = None
     # Closed-loop grasping settings (Phase 3d)
     descent_gate: str | None = None
-    gripper_tag_offset_px: tuple[float, float] = (0.0, 0.0)
+    # Jaw tag centre relative to the grasp site, in the gripper frame (mm): x = jaw closing
+    # direction, y = hinge axis, z = towards the wrist. Default: the simulated tag mount.
+    gripper_tag_local_offset_mm: tuple[float, float, float] = (-7.0, 27.0, 63.0)
+    # Nominal horizontal field of view (deg) of the workspace camera, for the camera model.
+    camera_hfov_deg: float = 70.0
+    # Apply the per-lock mm bias correction learned from jaw-tag residuals (1) or not (0).
+    bias_correction: bool = True
     gripper_locator_er2: bool = False
+    # Model used for the optional ER2 pointing query. Deliberately not ``gemini_model_id``: that
+    # default is the streaming (Live API) model, which does not serve generate_content.
+    er2_locator_model: str = "gemini-robotics-er-2-preview"
     vision_settle_s: float = 0.3
 
     def get_descent_gate(self, mode: str = "real") -> str:
@@ -321,6 +332,12 @@ class Settings:
             default_tolerance,
         )
 
+        alignment_tolerance_mm = _resolve_float(
+            overrides.get("alignment_tolerance_mm"),
+            ("ALIGNMENT_TOLERANCE_MM",),
+            cls.alignment_tolerance_mm,
+        )
+
         stream_fps = _resolve_int(
             overrides.get("stream_fps"),
             ("STREAM_FPS",),
@@ -387,20 +404,38 @@ class Settings:
         if descent_gate not in ("block", "warn", "off"):
             descent_gate = None
 
-        gripper_tag_offset_px = cls.gripper_tag_offset_px
-        if overrides.get("gripper_tag_offset_px") is not None:
-            ov = overrides["gripper_tag_offset_px"]
-            if isinstance(ov, (tuple, list)) and len(ov) >= 2:
-                gripper_tag_offset_px = (float(ov[0]), float(ov[1]))
+        gripper_tag_local_offset_mm = cls.gripper_tag_local_offset_mm
+        tag_override = overrides.get("gripper_tag_local_offset_mm")
+        tag_text = os.environ.get("GRIPPER_TAG_LOCAL_OFFSET_MM")
+        if tag_override is not None:
+            if isinstance(tag_override, (tuple, list)) and len(tag_override) == 3:
+                gripper_tag_local_offset_mm = (
+                    float(tag_override[0]),
+                    float(tag_override[1]),
+                    float(tag_override[2]),
+                )
+        elif tag_text and tag_text.strip():
+            try:
+                parts = [float(p.strip()) for p in tag_text.split(",") if p.strip()]
+                if len(parts) == 3:
+                    gripper_tag_local_offset_mm = (parts[0], parts[1], parts[2])
+            except (ValueError, TypeError):
+                pass
+
+        camera_hfov_deg = _resolve_float(
+            overrides.get("camera_hfov_deg"), ("CAMERA_HFOV_DEG",), cls.camera_hfov_deg
+        )
+
+        bias_override = overrides.get("bias_correction")
+        if bias_override is not None:
+            bias_correction = bool(bias_override)
         else:
-            tag_offset_str = os.environ.get("GRIPPER_TAG_OFFSET_PX")
-            if tag_offset_str and "," in tag_offset_str:
-                try:
-                    parts = [float(p.strip()) for p in tag_offset_str.split(",") if p.strip()]
-                    if len(parts) >= 2:
-                        gripper_tag_offset_px = (parts[0], parts[1])
-                except (ValueError, TypeError):
-                    pass
+            bias_env = os.environ.get("BIAS_CORRECTION")
+            bias_correction = (
+                cls.bias_correction
+                if bias_env is None or bias_env.strip() == ""
+                else bias_env.strip().lower() in ("1", "true", "yes")
+            )
 
         gripper_locator_er2 = False
         if overrides.get("gripper_locator_er2") is not None:
@@ -408,6 +443,12 @@ class Settings:
         else:
             er2_env = os.environ.get("GRIPPER_LOCATOR_ER2", "")
             gripper_locator_er2 = er2_env.strip().lower() in ("1", "true", "yes")
+
+        er2_locator_model = _resolve_str(
+            overrides.get("er2_locator_model"),
+            ("ER2_LOCATOR_MODEL",),
+            cls.er2_locator_model,
+        )
 
         vision_settle_s = _resolve_float(
             overrides.get("vision_settle_s"),
@@ -429,6 +470,7 @@ class Settings:
             calibration_save_path=calibration_save_path,
             calibration_sim_save_path=calibration_sim_save_path,
             alignment_tolerance_px=alignment_tolerance_px,
+            alignment_tolerance_mm=alignment_tolerance_mm,
             stream_fps=stream_fps,
             stream_width=stream_width,
             stream_height=stream_height,
@@ -441,8 +483,11 @@ class Settings:
             gripper_settle_s=gripper_settle_s,
             grasp_load_min=grasp_load_min,
             descent_gate=descent_gate,
-            gripper_tag_offset_px=gripper_tag_offset_px,
+            gripper_tag_local_offset_mm=gripper_tag_local_offset_mm,
+            camera_hfov_deg=camera_hfov_deg,
+            bias_correction=bias_correction,
             gripper_locator_er2=gripper_locator_er2,
+            er2_locator_model=er2_locator_model,
             vision_settle_s=vision_settle_s,
         )
 
