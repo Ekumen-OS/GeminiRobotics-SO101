@@ -21,7 +21,7 @@ repos:
         always_run: true
       - id: pytest
         name: pytest
-        entry: uv run pytest -q
+        entry: uv run pytest -q -m "" --cov=robot --cov=vision --cov=agent
         language: system
         pass_filenames: false
         always_run: true
