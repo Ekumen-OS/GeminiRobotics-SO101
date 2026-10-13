@@ -4,6 +4,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from scipy.optimize import minimize
 
 # HSV color range definitions (OpenCV H: 0..180, S: 0..255, V: 0..255)
 COLOR_HSV_RANGES: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {
@@ -133,6 +134,15 @@ def detect_workspace_objects(
             low = pts[pts[:, 1] >= by + bh - 3]
             bottom_edge = [float(low[:, 0].min()), float(low[:, 0].max() + 1), float(by + bh)]
 
+            # Lowest boundary of the blob (bottom-most pixel in each column)
+            blob_mask = np.zeros((bh, bw), dtype=np.uint8)
+            cv2.drawContours(blob_mask, [cnt], -1, 255, -1, offset=(-bx, -by))
+            bottom_boundary: list[list[int]] = []
+            for col_x in range(bw):
+                nz = np.where(blob_mask[:, col_x])[0]
+                if len(nz) > 0:
+                    bottom_boundary.append([int(bx + col_x), int(by + int(nz.max()))])
+
             # Centroid
             m = cv2.moments(cnt)
             cx = float(m["m10"] / m["m00"]) if m["m00"] != 0 else float(bx + bw / 2.0)
@@ -149,6 +159,8 @@ def detect_workspace_objects(
                     "area": area,
                     "bbox_px": [int(bx), int(by), int(bw), int(bh)],
                     "bottom_edge_px": bottom_edge,
+                    "bottom_boundary_px": bottom_boundary,
+                    "contour": cnt,
                     "bottom_contact_px": [bot_x, bot_y],
                     "bottom_contact_1000": [norm_bot_y, norm_bot_x],
                     "center_1000": [norm_cy, norm_cx],
@@ -184,64 +196,212 @@ def locate_target_footprint(
     obj: dict[str, Any],
     homography: np.ndarray,
     image_shape: tuple[int, int] = (480, 640),
+    camera: Any | None = None,
 ) -> dict[str, Any]:
     """Estimate where a detected object stands on the table (its footprint centre).
 
-    The lowest blob pixels are the object's near bottom edge, not its centre (15.7 mm off on a
-    30 mm cube). The footprint centre is the midpoint of that bottom edge (``bottom_edge_px``,
-    falling back to the bbox bottom row) mapped through the table homography, shifted by half
-    the edge width (in mm) along the table-plane normal of that edge, on the side away from the
-    camera.
+    For rotated cubes, the lowest boundary of the blob (bottom-most pixel in each column)
+    forms visible bottom edges on the table. Maps these points through the table homography,
+    fits the near corner and edge directions (yaw mod 90 deg), and optionally refines via
+    silhouette IoU matching.
 
     Args:
         obj: Detection from ``detect_workspace_objects`` (needs ``bbox_px``).
         homography: 3x3 pixel -> robot-mm homography of the table plane.
         image_shape: Frame dimensions as (height, width), for the normalised result.
+        camera: Optional PinholeCamera model (recovered from homography if omitted).
 
     Returns:
         Dictionary with ``centre_xy_mm`` ([x, y] robot mm), ``centre_1000`` ([y, x] normalised),
-        ``width_mm`` (bottom-edge width) and ``bbox_px``.
+        ``width_mm``, ``yaw_deg`` (estimated yaw mod 90 deg) and ``bbox_px``.
 
     Raises:
         ValueError: If the homography is singular or the geometry degenerates.
     """
     bx, by, bw, bh = obj["bbox_px"]
-    left_px, right_px, bottom_py = obj.get("bottom_edge_px") or [bx, bx + bw, by + bh]
-    # Blob coordinates are continuous (a pixel spans [i, i+1)); the homography is built from
-    # ArUco detections, which use pixel-index coordinates (a pixel's centre is at i).
-    left_px, right_px, bottom_py = (
-        left_px - PIXEL_INDEX_SHIFT,
-        right_px - PIXEL_INDEX_SHIFT,
-        bottom_py - PIXEL_INDEX_SHIFT,
-    )
-    mid_px = (left_px + right_px) / 2.0
-    bottom_mid = _apply_homography(homography, mid_px, bottom_py)
-    bottom_left = _apply_homography(homography, float(left_px), bottom_py)
-    bottom_right = _apply_homography(homography, float(right_px), bottom_py)
-    top_mid = _apply_homography(homography, mid_px, float(by) - PIXEL_INDEX_SHIFT)
-    edge = bottom_right - bottom_left
-    width_mm = float(np.linalg.norm(edge))
-    if width_mm < 1e-9:
-        raise ValueError("Degenerate bbox: the bottom edge has no width")
-    # Away from the camera, perpendicular to the object's own bottom edge in the table plane.
-    # (The bbox top maps to a point displaced by the object's height, so the direction towards
-    # it leans sideways for off-axis objects; the edge normal does not.)
-    normal = np.array([-edge[1], edge[0]]) / width_mm
-    if float(normal @ (top_mid - bottom_mid)) < 0.0:
-        normal = -normal
-    centre = bottom_mid + normal * (width_mm / 2.0)
+    inv_h = np.linalg.inv(homography)
 
-    inverse = np.linalg.inv(homography)
-    cpx = _apply_homography(inverse, float(centre[0]), float(centre[1])) + PIXEL_INDEX_SHIFT
-    h, w = image_shape
+    if camera is None:
+        try:
+            from robot.camera_model import PinholeCamera
+
+            camera = PinholeCamera.from_homography(homography)
+        except Exception:
+            camera = None
+
+    cam_xy = (
+        np.asarray(camera.centre_mm[:2], dtype=np.float64)
+        if camera is not None
+        else np.array([185.0, 458.0], dtype=np.float64)
+    )
+
+    cnt = obj.get("contour")
+    col_pts: np.ndarray
+    if "bottom_boundary_px" in obj and len(obj["bottom_boundary_px"]) >= 4:
+        col_pts = np.asarray(obj["bottom_boundary_px"], dtype=np.float64)
+    elif cnt is not None and len(cnt) >= 4:
+        blob_mask = np.zeros((bh, bw), dtype=np.uint8)
+        cv2.drawContours(blob_mask, [cnt], -1, 255, -1, offset=(-bx, -by))
+        extracted: list[list[float]] = []
+        for col_x in range(bw):
+            nz = np.where(blob_mask[:, col_x])[0]
+            if len(nz) > 0:
+                extracted.append([float(bx + col_x), float(by + nz.max())])
+        col_pts = np.asarray(extracted, dtype=np.float64)
+    else:
+        left_px, right_px, bottom_py = obj.get("bottom_edge_px") or [bx, bx + bw, by + bh]
+        col_pts = np.array([[left_px, bottom_py], [right_px, bottom_py]], dtype=np.float64)
+
+    # Filter out pixels that are far higher than the lowest row
+    if len(col_pts) >= 4:
+        max_py = float(col_pts[:, 1].max())
+        col_pts = col_pts[col_pts[:, 1] >= max_py - float(bh) * 0.4]
+
+    t_pts = np.array(
+        [
+            _apply_homography(homography, p[0] - PIXEL_INDEX_SHIFT, p[1] - PIXEL_INDEX_SHIFT)
+            for p in col_pts
+        ],
+        dtype=np.float64,
+    )
+
+    # Check physical width across the bottom edge / boundary
+    left_px, right_px, bottom_py = obj.get("bottom_edge_px") or [bx, bx + bw, by + bh]
+    b_left = _apply_homography(
+        homography, float(left_px) - PIXEL_INDEX_SHIFT, float(bottom_py) - PIXEL_INDEX_SHIFT
+    )
+    b_right = _apply_homography(
+        homography, float(right_px) - PIXEL_INDEX_SHIFT, float(bottom_py) - PIXEL_INDEX_SHIFT
+    )
+    edge_span_mm = float(np.linalg.norm(b_right - b_left))
+    pts_span_mm = float(np.linalg.norm(t_pts[-1] - t_pts[0])) if len(t_pts) > 1 else 0.0
+    measured_width = max(edge_span_mm, pts_span_mm)
+
+    if len(t_pts) < 4:
+        end_a = t_pts[0]
+        end_b = t_pts[-1]
+        edge = end_b - end_a
+        w_mm = float(np.linalg.norm(edge))
+        if w_mm < 1e-9:
+            raise ValueError("Degenerate bbox: the bottom edge has no width")
+        mid = (end_a + end_b) / 2.0
+        normal = np.array([-edge[1], edge[0]]) / w_mm
+        if float(normal @ (mid - cam_xy)) < 0.0:
+            normal = -normal
+        s = float(np.clip(w_mm, 15.0, 50.0))
+        centre = mid + normal * (s / 2.0)
+        yaw_rad = float(np.arctan2(edge[1], edge[0]))
+        yaw_deg = float(np.degrees(yaw_rad) % 90.0)
+        cpx = _apply_homography(inv_h, float(centre[0]), float(centre[1])) + PIXEL_INDEX_SHIFT
+        h, w_img = image_shape
+        centre_1000 = [
+            float(np.clip(cpx[1] / h * 1000.0, 0.0, 1000.0)),
+            float(np.clip(cpx[0] / w_img * 1000.0, 0.0, 1000.0)),
+        ]
+        return {
+            "centre_xy_mm": [float(centre[0]), float(centre[1])],
+            "centre_1000": centre_1000,
+            "width_mm": measured_width if measured_width > 50.0 else s,
+            "yaw_deg": yaw_deg,
+            "bbox_px": [int(bx), int(by), int(bw), int(bh)],
+        }
+
+    # L-shape fit
+    to_cam = cam_xy - t_pts.mean(axis=0)
+    norm_to_cam = float(np.linalg.norm(to_cam))
+    if norm_to_cam > 1e-9:
+        to_cam /= norm_to_cam
+    init_corner = t_pts[np.argmax(t_pts @ to_cam)]
+
+    def l_loss(params: list[float] | np.ndarray) -> float:
+        cx, cy, th = float(params[0]), float(params[1]), float(params[2])
+        u1 = np.array([np.cos(th), np.sin(th)])
+        u2 = np.array([-np.sin(th), np.cos(th)])
+        c_pt = np.array([cx, cy])
+        if float(u1 @ (c_pt - cam_xy)) < 0.0:
+            u1 = -u1
+        if float(u2 @ (c_pt - cam_xy)) < 0.0:
+            u2 = -u2
+        diff = t_pts - c_pt
+        p1 = diff @ u1
+        p2 = diff @ u2
+        d1 = p2**2 + np.maximum(0.0, -p1) ** 2 + np.maximum(0.0, p1 - 30.0) ** 2
+        d2 = p1**2 + np.maximum(0.0, -p2) ** 2 + np.maximum(0.0, p2 - 30.0) ** 2
+        return float(np.sum(np.minimum(d1, d2)))
+
+    best_loss = float("inf")
+    best_th = 0.0
+    for th_test in np.linspace(0.0, np.pi / 2.0, 19):
+        loss_val = l_loss([init_corner[0], init_corner[1], th_test])
+        if loss_val < best_loss:
+            best_loss = loss_val
+            best_th = th_test
+
+    res = minimize(
+        l_loss,
+        [init_corner[0], init_corner[1], best_th],
+        method="Nelder-Mead",
+        options={"maxiter": 100},
+    )
+    cx, cy, th = float(res.x[0]), float(res.x[1]), float(res.x[2])
+    u1 = np.array([np.cos(th), np.sin(th)])
+    u2 = np.array([-np.sin(th), np.cos(th)])
+    c_pt = np.array([cx, cy])
+    if float(u1 @ (c_pt - cam_xy)) < 0.0:
+        u1 = -u1
+    if float(u2 @ (c_pt - cam_xy)) < 0.0:
+        u2 = -u2
+    final_centre = c_pt + 15.0 * (u1 + u2)
+    final_th = th
+
+    # Silhouette IoU refinement when camera and contour are available
+    if camera is not None and cnt is not None:
+        blob_mask = np.zeros((bh, bw), dtype=np.uint8)
+        cv2.drawContours(blob_mask, [cnt], -1, 255, -1, offset=(-bx, -by))
+
+        def iou_cost(params: list[float] | np.ndarray) -> float:
+            px, py, pyaw = float(params[0]), float(params[1]), float(params[2])
+            c, s = np.cos(pyaw), np.sin(pyaw)
+            rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+            corners_3d = []
+            for dx in (-15.0, 15.0):
+                for dy in (-15.0, 15.0):
+                    for dz in (-15.0, 15.0):
+                        corners_3d.append([px, py, 15.0] + rot @ np.array([dx, dy, dz]))
+            uvs = np.array([camera.project(pt) for pt in corners_3d], dtype=np.float32)
+            hull = cv2.convexHull(uvs)
+            hull_crop = hull - np.array([bx, by], dtype=np.float32)
+            sim_mask = np.zeros((bh, bw), dtype=np.uint8)
+            cv2.fillPoly(sim_mask, [np.int32(hull_crop)], 255)
+            inter = cv2.countNonZero(cv2.bitwise_and(blob_mask, sim_mask))
+            union = cv2.countNonZero(cv2.bitwise_or(blob_mask, sim_mask))
+            if union == 0:
+                return 1.0
+            return 1.0 - (float(inter) / float(union))
+
+        res_iou = minimize(
+            iou_cost,
+            [final_centre[0], final_centre[1], th],
+            method="Nelder-Mead",
+            options={"maxiter": 40, "xatol": 0.5, "fatol": 0.01},
+        )
+        final_centre = res_iou.x[:2]
+        final_th = float(res_iou.x[2])
+
+    yaw_deg = float(np.degrees(final_th) % 90.0)
+    cpx = (
+        _apply_homography(inv_h, float(final_centre[0]), float(final_centre[1])) + PIXEL_INDEX_SHIFT
+    )
+    h, w_img = image_shape
     centre_1000 = [
         float(np.clip(cpx[1] / h * 1000.0, 0.0, 1000.0)),
-        float(np.clip(cpx[0] / w * 1000.0, 0.0, 1000.0)),
+        float(np.clip(cpx[0] / w_img * 1000.0, 0.0, 1000.0)),
     ]
     return {
-        "centre_xy_mm": [float(centre[0]), float(centre[1])],
+        "centre_xy_mm": [float(final_centre[0]), float(final_centre[1])],
         "centre_1000": centre_1000,
-        "width_mm": width_mm,
+        "width_mm": measured_width if measured_width > 50.0 else 30.0,
+        "yaw_deg": yaw_deg,
         "bbox_px": [int(bx), int(by), int(bw), int(bh)],
     }
 
@@ -317,8 +477,15 @@ def refine_point_to_nearest_object(
     if not objects:
         return original, None
 
-    if homography is None and calibrator is not None:
-        homography = getattr(calibrator, "homography_matrix", None)
+    camera = None
+    if calibrator is not None:
+        if homography is None:
+            homography = getattr(calibrator, "homography_matrix", None)
+        geom_fn = getattr(calibrator, "geometry_snapshot", None)
+        if callable(geom_fn):
+            snapshot = geom_fn()
+            if snapshot is not None:
+                camera = getattr(snapshot, "camera", None)
 
     py, px = original
     best_obj: dict[str, Any] | None = None
@@ -326,7 +493,9 @@ def refine_point_to_nearest_object(
     for obj in objects:
         if homography is not None:
             try:
-                obj.update(locate_target_footprint(obj, homography, frame_rgb.shape[:2]))
+                obj.update(
+                    locate_target_footprint(obj, homography, frame_rgb.shape[:2], camera=camera)
+                )
             except (ValueError, np.linalg.LinAlgError):
                 pass
         anchors = [obj["center_1000"], obj["bottom_contact_1000"]]
