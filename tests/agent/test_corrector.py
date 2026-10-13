@@ -13,8 +13,8 @@ from agent.guardrails import GuardrailState, Phase
 from agent.pick_loop import IMPLAUSIBLE_RESIDUAL_MM
 from robot.constants import JOINT_NAMES
 from robot.real_robot import CONVERGENCE_TOL_DEG, RealSO101Robot
-from tests.pick_helpers import next_call_from, patch_measurements
-from tests.sim_pick_harness import SimPickHarness, settings_override
+from tests.e2e.pick_helpers import next_call_from, patch_measurements
+from tests.e2e.sim_pick_harness import SimPickHarness, settings_override
 
 CUBE_XY = (0.24, 0.0)
 
@@ -187,6 +187,7 @@ def test_corrector_kept_across_retry_reset_on_new_lock() -> None:
 
 
 # -- measurement freshness ---------------------------------------------------------------------
+@pytest.mark.usefixtures("real_sleep")
 def test_measurement_waits_for_fresh_frame(harness: SimPickHarness) -> None:
     """The measurement asks for a frame newer than the end of the motion, never an old one."""
     point = harness.image_point_for(*CUBE_XY)

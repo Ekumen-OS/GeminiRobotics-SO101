@@ -136,6 +136,7 @@ def test_home_jaw_constant_matches_forward_kinematics(scene: _Scene) -> None:
     assert abs(site[1] - HOME_JAW_XY_M[1]) < 0.005
 
 
+@pytest.mark.slow
 def test_sim_jaw_tag_detected_and_cube_visible(scene: _Scene) -> None:
     """Jaw tag seen in >= 11/12 poses at 640x480; the cube stays >= 70 % visible at a 3 cm hover."""
     robot = scene.robot

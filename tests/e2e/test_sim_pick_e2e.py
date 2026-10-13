@@ -6,7 +6,7 @@ scenarios and prints the metrics table.
 
 import pytest
 
-from tests.sim_pick_harness import ScenarioResult, format_metrics_table, run_scenario
+from tests.e2e.sim_pick_harness import ScenarioResult, format_metrics_table, run_scenario
 
 
 def _assert_clean(result: ScenarioResult) -> None:
@@ -58,6 +58,37 @@ def test_harness_biased_with_correction_10_placements() -> None:
 
 
 @pytest.mark.slow
+def test_harness_unbiased_random_yaw_10_placements() -> None:
+    """Random yaw, unbiased: at least 8/10 placed within 15 mm; jaw <= 4 mm in >= 8/10."""
+    result = run_scenario(
+        "unbiased_rand_yaw", n_placements=10, seed=1, random_yaw=True, progress=print
+    )
+    print(format_metrics_table([result]))
+    summary = result.summary()
+    assert summary["placed_within_15mm"] >= 8
+    assert summary["jaw_to_cube_at_close_le_4mm"] >= 8
+    _assert_clean(result)
+
+
+@pytest.mark.slow
+def test_harness_biased_with_correction_random_yaw_10_placements() -> None:
+    """Random yaw, 1.5 deg pan offset: at least 8/10 placed within 15 mm; jaw <= 4 mm in >= 8/10."""
+    result = run_scenario(
+        "biased_corr_on_rand_yaw",
+        n_placements=10,
+        seed=1,
+        pan_offset_deg=1.5,
+        random_yaw=True,
+        progress=print,
+    )
+    print(format_metrics_table([result]))
+    summary = result.summary()
+    assert summary["placed_within_15mm"] >= 8
+    assert summary["jaw_to_cube_at_close_le_4mm"] >= 8
+    _assert_clean(result)
+
+
+@pytest.mark.slow
 def test_harness_biased_without_correction_shows_the_corrector_matters() -> None:
     """Same bias, BIAS_CORRECTION=0: the median jaw-to-cube error stays at the bias (>= 5 mm)."""
     result = run_scenario(
@@ -99,7 +130,7 @@ def test_pan_offset_wrapper_bias_is_invisible_to_fk() -> None:
     import numpy as np
 
     from robot.cartesian_ik import CartesianIK
-    from tests.sim_pick_harness import SimPickHarness
+    from tests.e2e.sim_pick_harness import SimPickHarness
 
     harness = SimPickHarness(pan_offset_deg=1.5)
     try:

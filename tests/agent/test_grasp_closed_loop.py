@@ -26,10 +26,10 @@ from agent.tools import (
     _handle_set_joint_positions,
 )
 from agent.vla_controller import VLAController
-from robot.perception import compute_visual_alignment
+from robot.camera_model import PinholeCamera
 from tests.conftest import MockRobot, fake_live_session
-from tests.pick_helpers import patch_measurements
-from tests.sim_pick_harness import SimPickHarness
+from tests.e2e.pick_helpers import patch_measurements
+from tests.e2e.sim_pick_harness import SimPickHarness
 
 CUBE_XY = (0.24, 0.0)
 
@@ -51,27 +51,6 @@ def scripted_harness(_shared_scripted: SimPickHarness) -> SimPickHarness:
 
 def _move(h: SimPickHarness, point: list[float], z: float) -> dict[str, Any]:
     return h.call("move_to_spatial_point", point=point, z_height_cm=z, approach="top_down")
-
-
-def test_compute_visual_alignment_no_gripper_returns_none_flipped() -> None:
-    """Task 2 FLIPPED: compute_visual_alignment without gripper returns None metrics.
-
-    Returns gripper_source='none'. Flipped from Task 0 baseline where it fell back
-    to gripper = target.
-    """
-    target = [760.0, 484.0]
-    result = compute_visual_alignment(
-        frame_rgb=None,
-        target_point_1000=target,
-        gripper_point_1000=None,
-        tolerance=25.0,
-    )
-
-    assert result["is_aligned"] is None
-    assert result["measured_offset"] is None
-    assert result["gripper_point_1000"] is None
-    assert result["gripper_source"] == "none"
-    assert result["target_point_1000"] == target
 
 
 @pytest.mark.asyncio
@@ -241,6 +220,64 @@ def test_sim_cube_left_on_table_voted_on_table(scripted_harness: SimPickHarness)
     assert blocked["error_type"] == "transport_gate"
 
 
+def test_vote_inconclusive_for_overhead_camera(scripted_harness: SimPickHarness) -> None:
+    """A synthetic PinholeCamera looking straight down from 600 mm, cube near nadir, 5cm lift."""
+    h = scripted_harness
+    point = h.image_point_for(*CUBE_XY)
+    with patch_measurements([(0.0, 0.0)]):
+        _move(h, point, 3.0)
+    lock = h.state.target
+    assert lock is not None
+
+    # Synthetic overhead camera at (240, 0, 600) looking straight down at (240, 0, 0)
+    R = np.array(
+        [
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+    C = np.array([240.0, 0.0, 600.0], dtype=np.float64)
+    t = -R @ C
+    K = np.array(
+        [
+            [554.26, 0.0, 320.0],
+            [0.0, 554.26, 240.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    overhead_cam = PinholeCamera(K=K, R=R, t=t)
+
+    vote = vision_vote(
+        h.frame_rgb(),
+        lock,
+        h.calib,
+        lift_height_mm=50.0,
+        camera=overhead_cam,
+    )
+    assert vote == "inconclusive"
+
+
+def test_vote_discriminates_for_oblique_camera(scripted_harness: SimPickHarness) -> None:
+    """With the sim camera geometry the vote is not inconclusive."""
+    h = scripted_harness
+    point = h.image_point_for(*CUBE_XY)
+    with patch_measurements([(0.0, 0.0)]):
+        _move(h, point, 3.0)
+    lock = h.state.target
+    assert lock is not None
+
+    vote = vision_vote(
+        h.frame_rgb(),
+        lock,
+        h.calib,
+        lift_height_mm=50.0,
+    )
+    assert vote != "inconclusive"
+
+
 def test_vision_vote_unavailable_without_markers_or_lock() -> None:
     """No frame, a frame without 3 mat markers, or no lock reference is 'unavailable'."""
     h = SimPickHarness()
@@ -253,10 +290,11 @@ def test_vision_vote_unavailable_without_markers_or_lock() -> None:
         assert vision_vote(None, lock, h.calib) == "unavailable"
         blank = np.full((480, 640, 3), 180, dtype=np.uint8)
         assert vision_vote(blank, lock, h.calib) == "unavailable"
-        assert vision_vote(h.frame_rgb(), None, h.calib) == "unavailable"
-        # Only 2 of the 4 markers visible: not trusted either.
+        assert vision_vote(h.frame_rgb(), None, h.calib) == "no_reference"
+        # Only 2 of the 4 markers visible: not trusted either (stays unavailable even without lock).
         partial = h.frame_rgb().copy()
         partial[:, 320:] = 180
+        assert vision_vote(partial, None, h.calib) == "unavailable"
         assert vision_vote(partial, lock, h.calib) == "unavailable"
         assert vision_vote(h.frame_rgb(), lock, h.calib) == "on_table"
     finally:
@@ -533,7 +571,7 @@ async def test_er2_locator_is_report_only_and_uses_its_own_model() -> None:
         mock_session = fake_live_session(turns)
         controller._session = mock_session
 
-        from tests.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
+        from tests.e2e.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
 
         cube_frame = make_synthetic_red_cube_frame(700.0, 500.0)
         _, enc = cv2.imencode(".jpg", cv2.cvtColor(cube_frame, cv2.COLOR_RGB2BGR))

@@ -240,7 +240,7 @@ def test_jaw_locator_parallax_free_sim(sim_scene) -> None:
 
 def test_jaw_locator_sees_a_pan_encoder_bias_that_fk_cannot(sim_scene) -> None:
     """With a 1.5 deg pan offset the tag-based XY follows the real arm; FK follows the belief."""
-    from tests.sim_pick_harness import PanOffsetRobot
+    from tests.e2e.sim_pick_harness import PanOffsetRobot
 
     robot, snapshot = sim_scene
     biased = PanOffsetRobot(robot, 1.5)
@@ -310,7 +310,7 @@ def test_new_settings_defaults_and_env_parsing(monkeypatch: pytest.MonkeyPatch) 
     defaults = Settings.from_env()
     assert defaults.camera_hfov_deg == 70.0
     assert defaults.alignment_tolerance_mm == 4.0
-    assert defaults.gripper_tag_local_offset_mm == (-7.0, 27.0, 63.0)
+    assert defaults.gripper_tag_local_offset_mm == (-14.0, 27.0, 63.0)
     assert defaults.bias_correction is True
     assert defaults.er2_locator_model == "gemini-robotics-er-2-preview"
 
@@ -326,3 +326,68 @@ def test_new_settings_defaults_and_env_parsing(monkeypatch: pytest.MonkeyPatch) 
     assert custom.bias_correction is False
     assert custom.er2_locator_model == "my-er2"
     assert not hasattr(custom, "gripper_tag_offset_px")
+
+
+def _fixed_finger_mesh_face_x_mm(model: mujoco.MjModel) -> float:
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+    mesh_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MESH, "wrist_roll_follower_so101_v1")
+    v_adr = model.mesh_vertadr[mesh_id]
+    v_num = model.mesh_vertnum[mesh_id]
+    raw_verts = model.mesh_vert[v_adr : v_adr + v_num].copy()
+
+    geom_id = -1
+    for g in range(model.ngeom):
+        if model.geom_bodyid[g] == body_id and model.geom_dataid[g] == mesh_id:
+            geom_id = g
+            break
+    assert geom_id >= 0, "wrist_roll_follower_so101_v1 geom not found on gripper"
+
+    g_pos = model.geom_pos[geom_id]
+    g_quat = model.geom_quat[geom_id]
+    rot = np.zeros((3, 3))
+    mujoco.mju_quat2Mat(rot.ravel(), g_quat)
+    body_verts = (rot @ raw_verts.T).T + g_pos
+
+    fingertip_mask = (body_verts[:, 2] < -0.075) & (body_verts[:, 2] > -0.103)
+    ft_verts = body_verts[fingertip_mask]
+    return float(np.max(ft_verts[:, 0]) * 1000.0)
+
+
+def test_tcp_clears_real_fixed_finger() -> None:
+    """A 30 mm cube centred on TCP has >= 4.5 mm clearance to the fixed finger mesh face."""
+    model = mujoco.MjModel.from_xml_path("simulation/assets/scene.xml")
+    mesh_face_x_mm = _fixed_finger_mesh_face_x_mm(model)
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+    tcp_x_mm = float(model.site_pos[site_id][0] * 1000.0)
+    cube_near_face_x_mm = tcp_x_mm - 15.0
+    clearance_mm = cube_near_face_x_mm - mesh_face_x_mm
+    print(f"TCP clearance to fixed finger: {clearance_mm:.2f} mm")
+    assert clearance_mm >= 4.5
+
+
+def test_fixed_pad_matches_finger_mesh() -> None:
+    """The inner face of pad_fixed is within 0.5 mm of the finger mesh face."""
+    model = mujoco.MjModel.from_xml_path("simulation/assets/scene.xml")
+    mesh_face_x_mm = _fixed_finger_mesh_face_x_mm(model)
+    pad_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "pad_fixed")
+    pad_inner_face_x_mm = float((model.geom_pos[pad_id][0] + model.geom_size[pad_id][0]) * 1000.0)
+    diff_mm = abs(pad_inner_face_x_mm - mesh_face_x_mm)
+    print(
+        f"pad_fixed inner face vs mesh: pad={pad_inner_face_x_mm:.2f} mm, "
+        f"mesh={mesh_face_x_mm:.2f} mm, diff={diff_mm:.2f} mm"
+    )
+    assert diff_mm <= 0.5
+
+
+def test_tag_offset_default_matches_model() -> None:
+    """Settings default equals tag position minus grasp site position, within 0.5 mm."""
+    model = mujoco.MjModel.from_xml_path("simulation/assets/scene.xml")
+    tag_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "aruco_jaw_tag")
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+    tag_pos_mm = model.geom_pos[tag_id] * 1000.0
+    site_pos_mm = model.site_pos[site_id] * 1000.0
+    derived_offset = tag_pos_mm - site_pos_mm
+    default_offset = np.array(Settings().gripper_tag_local_offset_mm)
+    diff = np.abs(default_offset - derived_offset)
+    print(f"Derived tag offset: {derived_offset}, default: {default_offset}, diff: {diff}")
+    assert np.all(diff <= 0.5)

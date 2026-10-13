@@ -347,7 +347,9 @@ def test_f1_marker_id_harmonization_across_subsystems() -> None:
     assert fallback_calib.config["marker_ids"]["bottom_left"] == 0
 
     # 3. Check simulation scene.xml geoms & materials
-    scene_path = Path(__file__).resolve().parent.parent / "simulation" / "assets" / "scene.xml"
+    scene_path = (
+        Path(__file__).resolve().parent.parent.parent / "simulation" / "assets" / "scene.xml"
+    )
     scene_text = scene_path.read_text()
     assert 'name="aruco_tl_0"' in scene_text and 'material="mat_marker_1"' in scene_text
     assert 'name="aruco_tr_1"' in scene_text and 'material="mat_marker_2"' in scene_text
