@@ -96,6 +96,7 @@ def _stream_video_impl(
             raw_frame = get_sim_video_frame(robot=robot)
             with frames_mod._global_frame_lock:
                 frames_mod._global_latest_raw_frame = raw_frame.copy()
+                frames_mod._global_latest_raw_ts = time.monotonic()
 
             ui_frame = raw_frame.copy()
             if is_calibration_overlay_enabled() and calib.is_calibrated:
@@ -191,6 +192,7 @@ def _stream_video_impl(
 
             with frames_mod._global_frame_lock:
                 frames_mod._global_latest_raw_frame = raw_frame.copy()
+                frames_mod._global_latest_raw_ts = time.monotonic()
 
             ui_frame = raw_frame.copy()
 

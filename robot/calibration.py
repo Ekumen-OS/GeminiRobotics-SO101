@@ -8,14 +8,18 @@ directly to physical millimeter/meter coordinates in the robot base frame.
 import json
 import logging
 import sys
+import threading
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 
+from robot.camera_model import PinholeCamera
 from robot.errors import CalibrationUnavailable
+from robot.logger import log_with_tag
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,85 @@ def _get_default_sim_save_path() -> Path:
     return getattr(sys.modules[__name__], "DEFAULT_SIM_SAVE_PATH")
 
 
+@dataclass(frozen=True)
+class GeometrySnapshot:
+    """Immutable bundle of everything derived from one workspace homography.
+
+    The shared calibrator's homography is replaced on every frame that shows all four markers
+    (real mode), so consumers take one snapshot per tool call and read H, its inverse and the
+    camera model from it: they can never mix two homographies.
+
+    Attributes:
+        homography: 3x3 pixel -> robot-mm matrix (read-only).
+        inverse_homography: 3x3 robot-mm -> pixel matrix (read-only).
+        reprojection_error: Mean marker reprojection error in mm, if known.
+        image_size: (width, height) of the homography's pixel frame.
+        hfov_deg: Horizontal field of view the camera model was derived with.
+        camera: Pinhole camera recovered from the homography, or None if the derivation failed.
+    """
+
+    homography: np.ndarray
+    inverse_homography: np.ndarray
+    reprojection_error: float | None
+    image_size: tuple[int, int]
+    hfov_deg: float
+    camera: PinholeCamera | None
+
+    def pixel_to_table_mm(self, u: float, v: float) -> tuple[float, float]:
+        """Map a pixel to the table plane (z = 0) through the homography.
+
+        Args:
+            u: Horizontal pixel coordinate.
+            v: Vertical pixel coordinate.
+
+        Returns:
+            (x_mm, y_mm) robot-frame table position.
+        """
+        vec = self.homography @ np.array([u, v, 1.0], dtype=np.float64)
+        return float(vec[0] / vec[2]), float(vec[1] / vec[2])
+
+    def pixel_to_plane_mm(self, u: float, v: float, height_mm: float) -> tuple[float, float]:
+        """Map the pixel of a point known to be ``height_mm`` above the table to its true XY.
+
+        The table hit of the pixel comes from the homography H (so a point on the table agrees
+        exactly with every other table measurement); the parallax of a raised point is removed
+        with the camera centre C:
+        ``xy = C_xy + (H(u, v) - C_xy) * (C_z - h) / C_z``.
+
+        Args:
+            u: Horizontal pixel coordinate.
+            v: Vertical pixel coordinate.
+            height_mm: Height of the observed point above the table.
+
+        Returns:
+            (x_mm, y_mm) of the point's table-plane footprint.
+
+        Raises:
+            CalibrationUnavailable: If a raised point is observed but there is no camera model.
+        """
+        base = np.array(self.pixel_to_table_mm(u, v))
+        if abs(height_mm) < 1e-9:
+            return float(base[0]), float(base[1])
+        if self.camera is None:
+            raise CalibrationUnavailable("Camera model unavailable: cannot remove parallax.")
+        centre = self.camera.centre_mm
+        scale = (centre[2] - height_mm) / centre[2]
+        xy = centre[:2] + (base - centre[:2]) * scale
+        return float(xy[0]), float(xy[1])
+
+    def table_mm_to_pixel(self, x_mm: float, y_mm: float) -> tuple[float, float]:
+        """Map a table-plane point to its pixel through the inverse homography."""
+        vec = self.inverse_homography @ np.array([x_mm, y_mm, 1.0], dtype=np.float64)
+        return float(vec[0] / vec[2]), float(vec[1] / vec[2])
+
+
+def _readonly(matrix: np.ndarray) -> np.ndarray:
+    """Return a read-only float64 copy of a matrix."""
+    out = np.array(matrix, dtype=np.float64, copy=True)
+    out.flags.writeable = False
+    return out
+
+
 class ArucoWorkspaceCalibrator:
     """Calibrates and maps camera pixel coordinates to physical robot base frame coordinates.
 
@@ -66,9 +149,11 @@ class ArucoWorkspaceCalibrator:
         self.config_path = Path(config_path) if config_path else _get_default_config_path()
         self.mode = mode
         self.config: dict[str, Any] = {}
-        self.homography_matrix: np.ndarray | None = None
-        self.inverse_homography: np.ndarray | None = None
-        self.reprojection_error: float | None = None
+        # Everything derived from one homography lives in one immutable snapshot that is replaced
+        # in a single assignment (see ``set_geometry``); never mutate pieces of it.
+        self._geometry: GeometrySnapshot | None = None
+        self._camera_logged = False
+        self._camera_log_lock = threading.Lock()
         self.last_detected_markers: dict[int, np.ndarray] = {}
 
         self._load_config()
@@ -138,7 +223,157 @@ class ArucoWorkspaceCalibrator:
     @property
     def is_calibrated(self) -> bool:
         """Return True if a valid perspective homography matrix is available."""
-        return self.homography_matrix is not None and self.inverse_homography is not None
+        return self._geometry is not None
+
+    @property
+    def homography_matrix(self) -> np.ndarray | None:
+        """Pixel -> robot-mm homography of the current geometry, or None."""
+        geometry = self._geometry
+        return geometry.homography if geometry is not None else None
+
+    @homography_matrix.setter
+    def homography_matrix(self, value: np.ndarray | None) -> None:
+        if value is None:
+            self._geometry = None
+            return
+        geometry = self._geometry
+        try:
+            inverse = np.linalg.inv(value)
+        except np.linalg.LinAlgError:
+            inverse = geometry.inverse_homography if geometry is not None else value
+        self.set_geometry(
+            value, inverse, geometry.reprojection_error if geometry is not None else None
+        )
+
+    @property
+    def inverse_homography(self) -> np.ndarray | None:
+        """Robot-mm -> pixel homography of the current geometry, or None."""
+        geometry = self._geometry
+        return geometry.inverse_homography if geometry is not None else None
+
+    @inverse_homography.setter
+    def inverse_homography(self, value: np.ndarray | None) -> None:
+        geometry = self._geometry
+        if value is None:
+            self._geometry = None
+            return
+        if geometry is None:
+            self.set_geometry(np.linalg.inv(value), value, None)
+        else:
+            self.set_geometry(geometry.homography, value, geometry.reprojection_error)
+
+    @property
+    def reprojection_error(self) -> float | None:
+        """Mean marker reprojection error (mm) of the current geometry, or None."""
+        geometry = self._geometry
+        return geometry.reprojection_error if geometry is not None else None
+
+    @reprojection_error.setter
+    def reprojection_error(self, value: float | None) -> None:
+        geometry = self._geometry
+        if geometry is not None:
+            self.set_geometry(geometry.homography, geometry.inverse_homography, value)
+
+    def geometry_snapshot(self) -> GeometrySnapshot | None:
+        """Return the current immutable geometry (H, H^-1, error, camera), or None.
+
+        Consumers take one snapshot per tool call so a homography update that lands mid-call
+        (real mode refreshes it on every frame showing four markers) cannot mix two geometries.
+        The first snapshot after start-up also logs the derived camera centre.
+
+        Returns:
+            The current GeometrySnapshot, or None if the workspace is uncalibrated.
+        """
+        geometry = self._geometry
+        if geometry is not None:
+            self._log_camera_once(geometry)
+        return geometry
+
+    def set_geometry(
+        self,
+        homography: np.ndarray,
+        inverse_homography: np.ndarray,
+        reprojection_error: float | None,
+        hfov_deg: float | None = None,
+        image_size: tuple[int, int] | None = None,
+        log_camera: bool = False,
+    ) -> GeometrySnapshot:
+        """Commit a new geometry in one assignment, deriving the camera model from it.
+
+        Args:
+            homography: 3x3 pixel -> robot-mm matrix.
+            inverse_homography: 3x3 robot-mm -> pixel matrix.
+            reprojection_error: Mean marker reprojection error in mm, if known.
+            hfov_deg: Horizontal field of view for the camera model. Defaults to the previous
+                geometry's value, then to ``settings.camera_hfov_deg``.
+            image_size: (width, height) of the homography's pixel frame. Defaults to the
+                previous geometry's value, then to the configured capture size.
+            log_camera: Log the derived camera centre at INFO.
+
+        Returns:
+            The committed snapshot.
+        """
+        previous = self._geometry
+        settings = get_settings()
+        hfov = float(
+            hfov_deg
+            if hfov_deg is not None
+            else (previous.hfov_deg if previous is not None else settings.camera_hfov_deg)
+        )
+        size = (
+            (int(image_size[0]), int(image_size[1]))
+            if image_size is not None
+            else (
+                previous.image_size
+                if previous is not None
+                else (int(settings.stream_width), int(settings.stream_height))
+            )
+        )
+        camera: PinholeCamera | None
+        try:
+            camera = PinholeCamera.from_homography(inverse_homography, size, hfov)
+        except (ValueError, cv2.error, np.linalg.LinAlgError, ZeroDivisionError) as e:
+            logger.debug(f"[ArucoCalibrator] Camera model not derived: {e}")
+            camera = None
+        snapshot = GeometrySnapshot(
+            homography=_readonly(homography),
+            inverse_homography=_readonly(inverse_homography),
+            reprojection_error=None if reprojection_error is None else float(reprojection_error),
+            image_size=size,
+            hfov_deg=hfov,
+            camera=camera,
+        )
+        self._geometry = snapshot  # the single commit
+        if log_camera:
+            self._log_camera(snapshot)
+        return snapshot
+
+    def _log_camera_once(self, snapshot: GeometrySnapshot) -> None:
+        """Log the derived camera once per process (first snapshot after start-up)."""
+        with self._camera_log_lock:
+            if self._camera_logged:
+                return
+            self._log_camera(snapshot)
+
+    def _log_camera(self, snapshot: GeometrySnapshot) -> None:
+        """Log the derived camera centre (robot mm) so it can be checked with a tape measure."""
+        self._camera_logged = True
+        if snapshot.camera is None:
+            log_with_tag(
+                logger,
+                "CAMERA",
+                "camera model unavailable for this homography",
+                module="Calibration",
+            )
+            return
+        centre = snapshot.camera.centre_mm
+        log_with_tag(
+            logger,
+            "CAMERA",
+            f"centre_mm=[{centre[0]:.0f}, {centre[1]:.0f}, {centre[2]:.0f}] "
+            f"hfov={snapshot.hfov_deg:.1f}",
+            module="Calibration",
+        )
 
     def require_calibrated(self) -> None:
         """Verify that a valid homography transformation matrix is set.
@@ -239,10 +474,8 @@ class ArucoWorkspaceCalibrator:
                 proj_xy = proj[:, :2] / proj[:, 2:3]
                 err = float(np.mean(np.linalg.norm(proj_xy - dst_arr, axis=1)))
 
-                # Commit atomically only after all calculations succeed
-                self.homography_matrix = h_mat
-                self.inverse_homography = inv_h
-                self.reprojection_error = err
+                # Commit atomically (one snapshot) only after all calculations succeed
+                self.set_geometry(h_mat, inv_h, err)
                 return True
         except (cv2.error, np.linalg.LinAlgError, ValueError, TypeError) as e:
             logger.error(f"[ArucoCalibrator] Homography computation error: {e}")
@@ -567,12 +800,17 @@ class ArucoWorkspaceCalibrator:
         save_p = Path(path) if path else default_path
         save_p.parent.mkdir(parents=True, exist_ok=True)
 
+        geometry = self._geometry
+        assert geometry is not None
         np.savez(
             save_p,
-            homography=self.homography_matrix,
-            inverse_homography=self.inverse_homography,
-            reprojection_error=self.reprojection_error or 0.0,
+            homography=geometry.homography,
+            inverse_homography=geometry.inverse_homography,
+            reprojection_error=geometry.reprojection_error or 0.0,
+            hfov_deg=geometry.hfov_deg,
+            image_size=np.array(geometry.image_size),
         )
+        self._log_camera(geometry)
         return f"Calibration successfully saved to {save_p}"
 
     def load_calibration(self, path: str | Path | None = None) -> bool:
@@ -596,11 +834,27 @@ class ArucoWorkspaceCalibrator:
             else:
                 inv_h = np.linalg.inv(h_mat)
             reproj_err = float(data.get("reprojection_error", 0.0))
+            # Optional keys (absent in files written before the camera model): the field of view
+            # and pixel frame the homography was recorded with. Old files load unchanged.
+            settings = get_settings()
+            hfov_deg = (
+                float(data["hfov_deg"]) if "hfov_deg" in data else float(settings.camera_hfov_deg)
+            )
+            image_size = (
+                (int(data["image_size"][0]), int(data["image_size"][1]))
+                if "image_size" in data
+                else (int(settings.stream_width), int(settings.stream_height))
+            )
 
             # Commit atomically only after all computations succeed
-            self.homography_matrix = h_mat
-            self.inverse_homography = inv_h
-            self.reprojection_error = reproj_err
+            self.set_geometry(
+                h_mat,
+                inv_h,
+                reproj_err,
+                hfov_deg=hfov_deg,
+                image_size=image_size,
+                log_camera=True,
+            )
             return True
         except (OSError, KeyError, ValueError, TypeError, np.linalg.LinAlgError) as e:
             logger.error(f"[ArucoCalibrator] Error loading calibration from {load_p}: {e}")
