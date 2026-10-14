@@ -191,17 +191,17 @@ def hover_call(lock: TargetLock | None, fallback_point: list[float] | None = Non
     """Return the exact hover call that re-measures alignment at the target.
 
     Args:
-        lock: Active lock (its raw point is the one the model originally sent).
+        lock: Active lock.
         fallback_point: Point to use when there is no lock.
 
     Returns:
         Call text such as ``move_to_spatial_point(point=[y, x], z_height_cm=3.0)``.
     """
-    point = (lock.raw_point if lock is not None and lock.raw_point else fallback_point) or [
+    point = (lock.centre_1000 if lock is not None and lock.centre_1000 else fallback_point) or [
         500.0,
         500.0,
     ]
-    return f"move_to_spatial_point(point=[{point[0]:.0f}, {point[1]:.0f}], z_height_cm=3.0)"
+    return f"move_to_spatial_point(point=[{round(point[0])}, {round(point[1])}], z_height_cm=3.0)"
 
 
 def lift_call(lock: TargetLock | None, z_height_cm: float = 5.0) -> str:
@@ -214,9 +214,9 @@ def lift_call(lock: TargetLock | None, z_height_cm: float = 5.0) -> str:
     Returns:
         Call text such as ``move_to_spatial_point(point=[y, x], z_height_cm=5.0)``.
     """
-    point = lock.raw_point if lock is not None and lock.raw_point else [500.0, 500.0]
+    point = lock.centre_1000 if lock is not None and lock.centre_1000 else [500.0, 500.0]
     return (
-        f"move_to_spatial_point(point=[{point[0]:.0f}, {point[1]:.0f}], "
+        f"move_to_spatial_point(point=[{round(point[0])}, {round(point[1])}], "
         f"z_height_cm={z_height_cm:.1f})"
     )
 

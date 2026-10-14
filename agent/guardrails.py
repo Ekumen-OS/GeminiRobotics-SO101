@@ -9,7 +9,7 @@ robot millimetres in the table plane.
 import math
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -22,6 +22,7 @@ LOCK_MATCH_RADIUS_MM = 40.0
 MAX_HOVERS_PER_LOCK = 4
 MAX_GRASP_ATTEMPTS = 3
 MAX_CONSECUTIVE_REFUSALS = 3
+MAX_DESCENT_REFUSALS = 3
 # A hover must still be where it was measured: current FK XY within this of the commanded XY.
 HOVER_STILL_VALID_MM = 10.0
 # The lift is verified at no less than this height (cm): below ~4.5 cm a lifted cube still
@@ -36,6 +37,9 @@ ESCALATION_MESSAGES = {
     "hovers": "Could not align over the target after 4 hovers — waiting for the user.",
     "alignment_unobservable": (
         "Alignment cannot be verified (no jaw tag) and DESCENT_GATE=block — waiting for the user."
+    ),
+    "descent_refusals": (
+        "Descent refused 3 times without a successful descent — waiting for the user."
     ),
 }
 
@@ -158,7 +162,6 @@ class TargetLock:
         centre_1000: The same point as a normalised [y, x] image point.
         bbox_px: Bounding box of the blob at lock time (x, y, w, h), or None for a raw lock.
         width_mm: Bottom-edge width in mm, or None.
-        raw_point: The [y, x] point the model sent when the lock was created.
         stale: True after a miss followed by open_gripper; the next request re-acquires.
         c_mm: Accumulated bias correction ([dx, dy] mm) applied to hovers and the descent.
         hovers_since_descent: Hovers at this lock since the last successful descent.
@@ -173,7 +176,6 @@ class TargetLock:
     bbox_px: list[int] | None = None
     width_mm: float | None = None
     yaw_deg: float | None = None
-    raw_point: list[float] = field(default_factory=list)
     stale: bool = False
     c_mm: tuple[float, float] = (0.0, 0.0)
     hovers_since_descent: int = 0
@@ -213,6 +215,7 @@ class GuardrailState:
         self.grasp_xy_mm: tuple[float, float] | None = None
         self.grasp_z_mm: float | None = None
         self.consecutive_refusals = 0
+        self.descent_refusals = 0
         self.consecutive_unavailable = 0
         self.escalated = False
         self.escalation_reason: str | None = None
@@ -282,6 +285,7 @@ class GuardrailState:
             self.last_motion = None
             self.last_hover = None
             self.consecutive_refusals = 0
+            self.descent_refusals = 0
             self.escalated = False
             self.escalation_reason = None
             self.attempt_counted = False
@@ -310,6 +314,7 @@ class GuardrailState:
             self.last_motion = None
             self.last_hover = None
             self.consecutive_refusals = 0
+            self.descent_refusals = 0
 
     def derive_phase(
         self,
@@ -343,7 +348,6 @@ class GuardrailState:
         centre_1000: list[float],
         bbox_px: list[int] | None,
         width_mm: float | None,
-        raw_point: list[float],
         yaw_deg: float | None = None,
     ) -> TargetLock:
         """Create and activate a lock on a new object (counters start at zero)."""
@@ -356,7 +360,6 @@ class GuardrailState:
                 bbox_px=bbox_px,
                 width_mm=width_mm,
                 yaw_deg=yaw_deg,
-                raw_point=list(raw_point),
             )
             self._next_lock_id += 1
             self.target = lock
@@ -398,6 +401,13 @@ class GuardrailState:
                 self.target.refusals += 1
             if self.consecutive_refusals >= MAX_CONSECUTIVE_REFUSALS and not self.escalated:
                 self.escalate("refusals")
+
+    def record_descent_refusal(self) -> None:
+        """Count a descent refusal; escalate after too many without a successful descent."""
+        with self._lock:
+            self.descent_refusals += 1
+            if self.descent_refusals >= MAX_DESCENT_REFUSALS and not self.escalated:
+                self.escalate("descent_refusals")
 
     def record_motion_success(self) -> None:
         """A motion tool succeeded: the refusal streak is over."""

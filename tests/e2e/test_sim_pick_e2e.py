@@ -4,9 +4,16 @@ The default suite runs a 2-placement smoke. ``uv run pytest -m slow -s`` runs th
 scenarios and prints the metrics table.
 """
 
+import numpy as np
 import pytest
 
-from tests.e2e.sim_pick_harness import ScenarioResult, format_metrics_table, run_scenario
+from robot.vision_detector import detect_workspace_objects
+from tests.e2e.sim_pick_harness import (
+    ScenarioResult,
+    SimPickHarness,
+    format_metrics_table,
+    run_scenario,
+)
 
 
 def _assert_clean(result: ScenarioResult) -> None:
@@ -31,6 +38,50 @@ def test_harness_smoke_runs_and_reports_metrics(capsys: pytest.CaptureFixture[st
     assert summary["placed_within_15mm"] == 2
     _assert_clean(result)
     assert "metric" in capsys.readouterr().out
+
+
+def test_drifted_model_point_regression() -> None:
+    """One placement with offset (25, 68) between 40 mm table and 80 unit image radii."""
+    cube_xy = (0.24, -0.02)
+    offset = (25.0, 68.0)
+    harness = SimPickHarness(point_offset_1000=offset)
+    try:
+        harness.reset(cube_xy)
+        objs = [o for o in detect_workspace_objects(harness.frame_rgb()) if o["color"] == "red"]
+        assert objs, "harness could not see the cube on the initial frame"
+        blob_center = objs[0]["center_1000"]
+
+        rng = np.random.default_rng(0)
+        point = harness.model_point(rng)
+
+        # Precondition asserts: test must sit in the gap between the two radii.
+        img_dist = float(np.hypot(point[0] - blob_center[0], point[1] - blob_center[1]))
+        assert img_dist < 80.0, f"Image distance {img_dist:.1f} must be < 80 units"
+
+        px, py = harness.calib.gemini_to_pixel(point)
+        point_table_xy_mm = harness.calib.pixel_to_robot_mm(px, py)
+        cube_truth_mm = harness.cube_xyz()[:2] * 1000.0
+        table_dist_mm = float(
+            np.hypot(
+                point_table_xy_mm[0] - cube_truth_mm[0], point_table_xy_mm[1] - cube_truth_mm[1]
+            )
+        )
+        assert 40.0 <= table_dist_mm <= 75.0, (
+            f"Table distance {table_dist_mm:.1f} mm must be between 40 and 75 mm"
+        )
+
+        result = harness.run_placement(cube_xy, seed=0)
+        assert result.lifted
+        assert (
+            result.placed
+            and result.placement_error_mm is not None
+            and result.placement_error_mm <= 15.0
+        )
+        assert result.locks_created == 1
+        assert result.refusal_loops == 0
+        assert result.max_hovers_in_attempt <= 4
+    finally:
+        harness.close()
 
 
 @pytest.mark.slow
