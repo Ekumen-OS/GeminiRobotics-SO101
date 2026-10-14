@@ -15,17 +15,24 @@ import numpy as np
 import pytest
 
 from agent.guardrails import (
+    HOVER_STILL_VALID_MM,
     MAX_HOVERS_PER_LOCK,
     GuardrailState,
+    HoverRecord,
     Phase,
+    TargetLock,
     decide_grasp,
 )
-from agent.pick_loop import vision_vote
+from agent.pick_loop import hover_call, lift_call, vision_vote
 from agent.tools import (
     ToolContext,
+    _approach_hint,
+    _check_descent,
     _handle_move_to_pose,
     _handle_move_to_preset,
     _handle_open_gripper,
+    _resolve_lock,
+    _table_xy_mm,
     execute_tool_call_sync,
 )
 from agent.vla_controller import VLAController
@@ -285,18 +292,18 @@ def test_unobservable_alignment_warns_and_descends_in_warn_mode(harness: SimPick
 # -- escalation ------------------------------------------------------------------------------
 def test_consecutive_refusals_escalate(harness: SimPickHarness) -> None:
     """Three refusals in a row without a successful motion escalate; a success resets the count."""
-    point = harness.image_point_for(*CUBE_XY)
-    harness.call("open_gripper")
+    harness.state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
     for expected in (1, 2):
-        assert _move(harness, point, 0.0)["error_type"] == "perception"
+        assert harness.call("move_to_preset", pose_name="HOME")["error_type"] == "transport_gate"
         assert harness.state.consecutive_refusals == expected
+    point = harness.image_point_for(*CUBE_XY)
     with patch_measurements([(0.0, 0.0)]):
-        assert _move(harness, point, 3.0)["status"] == "success"
+        assert _move(harness, point, 5.0)["status"] == "success"
     assert harness.state.consecutive_refusals == 0
 
-    harness.sim.reset("HOME")  # a fresh descent attempt without a valid hover
+    harness.state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
     for _ in range(3):
-        _move(harness, point, 0.0)
+        assert harness.call("move_to_preset", pose_name="HOME")["error_type"] == "transport_gate"
     assert harness.state.escalated is True
     assert harness.state.escalation_reason == "refusals"
     blocked = _move(harness, point, 3.0)
@@ -330,7 +337,7 @@ def test_open_gripper_allowed_when_escalated(harness: SimPickHarness) -> None:
 def test_three_missed_grasps_at_one_lock_escalate() -> None:
     """The third miss at the same lock escalates; counters are per lock."""
     state = GuardrailState()
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0)
     for expected in (1, 2, 3):
         state.on_closed(Phase.CLOSED_EMPTY, (240.0, 0.0))
         state.record_miss_or_unverified("closed_on_air")
@@ -340,14 +347,14 @@ def test_three_missed_grasps_at_one_lock_escalate() -> None:
     assert state.escalated is True
     assert state.escalation_reason == "grasp_attempts"
     # A different object starts with a clean budget.
-    state.new_lock("blue", (200.0, 50.0), [400.0, 400.0], [10, 10, 20, 20], 30.0, [400.0, 400.0])
+    state.new_lock("blue", (200.0, 50.0), [400.0, 400.0], [10, 10, 20, 20], 30.0)
     assert state.retry_count == 0
 
 
 def test_perception_unavailable_verdict_does_not_consume_an_attempt() -> None:
     """A re-verify request (camera unusable) leaves the retry budget untouched."""
     state = GuardrailState()
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0)
     state.record_miss_or_unverified("perception_unavailable", consumes_attempt=False)
     assert state.retry_count == 0
     assert state.last_grasp_reason == "perception_unavailable"
@@ -392,7 +399,7 @@ def test_begin_instruction_mutates_in_place_and_resets_budget() -> None:
     """The state object survives; epoch advances; counters and escalation reset."""
     state = GuardrailState()
     same = state
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None)
     state.record_miss_or_unverified("closed_on_air")
     state.escalate("grasp_attempts")
     epoch = state.epoch
@@ -407,7 +414,7 @@ def test_begin_instruction_mutates_in_place_and_resets_budget() -> None:
 def test_interrupt_in_approach_drops_lock_and_hover() -> None:
     """In APPROACH phase, an interrupt drops the lock, hover and handlers."""
     state = GuardrailState()
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None)
     epoch = state.epoch
     state.on_interrupt()
     assert state.epoch == epoch + 1
@@ -418,7 +425,7 @@ def test_interrupt_in_approach_drops_lock_and_hover() -> None:
 def test_interrupt_when_held_preserves_lock() -> None:
     """When held unverified, an interrupt keeps the lock and grasp location."""
     state = GuardrailState()
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None)
     state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
     epoch = state.epoch
     state.on_interrupt()
@@ -573,3 +580,197 @@ def test_repeated_lift_holds_height(harness: SimPickHarness) -> None:
     assert abs(z3 - 0.05) <= 0.001
     assert abs(z2 - z1) <= 0.001
     assert abs(z3 - z2) <= 0.001
+
+
+# -- lock churn and honest descent-refusal tests ---------------------------------------------
+def test_resolve_lock_far_request_matching_footprint_keeps_lock(harness: SimPickHarness) -> None:
+    """A request 65 mm from the lock matching the detected cube returns the same lock intact."""
+    point = harness.image_point_for(*CUBE_XY)
+    with patch_measurements([(0.0, 0.0)]):
+        _move(harness, point, 3.0)
+    lock = harness.state.target
+    assert lock is not None
+    orig_lock_id = lock.lock_id
+    lock.c_mm = (2.5, -1.0)
+    hover_record = harness.state.last_hover
+    assert hover_record is not None
+    assert lock.hovers_since_descent == 1
+
+    # Request point 65 mm away on the table, but the camera still sees the cube
+    px, py = harness.calib.robot_mm_to_pixel(CUBE_XY[0] * 1000.0 + 65.0, CUBE_XY[1] * 1000.0)
+    drifted_point = [py / 480.0 * 1000.0, px / 640.0 * 1000.0]
+    req_xy = _table_xy_mm(harness.calib, drifted_point)
+    assert lock.distance_to_mm(req_xy) > 40.0
+
+    frame_rgb = harness.frame_rgb()
+    ctx = ToolContext(robot=harness.robot, guardrail_state=harness.state, mode="sim")
+    resolved = _resolve_lock(
+        ctx, harness.state, harness.state.epoch, drifted_point, "red", harness.calib, frame_rgb
+    )
+    assert resolved is lock
+    assert resolved.lock_id == orig_lock_id
+    assert resolved.c_mm == (2.5, -1.0)
+    assert resolved.hovers_since_descent == 1
+    assert harness.state.last_hover is hover_record
+
+
+def test_resolve_lock_far_footprint_creates_new_lock(harness: SimPickHarness) -> None:
+    """A detected footprint > 40 mm from the lock creates a new lock."""
+    point = harness.image_point_for(*CUBE_XY)
+    with patch_measurements([(0.0, 0.0)]):
+        _move(harness, point, 3.0)
+    first_lock = harness.state.target
+    assert first_lock is not None
+
+    far_xy = (0.27, 0.09)
+    harness.place_cube(*far_xy)
+    far_point = harness.image_point_for(*far_xy)
+    frame_rgb = harness.frame_rgb()
+    ctx = ToolContext(robot=harness.robot, guardrail_state=harness.state, mode="sim")
+    resolved = _resolve_lock(
+        ctx, harness.state, harness.state.epoch, far_point, "red", harness.calib, frame_rgb
+    )
+    assert isinstance(resolved, TargetLock)
+    assert resolved.lock_id != first_lock.lock_id
+    assert resolved.hovers_since_descent == 0
+
+
+def test_resolve_lock_stale_lock_far_request_reacquires(harness: SimPickHarness) -> None:
+    """A stale lock plus a far request plus a matching footprint reacquires the lock."""
+    point = harness.image_point_for(*CUBE_XY)
+    with patch_measurements([(0.0, 0.0)]):
+        _move(harness, point, 3.0)
+    lock = harness.state.target
+    assert lock is not None
+    orig_lock_id = lock.lock_id
+    lock.stale = True
+
+    px, py = harness.calib.robot_mm_to_pixel(CUBE_XY[0] * 1000.0 + 65.0, CUBE_XY[1] * 1000.0)
+    drifted_point = [py / 480.0 * 1000.0, px / 640.0 * 1000.0]
+    frame_rgb = harness.frame_rgb()
+    ctx = ToolContext(robot=harness.robot, guardrail_state=harness.state, mode="sim")
+    resolved = _resolve_lock(
+        ctx, harness.state, harness.state.epoch, drifted_point, "red", harness.calib, frame_rgb
+    )
+    assert resolved is lock
+    assert resolved.lock_id == orig_lock_id
+    assert resolved.stale is False
+
+
+def test_hints_name_lock_centre_not_request_point() -> None:
+    """hover_call, lift_call and Ready for descent hint contain lock.centre_1000."""
+    lock = TargetLock(
+        lock_id=1,
+        color="red",
+        centre_xy_mm=(240.0, -20.0),
+        centre_1000=[532.1, 500.4],
+    )
+    req_point = [456.0, 516.0]
+
+    h_call = hover_call(lock, req_point)
+    assert "point=[532, 500]" in h_call
+    assert "456" not in h_call
+
+    l_call = lift_call(lock, 5.0)
+    assert "point=[532, 500]" in l_call
+    assert "456" not in l_call
+
+    aligned_perception = {
+        "gripper_xy_mm": [240.0, -20.0],
+        "target_xy_mm": [240.0, -20.0],
+        "measured_offset": {"dx_mm": 0.0, "dy_mm": 0.0, "distance_mm": 0.0},
+        "is_aligned": True,
+        "alignment_tolerance_mm": 4.0,
+        "gripper_source": "aruco",
+        "er2_gripper_point_1000": None,
+    }
+    hint = _approach_hint(3.0, lock, aligned_perception, req_point)
+    assert "Ready for descent: move_to_spatial_point(point=[532, 500], z_height_cm=0.0)" in hint
+    assert "456" not in hint
+
+
+def test_descent_refusals_escalate_and_reset_on_descent(harness: SimPickHarness) -> None:
+    """A hover / refused descent sequence escalates at 3; successful descent resets it."""
+    point = harness.image_point_for(*CUBE_XY)
+    harness.call("open_gripper")
+
+    with patch_measurements([(6.0, 0.0)]):  # misaligned: descent will be refused
+        for expected in (1, 2, 3):
+            hov = _move(harness, point, 3.0)
+            assert hov["status"] == "success"
+            if expected > 1:
+                assert harness.state.descent_refusals == expected - 1
+            descent = _move(harness, point, 0.0)
+            assert descent["error_type"] == "descent_gate"
+            assert harness.state.descent_refusals == expected
+
+    assert harness.state.escalated is True
+    assert harness.state.escalation_reason == "descent_refusals"
+    assert "3 times" in harness.state.escalation_message
+
+    # Reset and verify successful descent resets the counter
+    harness.reset(CUBE_XY)
+    harness.call("open_gripper")
+    with patch_measurements([(6.0, 0.0)]):
+        _move(harness, point, 3.0)
+        _move(harness, point, 0.0)  # refusal 1
+    assert harness.state.descent_refusals == 1
+
+    with patch_measurements([(0.0, 0.0)]):
+        _move(harness, point, 3.0)
+        assert harness.state.descent_refusals == 1  # hover does not reset it
+        ok_descent = _move(harness, point, 0.0)  # aligned descent succeeds
+        assert ok_descent["status"] == "success"
+        assert harness.state.descent_refusals == 0  # reset on successful descent!
+
+
+def test_check_descent_reasons(harness: SimPickHarness) -> None:
+    """Verify each of the 4 honest descent refusal reasons."""
+    ctx = ToolContext(robot=harness.robot, guardrail_state=harness.state, mode="sim")
+    point = harness.image_point_for(*CUBE_XY)
+
+    # 1. no_lock: lock is None
+    refusal, _ = _check_descent(ctx, harness.state, harness.state.epoch, None, point, "sim")
+    assert refusal is not None
+    assert refusal["error_type"] == "perception"
+    assert refusal["reason"] == "no_lock"
+    assert "No object detected under the point; hover over the object first:" in refusal["error"]
+
+    # Create lock
+    lock = harness.state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0)
+
+    # 2. no_hover: last_hover is None or last_motion != "hover"
+    refusal, _ = _check_descent(ctx, harness.state, harness.state.epoch, lock, point, "sim")
+    assert refusal is not None
+    assert refusal["error_type"] == "perception"
+    assert refusal["reason"] == "no_hover"
+    assert "No measured hover yet;" in refusal["error"]
+
+    # 3. other_lock: hover on lock 999
+    harness.state.last_motion = "hover"
+    harness.state.last_hover = HoverRecord(
+        lock_id=999,
+        commanded_xy_mm=(240.0, 0.0),
+        is_aligned=True,
+        residual_mm=(0.0, 0.0),
+        source="aruco",
+    )
+    refusal, _ = _check_descent(ctx, harness.state, harness.state.epoch, lock, point, "sim")
+    assert refusal is not None
+    assert refusal["error_type"] == "perception"
+    assert refusal["reason"] == "other_lock"
+    assert "The last hover was over a different object;" in refusal["error"]
+
+    # 4. arm_moved: hover at lock.lock_id, but arm moved > HOVER_STILL_VALID_MM away
+    harness.state.last_hover = HoverRecord(
+        lock_id=lock.lock_id,
+        commanded_xy_mm=(240.0 + HOVER_STILL_VALID_MM + 5.0, 0.0),
+        is_aligned=True,
+        residual_mm=(0.0, 0.0),
+        source="aruco",
+    )
+    refusal, _ = _check_descent(ctx, harness.state, harness.state.epoch, lock, point, "sim")
+    assert refusal is not None
+    assert refusal["error_type"] == "perception"
+    assert refusal["reason"] == "arm_moved"
+    assert f"limit is {HOVER_STILL_VALID_MM:.1f} mm" in refusal["error"]

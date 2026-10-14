@@ -576,7 +576,6 @@ def _handle_close_gripper(
                 centre_1000=[500.0, 500.0],
                 bbox_px=None,
                 width_mm=None,
-                raw_point=[500.0, 500.0],
             )
         s.on_closed(
             phase,
@@ -967,8 +966,9 @@ def _resolve_lock(
     """Match the request to the active lock, re-acquire a stale one, or lock a new object.
 
     A request whose table point is within 40 mm of the lock centre IS the lock and is never
-    re-refined. Otherwise the object under the point is detected once, from a frame captured
-    before any motion, and locked at its footprint centre.
+    re-refined. When further away, if the detected footprint is within 40 mm of the active lock
+    (with matching colour), the active lock is preserved. Otherwise the object under the point
+    is locked as a new target.
 
     Args:
         ctx: Tool context.
@@ -1013,6 +1013,26 @@ def _resolve_lock(
     found = _detect_footprint(frame_rgb, point, color_from_label(label), calib)
     if found is None:
         return None
+
+    if (
+        lock is not None
+        and lock.distance_to_mm(found["centre_xy_mm"]) <= LOCK_MATCH_RADIUS_MM
+        and (lock.color is None or found["color"] is None or lock.color == found["color"])
+    ):
+        if lock.stale:
+            state.commit(
+                epoch,
+                lambda s: s.reacquire(
+                    lock,
+                    (found["centre_xy_mm"][0], found["centre_xy_mm"][1]),
+                    found["centre_1000"],
+                    found["bbox_px"],
+                    found["width_mm"],
+                    yaw_deg=found.get("yaw_deg"),
+                ),
+            )
+        return lock
+
     if found["width_mm"] is not None and found["width_mm"] > MAX_GRASPABLE_WIDTH_MM:
         text = (
             f"Target ambiguous: the {found['color']} blob is {found['width_mm']:.0f} mm wide "
@@ -1037,7 +1057,6 @@ def _resolve_lock(
                 centre_1000=found["centre_1000"],
                 bbox_px=found["bbox_px"],
                 width_mm=found["width_mm"],
-                raw_point=[float(point[0]), float(point[1])],
                 yaw_deg=found.get("yaw_deg"),
             )
         ),
@@ -1067,15 +1086,20 @@ def _detect_footprint(
     }
 
 
-def _refusal(err_text: str, error_type: str, hint: str | None = None) -> dict[str, Any]:
+def _refusal(
+    err_text: str, error_type: str, hint: str | None = None, reason: str | None = None
+) -> dict[str, Any]:
     """Build a motion-refusal response (the arm did not move)."""
-    return {
+    resp: dict[str, Any] = {
         "status": "error",
         "error": err_text,
         "error_type": error_type,
         "robot_moved": False,
         "visual_hint": hint or err_text,
     }
+    if reason is not None:
+        resp["reason"] = reason
+    return resp
 
 
 def _check_descent(
@@ -1107,24 +1131,32 @@ def _check_descent(
     hover = state.last_hover
     robot = ctx.robot
     assert robot is not None
-    still_there = False
-    if lock is not None and hover is not None and hover.lock_id == lock.lock_id:
-        if state.last_motion == "hover":
-            site_xy = _site_xyz(robot)[:2] * 1000.0
-            still_there = (
-                float(
-                    np.hypot(
-                        site_xy[0] - hover.commanded_xy_mm[0], site_xy[1] - hover.commanded_xy_mm[1]
-                    )
-                )
-                <= HOVER_STILL_VALID_MM
-            )
-    if not still_there or hover is None:
+
+    if lock is None:
         text = (
-            "No measured hover at this target. Hover (z>=3cm) and measure alignment before "
-            f"descending: {hover_text}."
+            "No object detected under the point; hover over the object first: "
+            f"{hover_call(None, point)}."
         )
-        return _refusal(text, "perception", text), None
+        return _refusal(text, "perception", text, reason="no_lock"), None
+
+    if hover is None or state.last_motion != "hover":
+        text = f"No measured hover yet; {hover_call(lock)}."
+        return _refusal(text, "perception", text, reason="no_hover"), None
+
+    if hover.lock_id != lock.lock_id:
+        text = f"The last hover was over a different object; {hover_call(lock)}."
+        return _refusal(text, "perception", text, reason="other_lock"), None
+
+    site_xy = _site_xyz(robot)[:2] * 1000.0
+    dist_mm = float(
+        np.hypot(site_xy[0] - hover.commanded_xy_mm[0], site_xy[1] - hover.commanded_xy_mm[1])
+    )
+    if dist_mm > HOVER_STILL_VALID_MM:
+        text = (
+            f"Arm moved {dist_mm:.1f} mm from the hover position (limit is "
+            f"{HOVER_STILL_VALID_MM:.1f} mm); {hover_call(lock)}."
+        )
+        return _refusal(text, "perception", text, reason="arm_moved"), None
 
     if hover.is_aligned is None:
         text = "alignment unobservable (no jaw tag): the jaw could not be located in the image"
@@ -1286,6 +1318,7 @@ def _approach_move(
     if is_descent:
         refused, guardrail_warning = _check_descent(ctx, state, epoch, lock, point, mode)
         if refused is not None:
+            state.commit(epoch, lambda s: s.record_descent_refusal())
             return refused
     elif lock is not None and lock.hovers_since_descent >= MAX_HOVERS_PER_LOCK:
         state.commit(epoch, lambda s: s.escalate("hovers"))
@@ -1349,6 +1382,7 @@ def _approach_move(
         if is_descent:
             s.last_motion = "descent"
             s.last_hover = None
+            s.descent_refusals = 0
             if lock is not None:
                 lock.hovers_since_descent = 0
         elif lock is not None and perception is not None and jaw is not None and not implausible:
@@ -1423,11 +1457,12 @@ def _approach_hint(
     offset = perception["measured_offset"]
     hover_text = hover_call(lock, point)
     if perception["is_aligned"] is True and offset is not None:
+        c = lock.centre_1000
         return (
             f"{prefix} measured alignment confirmed "
             f"(offset [dx={offset['dx_mm']:.1f}, dy={offset['dy_mm']:.1f}] mm, within "
             f"{perception['alignment_tolerance_mm']:.1f} mm). Ready for descent: "
-            f"move_to_spatial_point(point=[{point[0]:.0f}, {point[1]:.0f}], z_height_cm=0.0)."
+            f"move_to_spatial_point(point=[{round(c[0])}, {round(c[1])}], z_height_cm=0.0)."
         )
     if perception["is_aligned"] is False and offset is not None:
         return (

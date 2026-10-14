@@ -161,9 +161,7 @@ def test_corrector_not_updated_by_the_descent(harness: SimPickHarness) -> None:
 def test_corrector_kept_across_retry_reset_on_new_lock() -> None:
     """C survives a retry at the same lock; a new lock, an instruction or an interrupt resets it."""
     state = GuardrailState()
-    lock = state.new_lock(
-        "red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0, [500.0, 500.0]
-    )
+    lock = state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0)
     lock.c_mm = (3.0, -1.0)
     state.on_closed(Phase.CLOSED_EMPTY, (240.0, 0.0))
     state.record_miss_or_unverified("closed_on_air")
@@ -171,16 +169,12 @@ def test_corrector_kept_across_retry_reset_on_new_lock() -> None:
     state.reacquire(lock, (241.0, 0.5), [501.0, 500.0], [10, 10, 20, 20], 30.0)
     assert state.target is lock and lock.c_mm == (3.0, -1.0)  # kept across the retry
 
-    other = state.new_lock(
-        "blue", (200.0, 60.0), [400.0, 400.0], [1, 1, 2, 2], 30.0, [400.0, 400.0]
-    )
+    other = state.new_lock("blue", (200.0, 60.0), [400.0, 400.0], [1, 1, 2, 2], 30.0)
     assert other.c_mm == (0.0, 0.0)
     other.c_mm = (2.0, 2.0)
     state.on_interrupt()
     assert state.target is None
-    again = state.new_lock(
-        "blue", (200.0, 60.0), [400.0, 400.0], [1, 1, 2, 2], 30.0, [400.0, 400.0]
-    )
+    again = state.new_lock("blue", (200.0, 60.0), [400.0, 400.0], [1, 1, 2, 2], 30.0)
     again.c_mm = (2.0, 2.0)
     state.begin_instruction()
     assert state.target is None

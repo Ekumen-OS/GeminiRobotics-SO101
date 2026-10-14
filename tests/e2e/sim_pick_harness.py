@@ -195,6 +195,7 @@ class PlacementMetrics:
     refusal_loops: int = 0
     attempts: int = 0
     max_hovers_in_attempt: int = 0
+    locks_created: int = 0
     transcript: list[str] = field(default_factory=list)
 
 
@@ -298,6 +299,7 @@ class SimPickHarness:
         jpeg_quality: int = 98,
         scripted_gripper: bool = False,
         descend_after_hover_cap: bool = False,
+        point_offset_1000: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         """Create the sim robot, calibration and frame provider.
 
@@ -308,8 +310,10 @@ class SimPickHarness:
             scripted_gripper: Wrap the robot so ``harness.robot.reading`` can script the
                 gripper sensor.
             descend_after_hover_cap: After the hover cap, descend anyway instead of giving up.
+            point_offset_1000: Constant [dy, dx] added to the model pointing point.
         """
         self.descend_after_hover_cap = descend_after_hover_cap
+        self.point_offset_1000 = point_offset_1000
         self.sim = SO101Robot(render_viewer=False)
         self.robot: RobotInterface = (
             PanOffsetRobot(self.sim, pan_offset_deg) if pan_offset_deg else self.sim
@@ -430,7 +434,10 @@ class SimPickHarness:
         assert objs, "harness could not see the cube on the initial frame"
         y, x = objs[0]["center_1000"]
         noise = rng.normal(0.0, MODEL_POINT_SIGMA, size=2)
-        return [float(np.clip(y + noise[0], 0, 1000)), float(np.clip(x + noise[1], 0, 1000))]
+        return [
+            float(np.clip(y + noise[0] + self.point_offset_1000[0], 0, 1000)),
+            float(np.clip(x + noise[1] + self.point_offset_1000[1], 0, 1000)),
+        ]
 
     def close(self) -> None:
         """Release the simulator and restore the active robot."""
@@ -555,6 +562,7 @@ class SimPickHarness:
             do("move_to_spatial_point", point=dest, z_height_cm=5.0, approach="top_down")
             do("move_to_spatial_point", point=dest, z_height_cm=1.0, approach="top_down")
             do("open_gripper")
+            m.locks_created = self.state._next_lock_id - 1
             do("move_to_spatial_point", point=dest, z_height_cm=5.0, approach="top_down")
             done = True
             break
@@ -564,6 +572,8 @@ class SimPickHarness:
             err = np.linalg.norm(cube[:2] - np.array(DESTINATION_XY_M)) * 1000.0
             m.placement_error_mm = float(err)
             m.placed = bool(cube[2] < 0.03)
+        if not m.locks_created:
+            m.locks_created = self.state._next_lock_id - 1
         m.transcript = list(self.log)
         return m
 
@@ -615,6 +625,7 @@ def run_scenario(
     progress: Callable[[str], None] | None = None,
     descend_after_hover_cap: bool = False,
     random_yaw: bool = False,
+    point_offset_1000: tuple[float, float] = (0.0, 0.0),
 ) -> ScenarioResult:
     """Run ``n_placements`` seeded placements and collect truth-based metrics.
 
@@ -629,6 +640,7 @@ def run_scenario(
         progress: Optional callback receiving one line per placement.
         descend_after_hover_cap: Descend anyway after the hover cap (corrector-off A/B runs).
         random_yaw: Whether to sample random yaw in [0, pi/2) for each placement.
+        point_offset_1000: Constant [dy, dx] added to the model pointing point.
 
     Returns:
         ScenarioResult with one PlacementMetrics per run.
@@ -638,7 +650,9 @@ def run_scenario(
     placements: list[PlacementMetrics] = []
     with settings_override(**(settings_overrides or {})):
         harness = SimPickHarness(
-            pan_offset_deg=pan_offset_deg, descend_after_hover_cap=descend_after_hover_cap
+            pan_offset_deg=pan_offset_deg,
+            descend_after_hover_cap=descend_after_hover_cap,
+            point_offset_1000=point_offset_1000,
         )
         try:
             for i in range(n_placements):
