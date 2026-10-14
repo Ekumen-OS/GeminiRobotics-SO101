@@ -21,7 +21,7 @@ def check_environment() -> None:
 
         from simulation.sim_robot import SO101Robot
 
-        robot = SO101Robot(render_viewer=False)
+        robot = SO101Robot()
         print(f"[OK] MuJoCo library version {mujoco.__version__} loaded.")
         msg = f"[OK] SO-101 MJCF parsed ({robot.model.nq} DOFs, {len(robot.actuator_ids)} acts)."
         print(msg)
@@ -55,25 +55,27 @@ def check_environment() -> None:
         import os
         from pathlib import Path
 
-        from robot.constants import DEFAULT_SERIAL_PORT
         from robot.real_robot import LEROBOT_AVAILABLE
+        from robot.settings import get_settings
+
+        serial_port = get_settings().serial_port
 
         if LEROBOT_AVAILABLE:
             print("[OK] LeRobot package and FeetechMotorsBus import verified.")
-            port_path = Path(DEFAULT_SERIAL_PORT)
+            port_path = Path(serial_port)
             if port_path.exists():
                 has_rw = os.access(port_path, os.R_OK) and os.access(port_path, os.W_OK)
                 if has_rw:
-                    print(f"[OK] Port '{DEFAULT_SERIAL_PORT}' exists and is accessible (rw).")
+                    print(f"[OK] Port '{serial_port}' exists and is accessible (rw).")
                 else:
                     print(
-                        f"[WARN] Serial port '{DEFAULT_SERIAL_PORT}' exists but lacks read/write "
+                        f"[WARN] Serial port '{serial_port}' exists but lacks read/write "
                         "permissions for current user.\n"
-                        f"       Immediate fix: sudo chmod 666 {DEFAULT_SERIAL_PORT}\n"
+                        f"       Immediate fix: sudo chmod 666 {serial_port}\n"
                         "       Permanent fix: sudo usermod -a -G dialout $USER"
                     )
             else:
-                print(f"[INFO] Serial port '{DEFAULT_SERIAL_PORT}' not found on system.")
+                print(f"[INFO] Serial port '{serial_port}' not found on system.")
         else:
             print(
                 "[INFO] LeRobot package not detected. Physical robot control will be unavailable."

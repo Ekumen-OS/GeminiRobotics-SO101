@@ -192,7 +192,7 @@ def test_snapshot_swap_is_atomic(tmp_path: Path) -> None:
 @pytest.fixture(scope="module")
 def _shared_sim(tmp_path_factory: pytest.TempPathFactory):
     """One SO101Robot and sim geometry snapshot for the module."""
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     snapshot = _sim_snapshot(tmp_path_factory.mktemp("sim_geometry"))
     yield robot, snapshot
     robot.close()

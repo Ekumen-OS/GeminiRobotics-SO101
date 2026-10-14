@@ -294,7 +294,7 @@ async def test_sim_robot_empty_vs_cube_jaws() -> None:
     if not calib.is_calibrated:
         compute_sim_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     # 1. Close gripper on empty jaws

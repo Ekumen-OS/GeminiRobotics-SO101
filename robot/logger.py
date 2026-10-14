@@ -166,7 +166,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         root_logger.addHandler(handler)
 
     # Silence verbose third-party loggers
-    for noisy in ("google", "urllib3", "asyncio", "PIL", "matplotlib", "httpx"):
+    for noisy in ("google", "urllib3", "asyncio", "PIL", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _logging_initialized = True

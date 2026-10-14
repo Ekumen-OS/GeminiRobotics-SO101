@@ -17,7 +17,6 @@ if (
 from typing import Any
 
 import mujoco
-import mujoco.viewer
 import numpy as np
 
 from robot.constants import ACTUATOR_NAMES, JOINT_NAMES, PRESET_POSES
@@ -68,7 +67,6 @@ class SO101Robot(RobotInterface):
         xml_path: str | Path | None = None,
         model: mujoco.MjModel | None = None,
         data: mujoco.MjData | None = None,
-        render_viewer: bool = False,
     ) -> None:
         """Initialize SO101Robot with MuJoCo model, data, and joint/actuator references.
 
@@ -76,7 +74,6 @@ class SO101Robot(RobotInterface):
             xml_path: Relative or absolute path to the MuJoCo XML scene file.
             model: Optional preloaded MuJoCo model.
             data: Optional preloaded MuJoCo data.
-            render_viewer: Whether to launch the passive visualizer.
         """
         if model is not None and data is not None:
             self.model = model
@@ -96,7 +93,6 @@ class SO101Robot(RobotInterface):
         except KeyError:
             self.site_id = self.model.site("end_effector").id
 
-        self.viewer = None
         self._renderer = None
         self._renderer_size: tuple[int, int] | None = None
         # MuJoCo Python bindings are not safe for concurrent model/data access.
@@ -109,18 +105,6 @@ class SO101Robot(RobotInterface):
 
         # Dynamically synchronize marker positions and workspace bounds from JSON config
         self.apply_workspace_calibration_config()
-
-        if render_viewer:
-            try:
-                from simulation.simulate import ensure_mjpython
-
-                ensure_mjpython()
-
-                self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-                self.viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-            except Exception as err:
-                logger.warning(f"Could not launch MuJoCo viewer ({err}). Running in headless mode.")
-                self.viewer = None
 
     def apply_workspace_calibration_config(self, config_path: str | Path | None = None) -> None:
         """Dynamically update MuJoCo scene marker positions and boundaries from JSON config.
@@ -248,8 +232,6 @@ class SO101Robot(RobotInterface):
                 self.data.qvel[qvel_adr : qvel_adr + 6] = 0.0
 
                 mujoco.mj_forward(self.model, self.data)
-                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                    self.viewer.sync()
                 return new_pos
             except (KeyError, AttributeError) as e:
                 logger.warning(f"[SO101Robot] Could not randomize target: {e}")
@@ -273,8 +255,6 @@ class SO101Robot(RobotInterface):
                 qpos_adr = self.model.jnt_qposadr[j_id]
                 self.data.qpos[qpos_adr] = qpos[i]
             mujoco.mj_forward(self.model, self.data)
-            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                self.viewer.sync()
 
     def get_joint_positions(self) -> np.ndarray:
         """Get current joint position angles.
@@ -356,8 +336,6 @@ class SO101Robot(RobotInterface):
         with self._sim_lock:
             for _ in range(num_steps):
                 mujoco.mj_step(self.model, self.data)
-            if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                self.viewer.sync()
 
     def move_to_pose(
         self,
@@ -399,8 +377,6 @@ class SO101Robot(RobotInterface):
                 self._command_ctrl(interp_qpos)
                 steps_written += 1
                 self.step(sim_steps)
-                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                    self.viewer.sync()
                 time.sleep(dt)
 
             # Step until the arm joints converge on the goal (the actuators are lightly damped
@@ -413,8 +389,6 @@ class SO101Robot(RobotInterface):
                 if self._arm_converged(target_qpos):
                     break
                 self.step(sim_steps)
-                if hasattr(self, "viewer") and self.viewer is not None and self.viewer.is_running():
-                    self.viewer.sync()
                 time.sleep(dt)
             else:
                 logger.warning(
@@ -522,13 +496,9 @@ class SO101Robot(RobotInterface):
                     self._offscreen_warned = False
 
     def close(self) -> None:
-        """Close the MuJoCo simulation viewer if currently open."""
+        """Release simulation resources including allocated renderers."""
         with self._sim_lock:
             self._close_renderer()
-            if hasattr(self, "viewer") and self.viewer is not None:
-                if self.viewer.is_running():
-                    self.viewer.close()
-                self.viewer = None
 
     def interrupt(self) -> None:
         """Interrupt any ongoing physical movement."""
