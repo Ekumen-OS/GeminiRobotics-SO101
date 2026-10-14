@@ -1,5 +1,6 @@
 # Agents
 .agents/
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -162,6 +163,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.import_linter_cache/
 
 # Spyder project settings
 .spyderproject

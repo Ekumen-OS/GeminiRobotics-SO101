@@ -130,6 +130,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
 | `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
 | `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
+| `TABLE_Z_MM` | `0.0` | Robot-frame z of table surface in mm on real arm (sim is always 0.0). Measurement: hover at 3 cm, ruler to fingertips, `TABLE_Z_MM = FK z − measured height`. |
 | `ALIGNMENT_TOLERANCE_MM` | `4.0` | Jaw-to-target distance (robot mm, table plane) under which a hover counts as aligned (`is_aligned`) and a descent is allowed. |
 | `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-14,27,63` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default is the simulated mount; measure it on the real arm. |
 | `CAMERA_HFOV_DEG` | `70.0` | Nominal horizontal field of view of the workspace camera, used to recover the camera position from the table homography (a ±10 % error costs only a few mm). Check the logged `[Calibration] [CAMERA] centre_mm=[x, y, z]` against a tape measure. |
@@ -154,7 +155,7 @@ Follow this procedure when deploying to a physical SO-101 robotic arm. Steps 1�
    *(e.g., $A_{\text{empty}} = -74.5^\circ$, margin $= 0.40 \times 40.0^\circ = 16.0^\circ$, threshold $= -58.5^\circ$). Without the anchor the threshold is measured from $-75^\circ$, which is only correct if your calibration happens to close there.*
 5. **Leave `GRASP_LOAD_MIN` unset** until you have read a few `load=` values from the log: the STS3215 `Present_Load` register is raw sign-magnitude (bit 10 is direction), so a reverse-direction load reads above 1023.
 6. **Mount the Jaw Tag**: Print the jaw-tag page (`uv run python main.py --task generate_markers`): ArUco `DICT_4X4_50`, **ID 10**, **25 mm** (smaller tags are detected in only a fraction of poses at 640×480), matte, and mount it as described in [Jaw tag](#jaw-tag). Hover 5 cm over the mat centre and each corner; the tag must be detected in all five places (watch `/api/stream`).
-7. **Measure the Tag Offset and Check the Camera**: Measure the tag-centre-to-grasp-site offset with a ruler in the gripper frame and set `GRIPPER_TAG_LOCAL_OFFSET_MM=<x>,<y>,<z>`. Set `CAMERA_HFOV_DEG` from the camera's datasheet and compare the logged camera centre (`[Calibration] [CAMERA] centre_mm=...`) with a tape measure (height above the mat above all). Until the tag is mounted the locator falls back to forward kinematics (`gripper_source="kinematic"`, `is_aligned=null`).
+7. **Measure Table Height, Tag Offset and Check the Camera**: Hover at 3 cm (`move_to_spatial_point(..., z_height_cm=3.0)`), measure fingertip height above the table with a ruler, and set `TABLE_Z_MM = FK z − measured height` in `.env` (e.g. `29.2 − 53 = -24.0`). Measure the tag-centre-to-grasp-site offset with a ruler in the gripper frame and set `GRIPPER_TAG_LOCAL_OFFSET_MM=<x>,<y>,<z>`. Set `CAMERA_HFOV_DEG` from the camera's datasheet and compare the logged camera centre (`[Calibration] [CAMERA] centre_mm=...`) with a tape measure (height above the mat above all). Until the tag is mounted the locator falls back to forward kinematics (`gripper_source="kinematic"`, `is_aligned=null`).
 8. **Validate with `DESCENT_GATE=warn`** (the real-mode default): run five picks of the cube from different spots. Expect `gripper_source="aruco"`, a measured offset `measured_offset` (`dx_mm`, `dy_mm`) that falls to within `ALIGNMENT_TOLERANCE_MM` after the second hover, a non-zero `applied_correction_mm` on that second hover and the descent, and a `grasp_verification` that matches what you see every time. Search the log for `convergence timeout`: it means the servos did not reach the commanded pose within 2 s, so measurements may be taken too early.
 9. **Switch to `DESCENT_GATE=block`**: a deliberately misaligned descent must now be refused with `error_type="descent_gate"` instead of executed.
 
@@ -218,6 +219,7 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 - Detects 4-corner ArUco fiducials (`DICT_4X4_50`, canonical IDs: `1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`) defining the physical workspace mat.
 - Computes perspective homography mapping camera pixels directly to physical robot base millimeters with lateral $Y$-axis parity.
+- Configurable workspace offsets: `TABLE_X_MM` and `TABLE_Y_MM` (physical mounting offsets between robot base and table mat origin) and `TABLE_Z_MM` (table surface height in robot frame).
 - Configurable via `config/workspace_calibration.json`. Full architecture details are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - **Interactive Setup Wizard & Marker / Sheet Generator**:
 
@@ -301,6 +303,11 @@ uv run python test_live.py
     safety trigger, or shutdown). Surfaces as `error_type: "hardware"` with `robot_moved=True`
     whenever at least one step was written to motors, guaranteeing the model never assumes
     completed motion on an aborted action.
+- **Spatial Alignment & Table Offsets (`TABLE_X_MM`, `TABLE_Y_MM`, `TABLE_Z_MM`)**:
+  - `move_to_spatial_point` logs both the commanded target and the actual FK site reached (`[EXEC] move_to_spatial_point reached: FK XYZ [...] (table Z=...cm, table XY [...]mm) → image [...] | error: ...`).
+  - If hover altitude differs from ruler measurement, set `TABLE_Z_MM = FK_z - measured_height`.
+  - If using the printable calibration mat (`assets/aruco_markers/workspace_calibration_sheet.png`), set `TABLE_Y_MM=-60.0` in `.env` to compensate for the 60 mm lateral base alignment offset.
+  - If lateral alignment shows an offset from target, adjust `TABLE_Y_MM` and/or `TABLE_X_MM` in `.env` based on the logged delta.
 
 ## Kinematics & Mathematics Reference
 
