@@ -8,8 +8,6 @@ dependencies = [
   "numpy>=2.4.6",
   "opencv-python>=5.0.0.93",
   "scipy>=1.11.0",
-  "spatialmath-python>=1.1.16",
-  "matplotlib>=3.11.0",
   "google-genai>=2.9.0",
   "python-dotenv>=1.0.0",
   "mujoco>=3.2.0",
@@ -17,17 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sim = []
-rl = [
-  "mujoco-warp>=0.1.0",
-  "warp-lang>=1.0.0",
-  "gymnasium>=0.29.0",
-]
 hw = [
-  "lerobot",
   "lerobot[feetech]",
-  "torch>=2.11.0",
-  "torchvision>=0.26.0",
 ]
 ui = [
   "gradio>=6.22.0",
@@ -54,12 +43,6 @@ target-version = "py313"
 select = ["E", "F", "I", "D"]
 ignore = ["D100", "D104"]
 pydocstyle.convention = "google"
-
-[tool.setuptools.packages.find]
-include = ["simulation*", "robot*", "ui*", "agent*", "vision*", "tools*"]
-
-[tool.setuptools.package-data]
-"agent" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
