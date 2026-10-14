@@ -1,3 +1,5 @@
+"""Web user interface and 3D simulation viewer package."""
+
 import os
 import sys
 
@@ -10,10 +12,3 @@ if (
     and "WAYLAND_DISPLAY" not in os.environ
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
-
-from ui.app import build_vla_interface, launch_web_ui
-
-__all__ = [
-    "build_vla_interface",
-    "launch_web_ui",
-]

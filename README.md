@@ -23,17 +23,16 @@ The repository strictly enforces a layered dependency architecture (`robot < sim
 
 1. **[`/robot`](robot/) (Core Robot Definition, Kinematics & Registry)**
    - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`robot/constants.py`](robot/constants.py)).
-   - **Kinematics & Theory**: Forward kinematics ([`robot/kinematics.py`](robot/kinematics.py)), numerical damped least-squares Inverse Kinematics with null-space projection ([`robot/cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`robot/theory.md`](robot/theory.md)).
+   - **Kinematics & Theory**: Numerical damped least-squares Inverse Kinematics with null-space projection ([`robot/cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`robot/theory.md`](robot/theory.md)).
    - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`robot/calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
    - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`robot/perception.py`](robot/perception.py), [`robot/vision_detector.py`](robot/vision_detector.py)).
    - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`robot/real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
    - **Active Robot Registry**: Thread-safe global active-robot registry ([`robot/registry.py`](robot/registry.py)).
 
 2. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
-   - **Physics Simulation**: High-level MuJoCo model manipulation ([`simulation/sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, centered 3D STL meshes, and passive 3D interactive rendering ([`simulation/simulate.py`](simulation/simulate.py)).
+   - **Physics Simulation**: High-level MuJoCo model manipulation ([`simulation/sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, and centered 3D STL meshes.
    - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`simulation/sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
-   - **Reinforcement Learning & Warp**: Gymnasium reach target environments ([`simulation/env.py`](simulation/env.py)) and hardware-accelerated batched simulations using NVIDIA Warp ([`simulation/warp_env.py`](simulation/warp_env.py)).
-   - **Validation & Test Suites**: Diagnostic verifiers including linear Cartesian sweeps ([`simulation/test_movement.py`](simulation/test_movement.py)) and system health checks ([`simulation/check_env.py`](simulation/check_env.py)).
+   - **Validation & Diagnostics**: System health checks and environment diagnostics ([`simulation/check_env.py`](simulation/check_env.py)).
 
 3. **[`/vision`](vision/) (Camera Capture, Dual Buffers & Sim Runtime)**
    - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`vision/camera.py`](vision/camera.py)).
@@ -85,10 +84,9 @@ Dependencies are split into modular extras so headless, physical, simulation, an
 | Profile / Target | Description | Exact Install Command |
 |---|---|---|
 | **Core** | Base libraries (`numpy`, `opencv`, `scipy`, `mujoco`, `google-genai`, `dotenv`) | `uv sync` |
-| **Real Arm** | Physical Feetech arm driver, PyTorch & Web UI | `uv sync --extra hw --extra ui` |
-| **Simulation** | MuJoCo 3D simulation viewer & Web UI (`mujoco` in core) | `uv sync --extra sim --extra ui` |
-| **RL (`rl`)** | GPU/CPU batched simulation (`mujoco-warp`, `warp-lang`, `gymnasium`) | `uv sync --extra rl` |
-| **Development / Full** | Complete suite with all drivers, simulators, UI and dev tools | `uv sync --all-extras` |
+| **Real Arm** | Physical Feetech arm driver & Web UI | `uv sync --extra hw --extra ui` |
+| **Simulation** | MuJoCo simulation & Web UI (`mujoco` in core) | `uv sync --extra ui` |
+| **Development / Full** | Complete suite with arm driver, UI and dev tools | `uv sync --all-extras` |
 
 ### Environment Configuration (`.env`)
 
@@ -208,7 +206,7 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 | `set_joint_positions` | Instant snap joint position command in degrees. | `qpos` (array of 6 degs) |
 | `open_gripper` | Fully open the gripper end-effector. | None |
 | `close_gripper` | Close the gripper end-effector. | None |
-| `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`, `SWEEP_HOME`). | `pose_name` (string) |
+| `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`). | `pose_name` (string) |
 | `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
 | `get_joint_positions` | Read current joint angles in degrees. | None |
 | `get_end_effector_pose` | Read 3D Cartesian position and orientation matrix (sim). | None |
@@ -278,14 +276,8 @@ uv run pytest tests/ -v
 #     corrector), judged against MuJoCo ground truth; prints the metrics table with -s
 uv run pytest -m slow -s
 
-# 2. Verify movement & kinematics via automated X, Y, and Z Cartesian line sweeps
-uv run python main.py --task test_simulation
-
-# 3. Check system diagnostics, dependency imports, and MuJoCo FPS throughput
+# 2. Check system diagnostics, dependency imports, and MuJoCo FPS throughput
 uv run python main.py --task check_environment
-
-# 4. Test Gemini Live API WebSocket session and tool calling (requires .env)
-uv run python test_live.py
 ```
 
 ### Troubleshooting & Fail-Closed Diagnostics
@@ -314,7 +306,6 @@ uv run python test_live.py
 For a complete explanation of Denavit-Hartenberg (DH) parameters, transformation matrices, spatial Jacobians, and under-actuated 5-DOF damped least-squares Inverse Kinematics, consult our documentation:
 
 - [SO-101 Robot Arm Kinematics Theory (`robot/theory.md`)](robot/theory.md)
-- [Behind the Code: Engineering GeminiRobotics-SO101 (`behind_the_code.md`)](behind_the_code.md)
 
 ---
 

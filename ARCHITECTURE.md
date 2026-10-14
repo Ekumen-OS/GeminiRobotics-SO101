@@ -269,7 +269,6 @@ GeminiRobotics-SO101/
 ├── AGENTS.md                         # Operational rules and agent instructions
 ├── ARCHITECTURE.md                   # System architecture, interface contracts & test spec
 ├── README.md                         # Human-facing project guide, setup & hardware manual
-├── behind_the_code.md                # Engineering deep dive and design decisions
 ├── pyproject.toml                    # Dependencies, uv configuration & ruff settings
 ├── config/
 │   ├── workspace_calibration.json    # Canonical ArUco corner definitions & dimensions
@@ -293,8 +292,7 @@ GeminiRobotics-SO101/
 │   ├── assets/scene.xml              # MuJoCo scene definition with camera & ArUco markers
 │   ├── assets/so101.xml              # Robot MJCF: finger pads, grasp-site TCP, 25 mm jaw tag
 │   ├── sim_robot.py                  # MuJoCo simulation robot wrapper
-│   ├── sim_calibration.py            # Synthetic homography calibrator for virtual camera
-│   └── env.py                        # Gym-style RL environment wrapper
+│   └── sim_calibration.py            # Synthetic homography calibrator for virtual camera
 ├── vision/
 │   ├── camera.py                     # Camera enumeration, V4L2 device inspection & backend selection
 │   ├── capture.py                    # Shared capture thread manager & stream_video loop
@@ -361,7 +359,6 @@ This architecture is enforced locally by the pre-commit hook (there is no CI) us
   - `target_ambiguous` is a width proxy (blob > 55 mm), not a real two-object detection.
   - Transport and place use no correction ($c = 0$), so placement is off by the arm bias (~7 mm at a 1.5° pan offset). Carrying the grasp lock's correction to the destination would fix it.
   - Real arm servo gravity sag is confirmed on hardware and compensated in software (`_wait_for_convergence` settles within 0.1° over 0.15 s, shifts goal by steady-state error up to ±6.0° over ≤ 2 rounds with a 3 mm contact guard); servo registers still run LeRobot's default P-only gains.
-  - `main.py --task test_simulation` needs a display (headless fails; `--task check_environment` passes).
 - **Host-environment note:** `gh` moved from `/usr/bin/gh` to Homebrew, which broke git's HTTPS credential helper until `gh auth setup-git` was re-run. Relevant if `git push` fails with `could not read Username`.
 - **Omission of set_joint_positions in prompt bullet list:** Tool is declared in `ROBOT_TOOL_DECLARATIONS` and handled in `execute_tool_call`, but historically omitted from `agent/prompts/vla_system.md`. Retained with `prompt_line=""` in `TOOL_REGISTRY` to preserve byte-identical prompt output.
 - **Real LeRobot calibration cache:** Lives in `~/.cache/huggingface/lerobot/calibration/robots/so101_follower/`.

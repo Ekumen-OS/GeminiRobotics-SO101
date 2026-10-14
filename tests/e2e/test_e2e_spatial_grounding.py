@@ -343,7 +343,7 @@ async def test_t3_cross_feature_move_to_spatial_point_execution() -> None:
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     try:
@@ -399,7 +399,7 @@ async def test_t4_scenario_pick_hover_and_descend_workflow(
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     try:
@@ -446,7 +446,7 @@ async def test_t4_scenario_horizontal_approach_traversal() -> None:
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     targets = [
@@ -474,7 +474,7 @@ async def test_t4_scenario_perimeter_survey_motion() -> None:
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     survey_points = [
@@ -500,7 +500,7 @@ async def test_t4_scenario_perimeter_survey_motion() -> None:
 
 def test_t4_scenario_simulation_target_body_spatial_alignment() -> None:
     """Real-World Scenario 4: Ground physical MuJoCo target body coordinates to robot space."""
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     try:
         # Query target body position from MuJoCo model
         target_body_id = robot.model.body("target").id
