@@ -433,7 +433,7 @@ async def test_three_misses_escalation_status_and_user_message() -> None:
         # Simulate 2 earlier misses at this lock and a closed gripper when the lift runs
         if call.id == "lift_3":
             state = controller.guardrail_state
-            state.new_lock("red", (240.0, 0.0), [760.0, 484.0], None, None, [760.0, 484.0])
+            state.new_lock("red", (240.0, 0.0), [760.0, 484.0], None, None)
             state.target.grasp_attempts = 2
             state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
             robot.gripper_reading = {"aperture_deg": -75.0, "load": 0.0, "source": "measured"}
@@ -465,7 +465,7 @@ def test_guardrail_state_resets_on_interrupt_and_new_instruction() -> None:
     robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
     state = controller.guardrail_state
-    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None, [500.0, 500.0])
+    state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None)
     state.record_miss_or_unverified("closed_on_air")
     state.escalate("grasp_attempts")
 
