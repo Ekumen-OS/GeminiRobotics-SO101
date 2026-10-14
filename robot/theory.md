@@ -92,7 +92,7 @@ While the SO-101 command vector contains 6 motor inputs, anatomical analysis rev
 
 The 6th actuator drives a single-hinge opening jaw on the gripper assembly and does not shift the coordinate frame triad (`gripperframe`). Consequently, enforcing full 6-DOF tracking ($\mathbb{R}^6$) on a 5-DOF arm introduces over-determined numerical deadlocks during linear Cartesian moves. 
 
-In our practical implementation, we decouple the spatial IK solver to optimize primary **3D Position Tracking** ($3 \times 5$ full-rank Jacobian) while utilizing the remaining 2D internal null-space to pull joint postures smoothly toward an ergonomic workspace anchor (`SWEEP_HOME`). Furthermore, if the solver encounters local minima near joint bounds ($\text{error} > 1\,\text{cm}$), it automatically recovers by retrying from a neutral workspace seed.
+In our practical implementation, we decouple the spatial IK solver to optimize primary **3D Position Tracking** ($3 \times 5$ full-rank Jacobian) while utilizing the remaining 2D internal null-space to pull joint postures smoothly toward an ergonomic nominal posture (`nominal_qpos`, regularizing elbow and shoulder pitch). Furthermore, if the solver encounters local minima near joint bounds ($\text{error} > 1\,\text{cm}$), it automatically recovers by retrying from a neutral workspace seed.
 
 ## 5. Visual Grounding & Perspective Homography Calibration
 
@@ -138,9 +138,8 @@ To achieve robust visual manipulation in real-world environments with friction a
 4. **Homography-Guided Self-Correction & Escalation**: If misalignment exceeds grasping tolerance or a grasp attempt fails (object remains on the table), the controller enforces corrective micro-adjustments or automated retry cycles (up to 3 attempts) before escalating to the user.
 
 > 💡 **Verifying Kinematics & Motion**: 
-> You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and linear Cartesian motion tracking at any time by executing:
+> You can verify the integrity of the kinematics solver, MuJoCo simulation scene, and motion tracking at any time by executing:
 >
 > ```bash
-> uv run python main.py --task test_simulation
 > uv run pytest tests/ -v
 > ```

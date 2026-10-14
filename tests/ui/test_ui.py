@@ -628,7 +628,7 @@ def test_sim_robot_randomize_target() -> None:
     """Verify target manipulation object randomization in simulation."""
     from simulation.sim_robot import SO101Robot
 
-    sim_robot = SO101Robot(render_viewer=False)
+    sim_robot = SO101Robot()
     new_pos = sim_robot.randomize_target(
         x_range=(0.15, 0.22), y_range=(-0.10, 0.10), z_height=0.015
     )
@@ -647,7 +647,7 @@ def test_active_robot_state() -> None:
 
         from simulation.sim_robot import SO101Robot
 
-        sim_robot = SO101Robot(render_viewer=False)
+        sim_robot = SO101Robot()
         set_active_robot(sim_robot)
         assert get_active_robot() is sim_robot
     finally:

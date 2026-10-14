@@ -314,7 +314,7 @@ class SimPickHarness:
         """
         self.descend_after_hover_cap = descend_after_hover_cap
         self.point_offset_1000 = point_offset_1000
-        self.sim = SO101Robot(render_viewer=False)
+        self.sim = SO101Robot()
         self.robot: RobotInterface = (
             PanOffsetRobot(self.sim, pan_offset_deg) if pan_offset_deg else self.sim
         )

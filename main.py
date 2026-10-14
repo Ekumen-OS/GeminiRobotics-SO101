@@ -2,11 +2,8 @@
 
 import argparse
 import logging
-import signal
-import subprocess
 import sys
 import time
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -38,7 +35,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--task",
         choices=[
             "check_environment",
-            "test_simulation",
             "generate_markers",
             "setup_workspace",
             "calibrate_workspace",
@@ -46,7 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional verification or setup task: 'check_environment' (System & hardware "
-            "diagnostics), 'test_simulation' (Kinematics validation), or 'generate_markers' / "
+            "diagnostics), or 'generate_markers' / "
             "'setup_workspace' (Interactive workspace calibration & sheet generator). "
             "If omitted, defaults to launching the Gradio VLA Web UI."
         ),
@@ -82,130 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "Can also be configured via ROBOT_PORT or SO101_PORT environment variable."
         ),
     )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help=(
-            "Development mode: watch Python source files and automatically restart "
-            "the Web UI process on change."
-        ),
-    )
     return parser
-
-
-def _scan_python_sources(project_root: Path) -> dict[Path, int]:
-    """Collect current mtime snapshot for project Python files.
-
-    Args:
-        project_root: Repository root folder.
-
-    Returns:
-        Mapping from absolute Python file paths to modification timestamps (ns).
-    """
-    exclude_dirs = {".git", ".venv", "__pycache__", ".ruff_cache", ".mypy_cache"}
-    watch_roots = [
-        project_root / "main.py",
-        project_root / "robot",
-        project_root / "simulation",
-        project_root / "ui",
-    ]
-
-    snapshot: dict[Path, int] = {}
-
-    for root in watch_roots:
-        if root.is_file() and root.suffix == ".py":
-            snapshot[root] = root.stat().st_mtime_ns
-            continue
-        if not root.exists():
-            continue
-
-        for file_path in root.rglob("*.py"):
-            if any(part in exclude_dirs for part in file_path.parts):
-                continue
-            try:
-                snapshot[file_path] = file_path.stat().st_mtime_ns
-            except FileNotFoundError:
-                # File may disappear between glob and stat during save operations.
-                continue
-
-    return snapshot
-
-
-def _stop_child_process(proc: subprocess.Popen[bytes]) -> None:
-    """Stop child process gracefully, escalating only if needed."""
-    if proc.poll() is not None:
-        return
-
-    try:
-        proc.send_signal(signal.SIGINT)
-        proc.wait(timeout=5)
-        return
-    except (subprocess.TimeoutExpired, ProcessLookupError):
-        pass
-
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-        return
-    except (subprocess.TimeoutExpired, ProcessLookupError):
-        pass
-
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        return
-
-
-def _spawn_child(project_root: Path, forward_args: list[str]) -> subprocess.Popen[bytes]:
-    """Spawn the actual app process used by reload supervisor."""
-    cmd = [sys.executable, str(project_root / "main.py"), *forward_args]
-    cmd_display = " ".join(cmd)
-    print(f"[RELOAD] Starting child process: {cmd_display}")
-    return subprocess.Popen(cmd, cwd=str(project_root))
-
-
-def _run_with_reload(forward_args: list[str]) -> None:
-    """Run a file-watching supervisor that restarts app process on Python changes."""
-    project_root = Path(__file__).resolve().parent
-    snapshot = _scan_python_sources(project_root)
-    proc = _spawn_child(project_root, forward_args)
-
-    try:
-        while True:
-            time.sleep(0.8)
-
-            if proc.poll() is not None:
-                code = proc.returncode
-                print(f"[RELOAD] Child exited with code {code}. Restarting...")
-                proc = _spawn_child(project_root, forward_args)
-                snapshot = _scan_python_sources(project_root)
-                continue
-
-            new_snapshot = _scan_python_sources(project_root)
-            if new_snapshot == snapshot:
-                continue
-
-            changed_count = len(set(snapshot.items()) ^ set(new_snapshot.items()))
-            print(f"[RELOAD] Detected {changed_count} Python file change(s). Restarting...")
-            snapshot = new_snapshot
-            _stop_child_process(proc)
-            proc = _spawn_child(project_root, forward_args)
-    except KeyboardInterrupt:
-        print("\n[RELOAD] Stopping development reloader...")
-    finally:
-        _stop_child_process(proc)
 
 
 def _run_once(args: argparse.Namespace) -> None:
     """Execute a single run of the selected mode/task."""
-    setup_logging()
-
-    # On macOS, switch to mjpython before headers only if opening GLFW window in test_simulation
-    if args.task == "test_simulation":
-        from simulation.simulate import ensure_mjpython
-
-        ensure_mjpython()
-
     task_display = args.task.upper() if args.task is not None else "WEB_UI"
     print("=" * 60)
     print(f"GeminiRobotics-SO101 Execution — Mode: [{args.mode.upper()}] | Task: [{task_display}]")
@@ -216,14 +93,6 @@ def _run_once(args: argparse.Namespace) -> None:
         from simulation.check_env import check_environment
 
         check_environment()
-        return
-
-    elif args.task == "test_simulation":
-        if args.mode != "sim":
-            print("Notice: 'test_simulation' runs via the simulated MuJoCo physics scene.")
-        from simulation.test_movement import test_robot_movement
-
-        test_robot_movement()
         return
 
     elif args.task in ("generate_markers", "setup_workspace", "calibrate_workspace"):
@@ -245,7 +114,7 @@ def _run_once(args: argparse.Namespace) -> None:
 
     if args.mode == "sim":
         print("Initializing MuJoCo simulation robot arm in headless UI mode...")
-        robot = SO101Robot(render_viewer=False)
+        robot = SO101Robot()
         robot.reset("HOME")
     else:
         print(f"Connecting real SO-101 arm on port {port} for Real Mode VLA UI...")
@@ -297,13 +166,6 @@ def main() -> None:
     )
     set_settings(settings)
     args.port = settings.serial_port
-
-    if args.reload:
-        if args.task is not None:
-            parser.error("--reload can only be used when launching the Web UI (without --task).")
-        forward_args = [arg for arg in argv if arg != "--reload"]
-        _run_with_reload(forward_args)
-        return
 
     _run_once(args)
 
