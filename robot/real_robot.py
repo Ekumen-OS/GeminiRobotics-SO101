@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_NAMES
 from robot.contracts import GripperReading
 from robot.errors import HardwareError
@@ -33,6 +34,18 @@ CONVERGENCE_TOL_DEG = 1.5
 # ("convergence timeout") and the move returns anyway: the servos may simply not reach the goal.
 CONVERGENCE_TIMEOUT_S = 2.0
 CONVERGENCE_POLL_S = 0.03
+# Maximum position change across settle window (deg) for arm joints to be considered settled.
+SETTLE_DELTA_DEG = 0.1
+# Time window (s) over which joint positions must stay within SETTLE_DELTA_DEG to settle.
+SETTLE_WINDOW_S = 0.15
+# Per-joint steady-state error tolerance (deg) below which no sag correction is applied.
+SAG_TOL_DEG = 0.5
+# Maximum cumulative sag compensation offset (deg) allowed per arm joint.
+MAX_SAG_COMP_DEG = 6.0
+# Maximum number of sag compensation rounds attempted per move.
+SAG_COMP_ROUNDS = 2
+# Maximum height (mm) present TCP z may exceed target z before contact guard blocks sag correction.
+CONTACT_GUARD_MM = 3.0
 
 # Fields every motor entry must define with a concrete value for the file to be usable.
 _REQUIRED_CALIB_FIELDS = ("id", "drive_mode", "homing_offset", "range_min", "range_max")
@@ -51,6 +64,17 @@ def resolve_calibration_path() -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+_cached_ik: CartesianIK | None = None
+
+
+def _get_ik() -> CartesianIK:
+    """Return a shared singleton instance of CartesianIK for forward kinematics."""
+    global _cached_ik
+    if _cached_ik is None:
+        _cached_ik = CartesianIK()
+    return _cached_ik
 
 
 class RealSO101Robot(RobotInterface):
@@ -364,39 +388,183 @@ class RealSO101Robot(RobotInterface):
         finally:
             self._stop_requested = False
 
-    def _wait_for_convergence(self, target_qpos: np.ndarray) -> None:
-        """Wait until the arm joints have reached the goal (the servos lag the commanded sweep).
+    def _write_corrected_arm_goals(self, arm_goal_rad: np.ndarray) -> None:
+        """Write corrected goal positions for arm joints without altering _last_qpos intent.
 
-        The measurement frame that follows a move must show the arm where it ended up, so the
-        move does not return while ``Present_Position`` is still travelling. The gripper is
-        excluded: it legitimately stalls on a grasped object.
+        Args:
+            arm_goal_rad: Corrected target positions in radians for the 5 arm joints.
+
+        Raises:
+            HardwareError: If writing to the bus fails.
+        """
+        if not self.connected or self.bus is None:
+            raise HardwareError(
+                f"Cannot set joint positions: robot is not connected on port {self.port}."
+            )
+        with self._bus_lock:
+            joint_degrees = {}
+            for i in range(5):
+                name = JOINT_NAMES[i]
+                joint_degrees[name] = float(np.degrees(arm_goal_rad[i]))
+            try:
+                self.bus.sync_write("Goal_Position", joint_degrees, normalize=True)
+            except Exception as e:
+                logger.error(f"Error writing joint positions to bus: {e}")
+                raise HardwareError(f"Failed to write joint positions to bus: {e}") from e
+
+    @staticmethod
+    def _log_servo_compensation(
+        rounds_used: int, offset_deg: np.ndarray, residual_max: float
+    ) -> None:
+        """Emit standardized [SERVO] stdout line describing completed sag compensation.
+
+        Args:
+            rounds_used: Compensation round index that achieved convergence.
+            offset_deg: Applied compensation offset array in degrees for 5 arm joints.
+            residual_max: Maximum remaining joint error in degrees.
+        """
+        offset_strs = [
+            f"{name}={offset_deg[i]:+.1f}"
+            for i, name in enumerate(JOINT_NAMES[:5])
+            if abs(offset_deg[i]) >= 0.05
+        ]
+        offset_text = " ".join(offset_strs) if offset_strs else "none"
+        log_with_tag(
+            logger,
+            "SERVO",
+            f"sag compensation round {rounds_used}: offset (deg) {offset_text}; "
+            f"residual max {residual_max:.1f}",
+        )
+
+    @staticmethod
+    def _log_convergence_warning(
+        timeout_s: float, abs_error_deg: np.ndarray, offset_deg: np.ndarray | None
+    ) -> None:
+        """Emit standardized WARN stderr line when convergence tolerance is exceeded.
+
+        Args:
+            timeout_s: Convergence timeout in seconds per round.
+            abs_error_deg: Absolute error array in degrees for 5 arm joints.
+            offset_deg: Optional applied offset array in degrees.
+        """
+        per_joint = ", ".join(
+            f"{name}={err:.1f}" for name, err in zip(JOINT_NAMES[:5], abs_error_deg, strict=False)
+        )
+        msg = f"convergence timeout after {timeout_s:.1f}s; per-joint error (deg): {per_joint}"
+        if offset_deg is not None and np.any(np.abs(offset_deg) >= 0.05):
+            offset_str = ", ".join(
+                f"{name}={offset_deg[i]:+.1f}"
+                for i, name in enumerate(JOINT_NAMES[:5])
+                if abs(offset_deg[i]) >= 0.05
+            )
+            msg += f"; applied offset: {offset_str}"
+        log_with_tag(logger, "WARN", msg)
+
+    def _wait_for_convergence(self, target_qpos: np.ndarray) -> None:
+        """Wait until arm joints settle and compensate for gravity sag.
+
+        STS3215 servos run proportional-only control, settling short of the goal under gravity.
+        Joints (0-4) are monitored until settled (no change > SETTLE_DELTA_DEG across
+        SETTLE_WINDOW_S), and steady-state sag is compensated by shifting the goal by up to
+        ±MAX_SAG_COMP_DEG over at most SAG_COMP_ROUNDS rounds.
 
         Args:
             target_qpos: Goal joint angles in radians.
 
         Raises:
-            HardwareError: If a position read fails or the motion is interrupted while waiting.
+            HardwareError: If a position read fails or motion is interrupted.
         """
         timeout = float(self.convergence_timeout_s)
         if timeout <= 0.0:
             return
+
+        target_qpos = np.asarray(target_qpos, dtype=np.float32)
+        offset_deg = np.zeros(5, dtype=np.float64)
+        rounds_used = 0
+
+        ik = _get_ik()
+        tcp_target = ik.forward_kinematics(target_qpos)
+        target_z_mm = float(tcp_target[2] * 1000.0)
+
         deadline = time.monotonic() + timeout
+        settle_window: list[tuple[float, np.ndarray]] = []
+
         while True:
             if self._stop_requested:
                 raise HardwareError("Motion interrupted", robot_moved=True)
+
+            t_now = time.monotonic()
             present = self.get_joint_positions()
-            error_deg = np.degrees(np.abs(present[:5] - target_qpos[:5]))
-            if float(error_deg.max()) < CONVERGENCE_TOL_DEG:
+            present_arm_deg = np.degrees(present[:5].astype(np.float64))
+
+            settle_window.append((t_now, present_arm_deg))
+            while len(settle_window) > 1 and settle_window[1][0] <= t_now - SETTLE_WINDOW_S:
+                settle_window.pop(0)
+
+            is_settled = False
+            if (t_now - settle_window[0][0]) >= SETTLE_WINDOW_S:
+                samples = np.array([entry[1] for entry in settle_window])
+                spread = samples.max(axis=0) - samples.min(axis=0)
+                if float(spread.max()) <= SETTLE_DELTA_DEG:
+                    is_settled = True
+
+            error_deg = np.degrees(
+                target_qpos[:5].astype(np.float64) - present[:5].astype(np.float64)
+            )
+            abs_error_deg = np.abs(error_deg)
+            max_error_deg = float(abs_error_deg.max())
+
+            # Return once every arm joint is within SAG_TOL_DEG
+            if max_error_deg < SAG_TOL_DEG:
+                if rounds_used > 0:
+                    self._log_servo_compensation(rounds_used, offset_deg, max_error_deg)
                 return
-            if time.monotonic() >= deadline:
-                per_joint = ", ".join(
-                    f"{name}={err:.1f}"
-                    for name, err in zip(JOINT_NAMES[:5], error_deg, strict=False)
-                )
-                log_with_tag(
-                    logger,
-                    "WARN",
-                    f"convergence timeout after {timeout:.1f}s; per-joint error (deg): {per_joint}",
-                )
+
+            if is_settled:
+                if rounds_used < SAG_COMP_ROUNDS:
+                    # Contact guard check: present TCP z > 3.0 mm above target z
+                    tcp_present = ik.forward_kinematics(present)
+                    present_z_mm = float(tcp_present[2] * 1000.0)
+                    dz_guard = present_z_mm - target_z_mm
+
+                    if dz_guard > CONTACT_GUARD_MM:
+                        log_with_tag(
+                            logger,
+                            "SERVO",
+                            f"contact guard: present TCP z ({present_z_mm:.1f} mm) is "
+                            f"{dz_guard:.1f} mm above target z ({target_z_mm:.1f} mm); "
+                            f"skipping sag correction",
+                        )
+                        return
+
+                    rounds_used += 1
+                    offset_deg += error_deg
+                    offset_deg = np.clip(offset_deg, -MAX_SAG_COMP_DEG, MAX_SAG_COMP_DEG)
+
+                    goal_arm_rad = target_qpos[:5].astype(np.float64) + np.radians(offset_deg)
+                    self._write_corrected_arm_goals(goal_arm_rad)
+
+                    settle_window.clear()
+                    deadline = time.monotonic() + timeout
+                    time.sleep(CONVERGENCE_POLL_S)
+                    continue
+                else:
+                    # Rounds used up and settled: return once settled
+                    if rounds_used > 0:
+                        self._log_servo_compensation(rounds_used, offset_deg, max_error_deg)
+                    if max_error_deg >= CONVERGENCE_TOL_DEG:
+                        self._log_convergence_warning(
+                            timeout, abs_error_deg, offset_deg if rounds_used > 0 else None
+                        )
+                    return
+
+            if t_now >= deadline:
+                if rounds_used > 0:
+                    self._log_servo_compensation(rounds_used, offset_deg, max_error_deg)
+                if max_error_deg >= CONVERGENCE_TOL_DEG:
+                    self._log_convergence_warning(
+                        timeout, abs_error_deg, offset_deg if rounds_used > 0 else None
+                    )
                 return
+
             time.sleep(CONVERGENCE_POLL_S)
