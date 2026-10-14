@@ -332,7 +332,7 @@ def test_t3_cross_feature_tools_image_point_to_xyz_integration() -> None:
     init_sim_workspace_calibration(calibrator=calib)
 
     for hover_z in [0.0, 0.02, 0.05, 0.10]:
-        xyz_tool = image_point_to_xyz([760.0, 484.0], hover_z=hover_z)
+        xyz_tool = image_point_to_xyz([760.0, 484.0], hover_z=hover_z, mode="sim")
         xyz_calib = calib.gemini_to_robot_xyz([760.0, 484.0], z_m=hover_z)
         assert np.allclose(xyz_tool, xyz_calib, atol=1e-4)
 

@@ -91,6 +91,92 @@ class Settings:
     # default is the streaming (Live API) model, which does not serve generate_content.
     er2_locator_model: str = "gemini-robotics-er-2-preview"
     vision_settle_s: float = 0.3
+    # Robot-frame x coordinate of the table mat origin (mm) on the real arm. Always 0.0 in sim.
+    table_x_mm: float = 0.0
+    # Robot-frame y coordinate of the table mat origin (mm) on the real arm. Always 0.0 in sim.
+    table_y_mm: float = 0.0
+    # Robot-frame z coordinate of the table surface (mm) on the real arm. Always 0.0 in sim.
+    table_z_mm: float = 0.0
+
+    def get_table_x_mm(self, mode: str = "real") -> float:
+        """Resolve table x coordinate in robot frame (mm).
+
+        Always 0.0 in sim; returns calibrated table_x_mm in real mode.
+
+        Args:
+            mode: Operational mode ('real' or 'sim').
+
+        Returns:
+            Table x coordinate in mm in robot frame.
+        """
+        if mode == "sim":
+            return 0.0
+        env_val = os.environ.get("TABLE_X_MM")
+        if env_val is not None and env_val.strip() != "":
+            try:
+                return float(env_val)
+            except (ValueError, TypeError):
+                pass
+        return self.table_x_mm
+
+    def get_table_y_mm(self, mode: str = "real") -> float:
+        """Resolve table y coordinate in robot frame (mm).
+
+        Always 0.0 in sim; returns calibrated table_y_mm in real mode.
+
+        Args:
+            mode: Operational mode ('real' or 'sim').
+
+        Returns:
+            Table y coordinate in mm in robot frame.
+        """
+        if mode == "sim":
+            return 0.0
+        env_val = os.environ.get("TABLE_Y_MM")
+        if env_val is not None and env_val.strip() != "":
+            try:
+                return float(env_val)
+            except (ValueError, TypeError):
+                pass
+        return self.table_y_mm
+
+    def get_table_z_mm(self, mode: str = "real") -> float:
+        """Resolve table surface height in robot frame (mm).
+
+        Always 0.0 in sim; returns calibrated table_z_mm in real mode.
+
+        Args:
+            mode: Operational mode ('real' or 'sim').
+
+        Returns:
+            Table z coordinate in mm in robot frame.
+        """
+        if mode == "sim":
+            return 0.0
+        env_val = os.environ.get("TABLE_Z_MM")
+        if env_val is not None and env_val.strip() != "":
+            try:
+                return float(env_val)
+            except (ValueError, TypeError):
+                pass
+        return self.table_z_mm
+
+    def get_table_offset_mm(self, mode: str = "real") -> tuple[float, float, float]:
+        """Resolve table (x, y, z) offsets in robot frame (mm).
+
+        Always (0.0, 0.0, 0.0) in sim; returns (table_x, table_y, table_z) in real.
+
+        Args:
+            mode: Operational mode ('real' or 'sim').
+
+        Returns:
+            Tuple of (table_x_mm, table_y_mm, table_z_mm).
+        """
+        return (self.get_table_x_mm(mode), self.get_table_y_mm(mode), self.get_table_z_mm(mode))
+
+    def get_table_offsets_mm(self, mode: str = "real") -> tuple[float, float, float]:
+        """Alias for get_table_offset_mm."""
+        return self.get_table_offset_mm(mode)
 
     def get_descent_gate(self, mode: str = "real") -> str:
         """Resolve descent gate policy ('block', 'warn', or 'off').
@@ -456,6 +542,24 @@ class Settings:
             cls.vision_settle_s,
         )
 
+        table_x_mm = _resolve_float(
+            overrides.get("table_x_mm"),
+            ("TABLE_X_MM",),
+            cls.table_x_mm,
+        )
+
+        table_y_mm = _resolve_float(
+            overrides.get("table_y_mm"),
+            ("TABLE_Y_MM",),
+            cls.table_y_mm,
+        )
+
+        table_z_mm = _resolve_float(
+            overrides.get("table_z_mm"),
+            ("TABLE_Z_MM",),
+            cls.table_z_mm,
+        )
+
         return cls(
             serial_port=serial_port,
             gemini_model_id=gemini_model_id,
@@ -489,6 +593,9 @@ class Settings:
             gripper_locator_er2=gripper_locator_er2,
             er2_locator_model=er2_locator_model,
             vision_settle_s=vision_settle_s,
+            table_x_mm=table_x_mm,
+            table_y_mm=table_y_mm,
+            table_z_mm=table_z_mm,
         )
 
 
@@ -515,3 +622,115 @@ def set_settings(settings: Settings) -> None:
     """
     global _current_settings
     _current_settings = settings
+
+
+def table_to_robot_xy_mm(
+    x_table_mm: float, y_table_mm: float, mode: str = "real"
+) -> tuple[float, float]:
+    """Convert table-mat-relative (X, Y) in millimetres to robot-frame (X, Y) in millimetres.
+
+    Args:
+        x_table_mm: Forward coordinate on the table mat in millimetres.
+        y_table_mm: Lateral coordinate on the table mat in millimetres.
+        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
+
+    Returns:
+        Tuple of (x_robot_mm, y_robot_mm) in robot base frame.
+    """
+    settings = get_settings()
+    return (
+        x_table_mm + settings.get_table_x_mm(mode),
+        y_table_mm + settings.get_table_y_mm(mode),
+    )
+
+
+def robot_to_table_xy_mm(
+    x_robot_mm: float, y_robot_mm: float, mode: str = "real"
+) -> tuple[float, float]:
+    """Convert robot-frame (X, Y) in millimetres to table-mat-relative (X, Y) in millimetres.
+
+    Args:
+        x_robot_mm: Forward coordinate in robot base frame in millimetres.
+        y_robot_mm: Lateral coordinate in robot base frame in millimetres.
+        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
+
+    Returns:
+        Tuple of (x_table_mm, y_table_mm) in table mat coordinates.
+    """
+    settings = get_settings()
+    return (
+        x_robot_mm - settings.get_table_x_mm(mode),
+        y_robot_mm - settings.get_table_y_mm(mode),
+    )
+
+
+def table_to_robot_xyz_mm(
+    x_table_mm: float, y_table_mm: float, z_table_mm: float, mode: str = "real"
+) -> tuple[float, float, float]:
+    """Convert table-mat-relative (X, Y, Z) in mm to robot-frame (X, Y, Z) in mm.
+
+    Args:
+        x_table_mm: Forward coordinate on table mat in millimetres.
+        y_table_mm: Lateral coordinate on table mat in millimetres.
+        z_table_mm: Height above table surface in millimetres.
+        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
+
+    Returns:
+        Tuple of (x_robot_mm, y_robot_mm, z_robot_mm) in robot base frame.
+    """
+    settings = get_settings()
+    return (
+        x_table_mm + settings.get_table_x_mm(mode),
+        y_table_mm + settings.get_table_y_mm(mode),
+        z_table_mm + settings.get_table_z_mm(mode),
+    )
+
+
+def robot_to_table_xyz_mm(
+    x_robot_mm: float, y_robot_mm: float, z_robot_mm: float, mode: str = "real"
+) -> tuple[float, float, float]:
+    """Convert robot-frame (X, Y, Z) in mm to table-mat-relative (X, Y, Z) in mm.
+
+    Args:
+        x_robot_mm: Forward coordinate in robot base frame in millimetres.
+        y_robot_mm: Lateral coordinate in robot base frame in millimetres.
+        z_robot_mm: Robot-frame z coordinate in millimetres.
+        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
+
+    Returns:
+        Tuple of (x_table_mm, y_table_mm, z_table_mm) in table mat coordinates.
+    """
+    settings = get_settings()
+    return (
+        x_robot_mm - settings.get_table_x_mm(mode),
+        y_robot_mm - settings.get_table_y_mm(mode),
+        z_robot_mm - settings.get_table_z_mm(mode),
+    )
+
+
+def table_height_to_robot_z_m(height_m: float, mode: str = "real") -> float:
+    """Convert table-relative height in metres to robot-frame z in metres.
+
+    Args:
+        height_m: Height above the table plane in metres.
+        mode: Operational mode ('real' or 'sim'). In sim, table_z is always 0.0.
+
+    Returns:
+        Robot-frame z coordinate in metres.
+    """
+    table_z_mm = get_settings().get_table_z_mm(mode)
+    return height_m + (table_z_mm / 1000.0)
+
+
+def robot_z_to_table_height_mm(z_mm: float, mode: str = "real") -> float:
+    """Convert robot-frame z in millimetres to table-relative height in millimetres.
+
+    Args:
+        z_mm: Robot-frame z coordinate in millimetres.
+        mode: Operational mode ('real' or 'sim'). In sim, table_z is always 0.0.
+
+    Returns:
+        Height above table plane in millimetres.
+    """
+    table_z_mm = get_settings().get_table_z_mm(mode)
+    return z_mm - table_z_mm

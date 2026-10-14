@@ -223,7 +223,7 @@ def test_jaw_locator_parallax_free_sim(sim_scene) -> None:
         q[5] = GRIPPER_OPEN_RAD
         robot.move_to_pose(q, duration_sec=1.5)
         frame = robot.render_rgb_frame(640, 480)
-        loc = locate_jaw_xy_mm(frame, snapshot, robot.get_joint_positions())
+        loc = locate_jaw_xy_mm(frame, snapshot, robot.get_joint_positions(), mode="sim")
         assert loc is not None, f"tag not detected at {(x, y, z)}"
         truth = robot.get_end_effector_pose()[0][:2] * 1000.0
         errors.append(float(np.linalg.norm(np.array(loc.xy_mm) - truth)))
@@ -252,7 +252,7 @@ def test_jaw_locator_sees_a_pan_encoder_bias_that_fk_cannot(sim_scene) -> None:
     q[5] = GRIPPER_OPEN_RAD
     biased.move_to_pose(q, duration_sec=1.5)
     frame = robot.render_rgb_frame(640, 480)
-    loc = locate_jaw_xy_mm(frame, snapshot, biased.get_joint_positions())
+    loc = locate_jaw_xy_mm(frame, snapshot, biased.get_joint_positions(), mode="sim")
     assert loc is not None
     truth = robot.get_end_effector_pose()[0][:2] * 1000.0
     fk = ik.forward_kinematics(biased.get_joint_positions())[:2] * 1000.0

@@ -18,7 +18,12 @@ from robot.calibration import GeometrySnapshot
 from robot.cartesian_ik import CartesianIK
 from robot.errors import CalibrationUnavailable
 from robot.logger import log_with_tag
-from robot.settings import get_settings
+from robot.registry import get_active_robot
+from robot.settings import (
+    get_settings,
+    robot_z_to_table_height_mm,
+    table_to_robot_xy_mm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +99,7 @@ def locate_jaw_xy_mm(
     qpos_rad: np.ndarray,
     tag_offset_mm: tuple[float, float, float] | None = None,
     ik: CartesianIK | None = None,
+    mode: str | None = None,
 ) -> JawLocation | None:
     """Locate the grasp site in robot millimetres from the jaw tag.
 
@@ -106,6 +112,7 @@ def locate_jaw_xy_mm(
         tag_offset_mm: Tag centre relative to the grasp site in the gripper frame (mm);
             defaults to ``settings.gripper_tag_local_offset_mm``.
         ik: Kinematics solver (shared singleton by default).
+        mode: Operational mode ('real' or 'sim') for table height resolution.
 
     Returns:
         JawLocation, or None if the tag is not visible, the calibration is missing, or there is
@@ -117,6 +124,10 @@ def locate_jaw_xy_mm(
     if corners is None:
         return None
 
+    if mode is None:
+        active = get_active_robot()
+        mode = getattr(active, "mode", "real") if active is not None else "real"
+
     offset = np.asarray(
         tag_offset_mm if tag_offset_mm is not None else get_settings().gripper_tag_local_offset_mm,
         dtype=np.float64,
@@ -125,7 +136,8 @@ def locate_jaw_xy_mm(
     site_m, rotation = solver.gripper_frame_pose(np.asarray(qpos_rad, dtype=np.float64))
     site_mm = site_m * 1000.0
     tag_offset_world = rotation @ offset
-    tag_height_mm = float(site_mm[2] + tag_offset_world[2])
+    tag_z_robot_mm = float(site_mm[2] + tag_offset_world[2])
+    tag_height_mm = robot_z_to_table_height_mm(tag_z_robot_mm, mode=mode)
 
     centre_px = corners.mean(axis=0)
     try:
@@ -138,8 +150,9 @@ def locate_jaw_xy_mm(
         site_px = snapshot.table_mm_to_pixel(xy[0], xy[1])
     except (ZeroDivisionError, FloatingPointError):
         site_px = None
+    robot_xy = table_to_robot_xy_mm(xy[0], xy[1], mode=mode)
     return JawLocation(
-        xy_mm=xy,
+        xy_mm=robot_xy,
         tag_pixel=(float(centre_px[0]), float(centre_px[1])),
         tag_height_mm=tag_height_mm,
         site_pixel=site_px,

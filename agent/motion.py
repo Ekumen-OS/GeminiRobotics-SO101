@@ -8,6 +8,7 @@ import numpy as np
 from robot.cartesian_ik import CartesianIK
 from robot.errors import HardwareError
 from robot.interface import RobotInterface
+from robot.settings import table_height_to_robot_z_m
 
 # A site below this height (m) is "low": a long sweep from there would drag across the mat.
 LOW_POSE_Z_M = 0.03
@@ -38,6 +39,7 @@ def plan_approach_segments(
     target_xyz_m: np.ndarray,
     approach: str = "top_down",
     travel_duration_sec: float = 1.5,
+    mode: str = "real",
 ) -> list[MotionSegment]:
     """Plan the joint-space segments that bring the grasp site to ``target_xyz_m``.
 
@@ -53,6 +55,7 @@ def plan_approach_segments(
         target_xyz_m: Target grasp-site position (metres).
         approach: IK approach mode ('top_down' or 'horizontal').
         travel_duration_sec: Duration of the (single or travel) segment.
+        mode: Operational mode ('real' or 'sim') for table height resolution.
 
     Returns:
         Ordered list of MotionSegment, never empty.
@@ -62,13 +65,16 @@ def plan_approach_segments(
     site = ik.forward_kinematics(current)
     gripper = float(current[5]) if len(current) >= 6 else 0.0
 
+    low_pose_z = table_height_to_robot_z_m(LOW_POSE_Z_M, mode=mode)
+    safe_travel_z = table_height_to_robot_z_m(SAFE_TRAVEL_Z_M, mode=mode)
+
     waypoints: list[tuple[np.ndarray, float]] = []
     far = math.hypot(target[0] - site[0], target[1] - site[1]) > LOCAL_MOVE_XY_M
-    if site[2] < LOW_POSE_Z_M and far:
-        waypoints.append((np.array([site[0], site[1], SAFE_TRAVEL_Z_M]), 1.0))
-        travel = np.array([target[0], target[1], max(float(target[2]), SAFE_TRAVEL_Z_M)])
+    if site[2] < low_pose_z and far:
+        waypoints.append((np.array([site[0], site[1], safe_travel_z]), 1.0))
+        travel = np.array([target[0], target[1], max(float(target[2]), safe_travel_z)])
         waypoints.append((travel, travel_duration_sec))
-        if target[2] < SAFE_TRAVEL_Z_M:
+        if target[2] < safe_travel_z:
             waypoints.append((target, 1.0))
     else:
         waypoints.append((target, travel_duration_sec))
