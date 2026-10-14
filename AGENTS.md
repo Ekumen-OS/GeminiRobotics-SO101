@@ -12,12 +12,11 @@
   - `tools/`: Operator utilities including printable calibration sheets and interactive setup wizard.
   - `ui/`: Unified FastAPI and Gradio 6.0 web application with 3D Three.js simulation viewer.
   - `tests/`: Automated unit, characterization, and end-to-end verification suites organized by subject.
-- **MuJoCo & Warp**: See MuJoCo documentation and [simulation/simulate.py](simulation/simulate.py) for standard simulation loops. For GPU/CPU batched simulation, reference [simulation/warp_env.py](simulation/warp_env.py), `google-deepmind/mujoco_warp`, and NVIDIA Warp docs.
 
 ## 2. Environment (`uv`)
 
 - **Activate Virtualenv**: At start of every command execution, make sure to run `source .venv/bin/activate`
-- **Run Commands**: Prefer executing application servers, tests, scripts, and linters via `uv run` (e.g., `uv run python main.py` to start the Web UI server at `http://localhost:7860/`, `uv run ruff check .`, `uv run python main.py --task check_environment`, `uv run python main.py --task test_simulation`, `uv run python test_live.py`).
+- **Run Commands**: Prefer executing application servers, tests, scripts, and linters via `uv run` (e.g., `uv run python main.py` to start the Web UI server at `http://localhost:7860/`, `uv run ruff check .`, `uv run python main.py --task check_environment`).
 - **Sync Dependencies**: `uv sync --all-extras`
 - **Server Lifecycle and Port Management**: Before launching the Web UI server (default port `7860`), ALWAYS verify that the port is free (`lsof -ti :7860`). If it is not available, kill the occupying process (`lsof -ti :7860 | xargs kill -9`) to avoid binding collisions or stale code caching. Start the server, test/inspect changes, and **ALWAYS terminate/kill the server process immediately when done** so the port is free for the user to run and use the application.
 
@@ -73,4 +72,4 @@
 
 ## 5. External Repo Info (`gh`)
 
-- You are authorized and encouraged to use the GitHub CLI (`gh`) to query external repositories, docs, issues, and PRs (e.g., `gh repo view google-deepmind/mujoco_warp`).
+- You are authorized and encouraged to use the GitHub CLI (`gh`) to query external repositories, docs, issues, and PRs (e.g., `gh repo view google-deepmind/mujoco`).
