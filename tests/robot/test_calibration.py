@@ -402,16 +402,20 @@ def test_f2_homography_lateral_y_parity_and_red_cube_grounding(
 def test_f3_image_point_to_xyz_mode_routing() -> None:
     """Validate active robot mode context routing in agent.tools.image_point_to_xyz."""
     from agent.tools import image_point_to_xyz
+
+    # 1. Explicit mode argument
+    from robot.settings import get_settings
     from simulation.sim_robot import SO101Robot
     from ui.state import set_active_robot
 
-    # 1. Explicit mode argument
     pt = [760.0, 484.0]
     xyz_sim = image_point_to_xyz(pt, hover_z=0.03, mode="sim")
     xyz_real = image_point_to_xyz(pt, hover_z=0.03, mode="real")
+    table_x, table_y, table_z = get_settings().get_table_offset_mm("real")
+    expected_real = xyz_sim + np.array([table_x / 1000.0, table_y / 1000.0, table_z / 1000.0])
     assert 0.12 <= xyz_sim[1] <= 0.17
-    assert 0.12 <= xyz_real[1] <= 0.17
-    np.testing.assert_allclose(xyz_sim, xyz_real, atol=2e-3)
+    assert 0.12 + (table_y / 1000.0) <= xyz_real[1] <= 0.17 + (table_y / 1000.0)
+    np.testing.assert_allclose(xyz_real, expected_real, atol=2e-3)
 
     # 2. Dynamic resolution from active robot in simulation
     sim_robot = SO101Robot(render_viewer=False)
