@@ -53,7 +53,16 @@ def _first_import_gl(module: str, **env_overrides: str) -> str:
     return line.split("=", 1)[1]
 
 
-@pytest.mark.parametrize("module", ["robot", "simulation", "vision", "ui"])
+@pytest.mark.parametrize(
+    "module",
+    [
+        "robot.cartesian_ik",
+        "simulation.sim_robot",
+        "vision.sim_runtime",
+        "ui.app",
+        "main",
+    ],
+)
 def test_headless_linux_selects_egl_before_mujoco_is_imported(module: str) -> None:
     """Without a display, importing the package must pick EGL before MuJoCo loads."""
     assert _first_import_gl(module) == "egl"
@@ -61,4 +70,4 @@ def test_headless_linux_selects_egl_before_mujoco_is_imported(module: str) -> No
 
 def test_desktop_session_keeps_mujoco_default_backend() -> None:
     """With a display available, the default (GLFW) backend must be left alone."""
-    assert _first_import_gl("robot", DISPLAY=":0") == "None"
+    assert _first_import_gl("robot.cartesian_ik", DISPLAY=":0") == "None"

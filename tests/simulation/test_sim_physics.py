@@ -21,7 +21,7 @@ class _Scene:
     """A SO101Robot plus cube access and IK helpers for the physics tests."""
 
     def __init__(self) -> None:
-        self.robot = SO101Robot(render_viewer=False)
+        self.robot = SO101Robot()
         self.ik = CartesianIK()
         self._adr = self.robot.model.jnt_qposadr[self.robot.model.joint("target_joint").id]
 

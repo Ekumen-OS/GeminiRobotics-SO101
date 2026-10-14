@@ -268,7 +268,7 @@ def test_sim_robot_camera_rendering() -> None:
     """Test SO101Robot rendering from workspace_cam in MuJoCo simulation."""
     from simulation.sim_robot import SO101Robot
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     try:
         try:
             frame = robot.render_rgb_frame(width=640, height=480, camera="workspace_cam")
@@ -301,7 +301,7 @@ def test_sim_spatial_point_execution() -> None:
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
-    robot = SO101Robot(render_viewer=False)
+    robot = SO101Robot()
     robot.reset("HOME")
 
     try:
@@ -418,7 +418,7 @@ def test_f3_image_point_to_xyz_mode_routing() -> None:
     np.testing.assert_allclose(xyz_real, expected_real, atol=2e-3)
 
     # 2. Dynamic resolution from active robot in simulation
-    sim_robot = SO101Robot(render_viewer=False)
+    sim_robot = SO101Robot()
     try:
         set_active_robot(sim_robot)
         xyz_auto = image_point_to_xyz(pt, hover_z=0.03)
