@@ -45,7 +45,13 @@ from robot.interface import RobotInterface
 from robot.logger import log_compat, log_with_tag
 from robot.perception import compute_alignment_mm
 from robot.registry import get_active_robot, set_active_robot
-from robot.settings import get_settings
+from robot.settings import (
+    get_settings,
+    robot_to_table_xy_mm,
+    robot_z_to_table_height_mm,
+    table_height_to_robot_z_m,
+    table_to_robot_xy_mm,
+)
 from robot.vision_detector import color_from_label, refine_point_to_nearest_object
 from vision import get_calibrator, get_model_targets, set_model_targets
 from vision.gripper_locator import locate_jaw_xy_mm
@@ -195,8 +201,11 @@ def image_point_to_xyz(
     """
     active_mode = resolve_robot_mode(get_active_robot(), mode)
     calib = _ready_calibrator(active_mode)
+    robot_z = table_height_to_robot_z_m(hover_z, active_mode)
 
-    return calib.gemini_to_robot_xyz(point, img_shape=img_shape, z_m=hover_z)
+    table_xyz = calib.gemini_to_robot_xyz(point, img_shape=img_shape, z_m=robot_z)
+    robot_xy = table_to_robot_xy_mm(table_xyz[0] * 1000.0, table_xyz[1] * 1000.0, mode=active_mode)
+    return np.array([robot_xy[0] / 1000.0, robot_xy[1] / 1000.0, robot_z], dtype=np.float64)
 
 
 def validate_and_clamp_joints(qpos_deg: list[float]) -> tuple[list[float], list[str]]:
@@ -841,6 +850,7 @@ def _locate_jaw(
             ctx.robot.get_joint_positions(),
             tag_offset_mm=get_settings().gripper_tag_local_offset_mm,
             ik=_get_ik_solver(),
+            mode=mode,
         )
         if located is not None:
             return JawReading([located.xy_mm[0], located.xy_mm[1]], "aruco", er2_point)
@@ -947,11 +957,42 @@ def _ready_calibrator(mode: str) -> Any:
     return calib
 
 
-def _table_xy_mm(calib: Any, point_1000: list[float]) -> tuple[float, float]:
+def _table_xy_mm(
+    calib: Any, point_1000: list[float], mode: str | None = None
+) -> tuple[float, float]:
     """Map a normalised image point to robot-frame table XY (mm) through the homography."""
+    if mode is None:
+        if getattr(calib, "mode", None) == "sim":
+            mode = "sim"
+        else:
+            mode = resolve_robot_mode(get_active_robot())
     px, py = calib.gemini_to_pixel(point_1000)
     xy = calib.pixel_to_robot_mm(px, py)
-    return float(xy[0]), float(xy[1])
+    return table_to_robot_xy_mm(float(xy[0]), float(xy[1]), mode=mode)
+
+
+def _project_site_to_image_str(calib: Any, table_xy_mm: tuple[float, float]) -> str:
+    """Format projection of table-plane XY coordinates to camera image string."""
+    if calib is None or not getattr(calib, "is_calibrated", False):
+        return "image [uncalibrated]"
+    try:
+        proj_px = calib.robot_mm_to_pixel(table_xy_mm[0], table_xy_mm[1])
+        if (
+            proj_px is not None
+            and isinstance(proj_px, (tuple, list, np.ndarray))
+            and len(proj_px) >= 2
+            and isinstance(proj_px[0], (int, float, np.floating, np.integer))
+            and isinstance(proj_px[1], (int, float, np.floating, np.integer))
+        ):
+            proj_y_1000 = float((proj_px[1] / 480.0) * 1000.0)
+            proj_x_1000 = float((proj_px[0] / 640.0) * 1000.0)
+            return (
+                f"image [{proj_y_1000:.0f}, {proj_x_1000:.0f}] "
+                f"(px [{float(proj_px[0]):.1f}, {float(proj_px[1]):.1f}])"
+            )
+        return "image [out of bounds]"
+    except (TypeError, ValueError, AttributeError):
+        return "image [out of bounds]"
 
 
 def _resolve_lock(
@@ -962,6 +1003,7 @@ def _resolve_lock(
     label: Any,
     calib: Any,
     frame_rgb: np.ndarray,
+    mode: str | None = None,
 ) -> TargetLock | dict[str, Any] | None:
     """Match the request to the active lock, re-acquire a stale one, or lock a new object.
 
@@ -978,6 +1020,7 @@ def _resolve_lock(
         label: Optional model label (colour word).
         calib: Workspace calibrator.
         frame_rgb: The frame captured before the move (the lock never uses a later one).
+        mode: Operational mode ('real' or 'sim').
 
     Returns:
         The TargetLock, an error dictionary (``target_ambiguous``), or None when there is no
@@ -986,13 +1029,15 @@ def _resolve_lock(
     Raises:
         PerceptionUnavailable: If the frame is missing or detection fails.
     """
-    request_xy = _table_xy_mm(calib, point)
+    if mode is None:
+        mode = getattr(ctx, "mode", None) or resolve_robot_mode(getattr(ctx, "robot", None))
+    request_xy = _table_xy_mm(calib, point, mode=mode)
     lock = state.target
     if lock is not None and lock.distance_to_mm(request_xy) <= LOCK_MATCH_RADIUS_MM:
         if not lock.stale:
             return lock
         # Missed and re-opened: refresh the footprint near the old centre, keep c_mm/counters.
-        refreshed = _detect_footprint(frame_rgb, lock.centre_1000, lock.color, calib)
+        refreshed = _detect_footprint(frame_rgb, lock.centre_1000, lock.color, calib, mode=mode)
         if refreshed is not None and (
             lock.distance_to_mm(refreshed["centre_xy_mm"]) <= LOCK_MATCH_RADIUS_MM
         ):
@@ -1010,7 +1055,7 @@ def _resolve_lock(
             return lock
         # The object is gone from where it was: fall through to a fresh lock.
 
-    found = _detect_footprint(frame_rgb, point, color_from_label(label), calib)
+    found = _detect_footprint(frame_rgb, point, color_from_label(label), calib, mode=mode)
     if found is None:
         return None
 
@@ -1065,7 +1110,11 @@ def _resolve_lock(
 
 
 def _detect_footprint(
-    frame_rgb: np.ndarray, point: list[float], color: str | None, calib: Any
+    frame_rgb: np.ndarray,
+    point: list[float],
+    color: str | None,
+    calib: Any,
+    mode: str = "real",
 ) -> dict[str, Any] | None:
     """Detect the object near ``point`` in ``frame_rgb`` and return its footprint, or None."""
     try:
@@ -1076,9 +1125,12 @@ def _detect_footprint(
         raise PerceptionUnavailable(f"Visual refinement failed: {e}", robot_moved=False) from e
     if obj is None or "centre_xy_mm" not in obj:
         return None
+    centre_robot_xy = table_to_robot_xy_mm(
+        float(obj["centre_xy_mm"][0]), float(obj["centre_xy_mm"][1]), mode=mode
+    )
     return {
         "color": obj["color"],
-        "centre_xy_mm": obj["centre_xy_mm"],
+        "centre_xy_mm": (float(centre_robot_xy[0]), float(centre_robot_xy[1])),
         "centre_1000": obj["centre_1000"],
         "bbox_px": obj["bbox_px"],
         "width_mm": obj.get("width_mm"),
@@ -1202,8 +1254,13 @@ def _move_site(
     Returns:
         Tuple of (executed joint angles in degrees, clamp warnings).
     """
+    mode = getattr(robot, "mode", "real")
     segments = plan_approach_segments(
-        _get_ik_solver(), robot.get_joint_positions(), target_xyz, approach=approach
+        _get_ik_solver(),
+        robot.get_joint_positions(),
+        target_xyz,
+        approach=approach,
+        mode=mode,
     )
     warnings: list[str] = []
     clamped_segments: list[MotionSegment] = []
@@ -1307,7 +1364,9 @@ def _approach_move(
         # One frame, captured before any motion, is the only evidence the lock is built from.
         frame0 = _decode_frame(ctx.get_latest_jpeg_fn(), "target refinement", robot_moved=False)
         calib = _ready_calibrator(mode)
-        resolved = _resolve_lock(ctx, state, epoch, point, args.get("label"), calib, frame0)
+        resolved = _resolve_lock(
+            ctx, state, epoch, point, args.get("label"), calib, frame0, mode=mode
+        )
         if isinstance(resolved, dict):
             return resolved
         lock = resolved
@@ -1326,7 +1385,8 @@ def _approach_move(
 
     if lock is not None:
         x_mm, y_mm = lock.commanded_xy_mm()
-        target_xyz = np.array([x_mm / 1000.0, y_mm / 1000.0, z_height_cm / 100.0])
+        target_z = table_height_to_robot_z_m(z_height_cm / 100.0, mode)
+        target_xyz = np.array([x_mm / 1000.0, y_mm / 1000.0, target_z])
         matched_obj = {"color": lock.color} if lock.color else None
         overlay_point = lock.centre_1000
     else:
@@ -1345,17 +1405,79 @@ def _approach_move(
     clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
     t_motion_end = time.monotonic()
 
+    actual_site_m = _site_xyz(robot)
+    actual_site_mm = actual_site_m * 1000.0
+    actual_table_z_mm = robot_z_to_table_height_mm(actual_site_mm[2], mode=mode)
+    actual_table_xy_mm = robot_to_table_xy_mm(actual_site_mm[0], actual_site_mm[1], mode=mode)
+    dx_mm = actual_site_mm[0] - (target_xyz[0] * 1000.0)
+    dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
+    dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)
+
+    active_calib = calib if calib is not None else get_calibrator(mode=mode)
+    proj_str = _project_site_to_image_str(
+        active_calib, (actual_table_xy_mm[0], actual_table_xy_mm[1])
+    )
+
+    log_with_tag(
+        logger,
+        "EXEC",
+        f"move_to_spatial_point reached: FK XYZ "
+        f"[{actual_site_m[0]:.3f}, {actual_site_m[1]:.3f}, {actual_site_m[2]:.3f}] "
+        f"(table Z={actual_table_z_mm / 10.0:.1f}cm, "
+        f"table XY [{actual_table_xy_mm[0]:.1f}, {actual_table_xy_mm[1]:.1f}]mm) "
+        f"→ {proj_str} | error: dX={dx_mm:+.1f}mm dY={dy_mm:+.1f}mm dZ={dz_mm:+.1f}mm",
+    )
+
     perception: AlignmentMeasurement | None = None
     jaw: JawReading | None = None
     has_frames = ctx.get_latest_jpeg_fn is not None or ctx.get_fresh_jpeg_fn is not None
-    if lock is not None and has_frames:
-        perception, jaw, _ = _measure_alignment(lock, ctx, calib, mode, t_motion_end)
-        if perception is None:
-            warnings = [
-                *warnings,
-                "Alignment not measured: no camera frame newer than the end of the motion "
-                "arrived in time.",
-            ]
+    if has_frames and active_calib is not None:
+        if lock is not None:
+            perception, jaw, _ = _measure_alignment(lock, ctx, active_calib, mode, t_motion_end)
+            if perception is None:
+                warnings = [
+                    *warnings,
+                    "Alignment not measured: no camera frame newer than the end of the motion "
+                    "arrived in time.",
+                ]
+            elif (gripper_xy := perception["gripper_xy_mm"]) is not None and (
+                offset_val := perception["measured_offset"]
+            ) is not None:
+                log_with_tag(
+                    logger,
+                    "ALIGN",
+                    f"target [{perception['target_xy_mm'][0]:.1f}, "
+                    f"{perception['target_xy_mm'][1]:.1f}]mm vs "
+                    f"jaw ({jaw.source if jaw else 'none'}) "
+                    f"[{gripper_xy[0]:.1f}, "
+                    f"{gripper_xy[1]:.1f}]mm "
+                    f"→ dx={offset_val['dx_mm']:+.1f}mm dy={offset_val['dy_mm']:+.1f}mm "
+                    f"(dist={offset_val['distance_mm']:.1f}mm, "
+                    f"aligned={perception['is_aligned']})",
+                )
+        else:
+            raw_jpeg = _fresh_jpeg(ctx, t_motion_end)
+            if raw_jpeg is not None:
+                try:
+                    frame_rgb = _decode_frame(raw_jpeg, "jaw verification", robot_moved=True)
+                    jaw = _locate_jaw(ctx, active_calib, frame_rgb, raw_jpeg, mode)
+                    if jaw is not None and jaw.source == "aruco" and jaw.xy_mm is not None:
+                        jaw_table_xy = robot_to_table_xy_mm(jaw.xy_mm[0], jaw.xy_mm[1], mode=mode)
+                        log_with_tag(
+                            logger,
+                            "PERCEPTION",
+                            f"Jaw tag ID 10 detected: robot XY [{jaw.xy_mm[0]:.1f}, "
+                            f"{jaw.xy_mm[1]:.1f}]mm (table XY [{jaw_table_xy[0]:.1f}, "
+                            f"{jaw_table_xy[1]:.1f}]mm)",
+                        )
+                    else:
+                        log_with_tag(
+                            logger,
+                            "PERCEPTION",
+                            "Jaw tag ID 10 not detected in camera frame",
+                        )
+                except PerceptionUnavailable:
+                    pass
 
     # The correction this move was commanded with (before it is updated from this measurement).
     applied_correction = [lock.c_mm[0], lock.c_mm[1]] if lock is not None else None
@@ -1497,7 +1619,8 @@ def _lift(
     requested_z_cm = z_height_cm
     z_height_cm = max(z_height_cm, MIN_LIFT_HEIGHT_CM)
     site = _site_xyz(robot)
-    target_xyz = np.array([site[0], site[1], z_height_cm / 100.0])
+    target_z = table_height_to_robot_z_m(z_height_cm / 100.0, mode)
+    target_xyz = np.array([site[0], site[1], target_z])
     log_with_tag(
         logger,
         "EXEC",
@@ -1506,6 +1629,14 @@ def _lift(
     )
     clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
     t_motion_end = time.monotonic()
+    lift_site = _site_xyz(robot)
+    lift_site_table_mm = robot_z_to_table_height_mm(lift_site[2] * 1000.0, mode)
+    log_with_tag(
+        logger,
+        "EXEC",
+        f"lift reached: FK XYZ [{lift_site[0]:.3f}, {lift_site[1]:.3f}, {lift_site[2]:.3f}] "
+        f"(table Z={lift_site_table_mm / 10.0:.1f}cm)",
+    )
 
     grasp = classify_grasp(robot.read_gripper_state(), get_settings())
     has_frames = ctx.get_latest_jpeg_fn is not None or ctx.get_fresh_jpeg_fn is not None
@@ -1516,9 +1647,11 @@ def _lift(
             raw = _fresh_jpeg(ctx, t_motion_end)
             frame_rgb = _decode_frame(raw, "visual verification", True)
             lift_site = _site_xyz(robot)
-            grasp_z = state.grasp_z_mm if state.grasp_z_mm is not None else 0.0
+            default_grasp_z = table_height_to_robot_z_m(0.0, mode) * 1000.0
+            grasp_z = state.grasp_z_mm if state.grasp_z_mm is not None else default_grasp_z
             dz_mm = (lift_site[2] * 1000.0) - grasp_z
-            lift_height_mm = max(dz_mm, lift_site[2] * 1000.0, MIN_LIFT_HEIGHT_CM * 10.0)
+            lift_site_table_mm = robot_z_to_table_height_mm(lift_site[2] * 1000.0, mode)
+            lift_height_mm = max(dz_mm, lift_site_table_mm, MIN_LIFT_HEIGHT_CM * 10.0)
             vote = vision_vote(frame_rgb, state.target, calib, lift_height_mm=lift_height_mm)
         except PerceptionUnavailable:
             vote = "unavailable"
@@ -1611,6 +1744,27 @@ def _transport_move(
     )
     _update_target_overlay(point, z_height_cm, approach, args.get("label") or "DESTINATION", None)
     clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
+
+    actual_site_m = _site_xyz(robot)
+    actual_site_mm = actual_site_m * 1000.0
+    actual_table_z_mm = robot_z_to_table_height_mm(actual_site_mm[2], mode=mode)
+    actual_table_xy_mm = robot_to_table_xy_mm(actual_site_mm[0], actual_site_mm[1], mode=mode)
+    dx_mm = actual_site_mm[0] - (target_xyz[0] * 1000.0)
+    dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
+    dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)
+
+    calib = get_calibrator(mode=mode)
+    proj_str = _project_site_to_image_str(calib, (actual_table_xy_mm[0], actual_table_xy_mm[1]))
+
+    log_with_tag(
+        logger,
+        "EXEC",
+        f"transport reached: FK XYZ "
+        f"[{actual_site_m[0]:.3f}, {actual_site_m[1]:.3f}, {actual_site_m[2]:.3f}] "
+        f"(table Z={actual_table_z_mm / 10.0:.1f}cm, "
+        f"table XY [{actual_table_xy_mm[0]:.1f}, {actual_table_xy_mm[1]:.1f}]mm) "
+        f"→ {proj_str} | error: dX={dx_mm:+.1f}mm dY={dy_mm:+.1f}mm dZ={dz_mm:+.1f}mm",
+    )
 
     dropped = _recheck_hold(robot, state, epoch)
 
