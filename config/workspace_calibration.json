@@ -24,12 +24,5 @@
       "x": 380.0,
       "y": 190.0
     }
-  },
-  "default_hover_z_mm": 30.0,
-  "default_grasp_z_mm": 5.0,
-  "default_destination_bin_xyz_mm": {
-    "x": 180,
-    "y": 250,
-    "z": 30
   }
 }

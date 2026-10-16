@@ -31,8 +31,8 @@
 
 - **Testing Guidelines**:
   - Run the full test suite with `uv run pytest tests/ -v` (physics-heavy scenarios marked `slow` are excluded by default; run them with `uv run pytest -m slow -s`).
-  - Run test coverage across core modules: `uv run pytest tests/ -q --cov=robot --cov=vision --cov=agent --cov-report=term-missing` (enforces `--cov-fail-under=78`).
-  - **Pre-push Hook**: The pre-push hook runs `uv run pytest -q -m "" --cov=robot --cov=vision --cov=agent` (executing all tests, slow ones included, with the 78% coverage gate, taking ~70 s).
+  - Run test coverage across core modules: `uv run pytest tests/ -q --cov=robot --cov=vision --cov=agent --cov-fail-under=78 --cov-report=term-missing`.
+  - **Pre-push Hook**: The pre-push hook runs `uv run pytest -q -m "" --cov=robot --cov=vision --cov=agent --cov-fail-under=78` (executing all tests, slow ones included, with the 78% coverage gate, taking ~70 s).
   - All new features and bug fixes must have corresponding unit or integration tests in `tests/` (`tests/ui/test_ui.py`, `tests/agent/test_vla_controller.py`, `tests/agent/test_tools.py`, `tests/robot/test_calibration.py`, `tests/robot/test_cartesian_ik.py`, `tests/robot/test_perception.py`, etc.).
   - Mock Gemini Live WebSocket sessions and external hardware appropriately so test suites execute fast, reliably, and deterministically without network dependencies.
   - Confirm 100% pass rate before committing or reporting milestone completion.
