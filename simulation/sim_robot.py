@@ -81,6 +81,7 @@ class SO101Robot(RobotInterface):
         self._stop_requested = False
         self.interrupt_epoch = 0
         self._offscreen_warned = False
+        self._commanded_qpos = self.get_joint_positions().copy()
 
         # Dynamically synchronize marker positions and workspace bounds from JSON config
         self.apply_workspace_calibration_config()
@@ -226,6 +227,7 @@ class SO101Robot(RobotInterface):
         """
         with self._sim_lock:
             assert len(qpos) == len(self.actuator_ids), f"Expected {len(self.actuator_ids)} values"
+            self._commanded_qpos = np.asarray(qpos, dtype=np.float64).copy()
             for i, act_id in enumerate(self.actuator_ids):
                 self.data.ctrl[act_id] = qpos[i]
             limit = len(self.joint_ids) if snap_gripper else len(self.joint_ids) - 1
@@ -247,6 +249,15 @@ class SO101Robot(RobotInterface):
                 qpos_adr = self.model.jnt_qposadr[j_id]
                 pos_list.append(self.data.qpos[qpos_adr])
             return np.array(pos_list)
+
+    def get_commanded_joint_positions(self) -> np.ndarray:
+        """Return the last commanded joint positions in radians.
+
+        Returns:
+            A numpy array of commanded joint positions in radians.
+        """
+        with self._sim_lock:
+            return self._commanded_qpos.copy()
 
     def read_gripper_state(self) -> GripperReading:
         """Read measured gripper state from MuJoCo physics simulation.
@@ -338,6 +349,8 @@ class SO101Robot(RobotInterface):
             raise HardwareError("Motion interrupted", robot_moved=False)
         self._stop_requested = False
         target_qpos = np.asarray(target_qpos, dtype=np.float64)
+        with self._sim_lock:
+            self._commanded_qpos = target_qpos.copy()
         start_qpos = self.get_joint_positions()
         num_steps = max(1, int(duration_sec / dt))
         sim_steps = max(1, int(round(dt / self.model.opt.timestep)))

@@ -188,7 +188,6 @@ def test_real_mode_placeholder_frame_fails_closed_flipped() -> None:
     with _global_frame_lock:
         frames_mod._global_latest_raw_frame = None
         frames_mod._global_latest_annotated_frame = None
-        frames_mod._global_latest_frame = None
 
     robot = MockRobot()  # cannot render (real-like)
     set_active_robot(robot)

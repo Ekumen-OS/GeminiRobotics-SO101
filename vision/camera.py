@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 import cv2
 
@@ -119,17 +118,6 @@ def _is_v4l2_video_capture_node(dev_node: Path) -> bool | None:
     return bool(caps & (_V4L2_CAP_VIDEO_CAPTURE | _V4L2_CAP_VIDEO_CAPTURE_MPLANE))
 
 
-def __getattr__(name: str) -> Any:
-    """Dynamically resolve stream constants from central Settings."""
-    if name == "STREAM_TARGET_FPS":
-        return get_settings().stream_fps
-    if name == "STREAM_FRAME_WIDTH":
-        return get_settings().stream_width
-    if name == "STREAM_FRAME_HEIGHT":
-        return get_settings().stream_height
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
 def _enumerate_cameras_macos() -> list[tuple[str, int]]:
     """Enumerate hardware camera devices on macOS via AVFoundation sorted by uniqueID.
 
@@ -197,15 +185,6 @@ def _enumerate_cameras_linux() -> list[tuple[str, int]]:
     return choices
 
 
-def _enumerate_cameras_windows() -> list[tuple[str, int]]:
-    """Enumerate video capture devices on Windows using active hardware probing.
-
-    Returns:
-        List of tuples containing formatted dropdown labels and device index integers.
-    """
-    return _enumerate_cameras_fallback()
-
-
 def _enumerate_cameras_fallback() -> list[tuple[str, int]]:
     """Probe video capture hardware indices as a cross-platform fallback.
 
@@ -236,8 +215,6 @@ def get_available_camera_choices() -> list[tuple[str, int]]:
         choices = _enumerate_cameras_macos()
     elif sys.platform.startswith("linux"):
         choices = _enumerate_cameras_linux()
-    elif sys.platform == "win32":
-        choices = _enumerate_cameras_windows()
     else:
         choices = _enumerate_cameras_fallback()
 
@@ -245,7 +222,6 @@ def get_available_camera_choices() -> list[tuple[str, int]]:
         _device_names[-2] = "No cameras detected"
         choices.append(("🚫 No cameras detected (Connect device and click Refresh)", -2))
 
-    choices.append(("Synthetic Mock Test Feed", -1))
     return choices
 
 
@@ -298,13 +274,11 @@ def get_camera_name(index: int) -> str:
     """Retrieve the localized hardware device name for a given camera index.
 
     Args:
-        index: Integer camera index or sentinel status value (-1 for mock, -2 for none).
+        index: Integer camera index or sentinel status value (-2 for none).
 
     Returns:
         Human-readable hardware camera name or status string.
     """
-    if index == -2:
-        return "No Cameras Detected"
     if index < 0:
-        return "Synthetic Mock Test Feed"
+        return "No Cameras Detected"
     return _device_names.get(index, f"Hardware Camera Index {index}")

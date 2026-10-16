@@ -205,24 +205,6 @@
     controls.maxDistance = 2.5;
     controls.maxPolarAngle = Math.PI / 2 + 0.05; // Don't go below ground
 
-    // Expose camera and helper in browser console
-    window.camera = camera;
-    window.controls = controls;
-    window.getCameraPose = function () {
-      const p = camera.position;
-      const t = controls.target;
-      const code = `const defaultCamPos = new THREE.Vector3(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)});\nconst defaultCamTarget = new THREE.Vector3(${t.x.toFixed(3)}, ${t.y.toFixed(3)}, ${t.z.toFixed(3)});`;
-      console.log('%c📸 Current 3D Camera Pose (Ready to Paste):', 'color: #38bdf8; font-weight: bold; font-size: 13px;');
-      console.log(code);
-      return { position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] };
-    };
-
-    controls.addEventListener('end', () => {
-      const p = camera.position;
-      const t = controls.target;
-      console.log(`[Camera] pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) | target: (${t.x.toFixed(3)}, ${t.y.toFixed(3)}, ${t.z.toFixed(3)})`);
-    });
-
     // Lighting (Studio Dark Lighting)
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
     scene.add(ambientLight);
@@ -266,7 +248,7 @@
     gridHelper.position.z = 0.001;
     scene.add(gridHelper);
 
-    // Manipulation Target Cube (from scene.xml: pos="0.18 0.0 0.015" size="0.015 0.015 0.015")
+    // Manipulation Target Cube (pose populated from /api/sim_state)
     const targetGeo = new THREE.BoxGeometry(0.03, 0.03, 0.03);
     const targetMat = new THREE.MeshStandardMaterial({
       color: 0xef4444,
@@ -277,7 +259,7 @@
     const targetCube = new THREE.Mesh(targetGeo, targetMat);
     targetCube.castShadow = true;
     targetCube.receiveShadow = true;
-    targetCube.position.set(0.18, 0.0, 0.015);
+    targetCube.visible = false;
     scene.add(targetCube);
 
     // -------------------------------------------------------------
@@ -285,8 +267,6 @@
     // -------------------------------------------------------------
     const workspaceGroup = new THREE.Group();
     scene.add(workspaceGroup);
-
-    let lastWorkspaceConfigStr = "";
 
     function createMarkerTexture(markerId) {
       const canvas = document.createElement('canvas');
@@ -343,10 +323,7 @@
     }
 
     function updateWorkspaceVisuals(config) {
-      if (!config || !config.workspace_corners_mm) return;
-      const configStr = JSON.stringify(config);
-      if (configStr === lastWorkspaceConfigStr) return;
-      lastWorkspaceConfigStr = configStr;
+      if (!config || !config.workspace_corners_mm || !config.marker_ids) return;
 
       try {
         while (workspaceGroup.children.length > 0) {
@@ -355,10 +332,11 @@
         }
 
         const corners = config.workspace_corners_mm;
-        const tl = corners.top_left || { x: 380, y: 130 };
-        const tr = corners.top_right || { x: 380, y: -250 };
-        const br = corners.bottom_right || { x: 35, y: -250 };
-        const bl = corners.bottom_left || { x: 35, y: 130 };
+        const tl = corners.top_left;
+        const tr = corners.top_right;
+        const br = corners.bottom_right;
+        const bl = corners.bottom_left;
+        if (!tl || !tr || !br || !bl) return;
 
         const x_tl = tl.x / 1000, y_tl = tl.y / 1000;
         const x_tr = tr.x / 1000, y_tr = tr.y / 1000;
@@ -371,7 +349,7 @@
         const sizeY = Math.abs(y_tl - y_tr);
 
         const markerSize = (config.marker_size_mm || 30.0) / 1000;
-        const markerIds = config.marker_ids || { top_left: 0, top_right: 1, bottom_right: 2, bottom_left: 3 };
+        const markerIds = config.marker_ids;
 
         // 1. Semi-transparent workspace mat plane
         const matGeo = new THREE.PlaneGeometry(sizeX, sizeY);
@@ -412,10 +390,10 @@
 
         // 3. 4 ArUco Corner Markers
         const cornerList = [
-          { name: "Top-Left", id: markerIds.top_left ?? 0, x: x_tl, y: y_tl },
-          { name: "Top-Right", id: markerIds.top_right ?? 1, x: x_tr, y: y_tr },
-          { name: "Bottom-Right", id: markerIds.bottom_right ?? 2, x: x_br, y: y_br },
-          { name: "Bottom-Left", id: markerIds.bottom_left ?? 3, x: x_bl, y: y_bl }
+          { name: "Top-Left", id: markerIds.top_left, x: x_tl, y: y_tl },
+          { name: "Top-Right", id: markerIds.top_right, x: x_tr, y: y_tr },
+          { name: "Bottom-Right", id: markerIds.bottom_right, x: x_br, y: y_br },
+          { name: "Bottom-Left", id: markerIds.bottom_left, x: x_bl, y: y_bl }
         ];
 
         cornerList.forEach(c => {
@@ -446,20 +424,8 @@
       }
     }
 
-    // Initial default layout while fetching config
-    updateWorkspaceVisuals({
-      workspace_corners_mm: {
-        top_left: { x: 380, y: 130 },
-        top_right: { x: 380, y: -250 },
-        bottom_right: { x: 35, y: -250 },
-        bottom_left: { x: 35, y: 130 }
-      },
-      marker_size_mm: 30.0,
-      marker_ids: { top_left: 0, top_right: 1, bottom_right: 2, bottom_left: 3 }
-    });
-
     // -------------------------------------------------------------
-    // 17 EXACT MUJOCO VISUAL GEOMS SETUP
+    // MUJOCO VISUAL GEOMS (lazily populated from /api/sim_state)
     // -------------------------------------------------------------
     const matPrinted = new THREE.MeshStandardMaterial({
       color: 0xf8fafc,
@@ -477,121 +443,89 @@
       metalness: 0.15
     });
 
-    // Exact list of 17 visual geom meshes in scene.xml order
-    const geomList = [
-      { id: 0, mesh: "base_motor_holder_so101_v1.stl", is_servo: false },
-      { id: 1, mesh: "base_so101_v2.stl", is_servo: false },
-      { id: 2, mesh: "sts3215_03a_v1.stl", is_servo: true },
-      { id: 3, mesh: "waveshare_mounting_plate_so101_v2.stl", is_servo: false },
-      { id: 4, mesh: "sts3215_03a_v1.stl", is_servo: true },
-      { id: 5, mesh: "motor_holder_so101_base_v1.stl", is_servo: false },
-      { id: 6, mesh: "rotation_pitch_so101_v1.stl", is_servo: false },
-      { id: 7, mesh: "sts3215_03a_v1.stl", is_servo: true },
-      { id: 8, mesh: "upper_arm_so101_v1.stl", is_servo: false },
-      { id: 9, mesh: "under_arm_so101_v1.stl", is_servo: false },
-      { id: 10, mesh: "motor_holder_so101_wrist_v1.stl", is_servo: false },
-      { id: 11, mesh: "sts3215_03a_v1.stl", is_servo: true },
-      { id: 12, mesh: "sts3215_03a_no_horn_v1.stl", is_servo: true },
-      { id: 13, mesh: "wrist_roll_pitch_so101_v2.stl", is_servo: false },
-      { id: 14, mesh: "sts3215_03a_v1.stl", is_servo: true },
-      { id: 15, mesh: "wrist_roll_follower_so101_v1.stl", is_servo: false },
-      { id: 16, mesh: "moving_jaw_so101_v1.stl", is_servo: false, is_jaw: true }
-    ];
-
-    // Initial HOME Pose World Transforms
-    const initialHomeGeoms = [
-      { pos: [0.0062, -0.0, 0.0488], quat: [0.7404, 0.0027, 0.6721, -0.003] },
-      { pos: [0.0128, -0.0, 0.0167], quat: [-0.64, -0.3011, -0.3014, 0.6395] },
-      { pos: [0.0274, -0.0, 0.0438], quat: [0.4936, 0.4936, 0.5063, 0.5063] },
-      { pos: [-0.0286, -0.0002, 0.0474], quat: [-0.7071, 0.0, 0.0, 0.7071] },
-      { pos: [0.0692, 0.0003, 0.1052], quat: [0.0, -0.0127, 0.9999, -0.0] },
-      { pos: [0.0717, -0.0003, 0.0863], quat: [0.4947, 0.5011, -0.5015, 0.5026] },
-      { pos: [0.0657, -0.0, 0.0557], quat: [0.695, 0.6966, -0.1236, -0.1283] },
-      { pos: [-0.0437, 0.0003, 0.1026], quat: [-0.1342, -0.0126, 0.9909, -0.0017] },
-      { pos: [0.0107, 0.0, 0.0998], quat: [0.5997, -0.0008, 0.8002, 0.0015] },
-      { pos: [0.0041, -0.0009, 0.1264], quat: [0.7846, 0.0126, -0.6197, 0.0155] },
-      { pos: [0.0537, -0.0002, 0.1432], quat: [0.0918, 0.7029, -0.6987, 0.0969] },
-      { pos: [0.0713, 0.0003, 0.1504], quat: [0.6094, -0.0101, 0.7927, 0.0077] },
-      { pos: [0.1054, 0.0121, 0.1164], quat: [0.1762, 0.7387, -0.6153, 0.2115] },
-      { pos: [0.0978, 0.0042, 0.1288], quat: [-0.2648, -0.3237, 0.9027, -0.1014] },
-      { pos: [0.1345, -0.0004, 0.0863], quat: [0.0102, 0.4851, -0.0056, 0.8744] },
-      { pos: [0.1212, 0.0005, 0.0724], quat: [0.7376, -0.6681, 0.0666, -0.0722] },
-      { pos: [0.1456, -0.0007, 0.0676], quat: [0.9995, -0.0208, 0.0211, -0.0117] }
-    ];
-
     const geomObjects = [];
     const stlLoader = new THREE.STLLoader();
     const meshBaseUrl = '/sim_assets/centered_meshes/';
 
-    geomList.forEach((spec, idx) => {
-      const meshGroup = new THREE.Group();
-      scene.add(meshGroup);
+    function initGeomsFromState(geoms) {
+      geoms.forEach((g, idx) => {
+        const meshGroup = new THREE.Group();
+        scene.add(meshGroup);
 
-      const init = initialHomeGeoms[idx];
-      const targetPos = new THREE.Vector3(init.pos[0], init.pos[1], init.pos[2]);
-      const targetQuat = new THREE.Quaternion(init.quat[0], init.quat[1], init.quat[2], init.quat[3]);
-      const currentPos = targetPos.clone();
-      const currentQuat = targetQuat.clone();
+        const targetPos = new THREE.Vector3(g.pos[0], g.pos[1], g.pos[2]);
+        const targetQuat = new THREE.Quaternion(g.quat[0], g.quat[1], g.quat[2], g.quat[3]);
+        const currentPos = targetPos.clone();
+        const currentQuat = targetQuat.clone();
 
-      meshGroup.position.copy(currentPos);
-      meshGroup.quaternion.copy(currentQuat);
+        meshGroup.position.copy(currentPos);
+        meshGroup.quaternion.copy(currentQuat);
 
-      const material = spec.is_jaw ? matMovingJaw : (spec.is_servo ? matServo : matPrinted);
+        const isJaw = typeof g.mesh === 'string' && g.mesh.includes('moving_jaw');
+        const material = isJaw ? matMovingJaw : (g.is_servo ? matServo : matPrinted);
 
-      // Load STL file
-      stlLoader.load(
-        meshBaseUrl + spec.mesh,
-        (geometry) => {
-          geometry.computeVertexNormals();
-          const mesh = new THREE.Mesh(geometry, material);
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
-          meshGroup.add(mesh);
-        },
-        undefined,
-        (err) => {
-          console.warn('Could not load STL mesh:', spec.mesh, err);
-        }
-      );
+        stlLoader.load(
+          meshBaseUrl + g.mesh,
+          (geometry) => {
+            geometry.computeVertexNormals();
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            meshGroup.add(mesh);
+          },
+          undefined,
+          (err) => {
+            console.warn('Could not load STL mesh:', g.mesh, err);
+          }
+        );
 
-      geomObjects.push({
-        id: idx,
-        meshGroup,
-        targetPos,
-        targetQuat,
-        currentPos,
-        currentQuat
+        geomObjects.push({
+          id: idx,
+          meshGroup,
+          targetPos,
+          targetQuat,
+          currentPos,
+          currentQuat
+        });
       });
-    });
+    }
 
-    const targetCubeTargetPos = new THREE.Vector3(0.18, 0.0, 0.015);
+    const targetCubeTargetPos = new THREE.Vector3();
     const targetCubeTargetQuat = new THREE.Quaternion(0, 0, 0, 1);
-    const targetCubeCurrentPos = targetCubeTargetPos.clone();
-    const targetCubeCurrentQuat = targetCubeTargetQuat.clone();
+    const targetCubeCurrentPos = new THREE.Vector3();
+    const targetCubeCurrentQuat = new THREE.Quaternion(0, 0, 0, 1);
 
     // -------------------------------------------------------------
     // REAL-TIME POLLING & STATE SYNCHRONIZATION
     // -------------------------------------------------------------
-    let isPolling = true;
     async function fetchSimState() {
-      if (!isPolling) return;
       try {
         const res = await fetch('/api/sim_state');
         if (res.ok) {
           const data = await res.json();
           if (data && data.geoms && Array.isArray(data.geoms)) {
-            data.geoms.forEach((g, idx) => {
-              if (geomObjects[idx]) {
-                geomObjects[idx].targetPos.set(g.pos[0], g.pos[1], g.pos[2]);
-                geomObjects[idx].targetQuat.set(g.quat[0], g.quat[1], g.quat[2], g.quat[3]);
-              }
-            });
+            if (geomObjects.length === 0) {
+              initGeomsFromState(data.geoms);
+            } else {
+              data.geoms.forEach((g, idx) => {
+                if (geomObjects[idx]) {
+                  geomObjects[idx].targetPos.set(g.pos[0], g.pos[1], g.pos[2]);
+                  geomObjects[idx].targetQuat.set(g.quat[0], g.quat[1], g.quat[2], g.quat[3]);
+                }
+              });
+            }
           }
           if (data && data.target_pos && Array.isArray(data.target_pos)) {
             targetCubeTargetPos.set(data.target_pos[0], data.target_pos[1], data.target_pos[2]);
-          }
-          if (data && data.target_quat && Array.isArray(data.target_quat)) {
-            targetCubeTargetQuat.set(data.target_quat[0], data.target_quat[1], data.target_quat[2], data.target_quat[3]);
+            if (data.target_quat && Array.isArray(data.target_quat)) {
+              targetCubeTargetQuat.set(data.target_quat[0], data.target_quat[1], data.target_quat[2], data.target_quat[3]);
+            }
+            if (!targetCube.visible) {
+              targetCubeCurrentPos.copy(targetCubeTargetPos);
+              targetCubeCurrentQuat.copy(targetCubeTargetQuat);
+              targetCube.position.copy(targetCubeCurrentPos);
+              targetCube.quaternion.copy(targetCubeCurrentQuat);
+              targetCube.visible = true;
+            }
           }
         }
       } catch (err) {
@@ -599,11 +533,12 @@
       }
     }
 
+    fetchSimState();
     setInterval(fetchSimState, 33); // 30Hz polling
 
     async function fetchWorkspaceConfig() {
       try {
-        const res = await fetch('/api/workspace_config?t=' + Date.now());
+        const res = await fetch('/api/workspace_config');
         if (res.ok) {
           const config = await res.json();
           updateWorkspaceVisuals(config);
@@ -613,7 +548,6 @@
       }
     }
     fetchWorkspaceConfig();
-    setInterval(fetchWorkspaceConfig, 1000); // 1Hz check for workspace JSON changes
 
     // -------------------------------------------------------------
     // CAMERA RESET ACTION

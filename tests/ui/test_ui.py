@@ -1,6 +1,7 @@
 """Unit tests for the Gradio Web UI components, stream overlays, and FastAPI app mount."""
 
 import threading
+from unittest.mock import MagicMock
 
 import cv2
 import gradio as gr
@@ -8,89 +9,58 @@ import numpy as np
 from fastapi import FastAPI
 
 from agent.vla_controller import VLAController, parse_targets_from_text
-from robot.constants import JOINT_LIMITS
+from robot.constants import JOINT_LIMITS, JOINT_NAMES
+from robot.registry import get_active_robot, set_active_robot
 from ui.app import build_vla_interface, create_app
 from ui.components.chat import build_chat_interface, wire_chat_events
 from ui.components.controls import build_controls_interface
 from ui.components.telemetry import render_joint_state_panel
 from ui.components.vision import build_vision_interface
-from ui.state import get_active_robot, set_active_robot
-from vision import (
-    add_model_target,
-    clear_model_target_point,
+from vision.calibrator import get_calibrator
+from vision.frames import get_latest_jpeg, get_latest_raw_jpeg
+from vision.overlays import (
+    is_calibration_overlay_enabled,
+    is_target_overlay_enabled,
+    set_calibration_overlay,
+    set_target_overlay_enabled,
+)
+from vision.targets import (
     clear_model_targets,
     draw_model_target_overlay,
-    get_latest_jpeg,
-    get_latest_raw_jpeg,
-    get_model_target_point,
     get_model_targets,
-    is_bounding_boxes_overlay_enabled,
-    is_calibration_overlay_enabled,
-    is_crosshair_overlay_enabled,
-    is_grid_overlay_enabled,
-    is_target_overlay_enabled,
-    set_bounding_boxes_overlay,
-    set_calibration_overlay,
-    set_crosshair_overlay,
-    set_grid_overlay,
-    set_model_target_point,
     set_model_targets,
-    set_target_overlay_enabled,
 )
 
 
 def test_stream_overlay_flags() -> None:
-    """Verify getter and setter functionality for all video stream overlay states."""
-    # Test Target overlay toggle
+    """Verify getter and setter functionality for active video stream overlay states."""
     set_target_overlay_enabled(True)
     assert is_target_overlay_enabled() is True
     set_target_overlay_enabled(False)
     assert is_target_overlay_enabled() is False
 
-    # Test Calibration overlay toggle
     set_calibration_overlay(True)
     assert is_calibration_overlay_enabled() is True
     set_calibration_overlay(False)
     assert is_calibration_overlay_enabled() is False
 
-    # Test Bounding Boxes overlay toggle
-    set_bounding_boxes_overlay(True)
-    assert is_bounding_boxes_overlay_enabled() is True
-    set_bounding_boxes_overlay(False)
-    assert is_bounding_boxes_overlay_enabled() is False
-
-    # Test Grid overlay toggle
-    set_grid_overlay(True)
-    assert is_grid_overlay_enabled() is True
-    set_grid_overlay(False)
-    assert is_grid_overlay_enabled() is False
-
-    # Test Crosshair overlay toggle
-    set_crosshair_overlay(True)
-    assert is_crosshair_overlay_enabled() is True
-    set_crosshair_overlay(False)
-    assert is_crosshair_overlay_enabled() is False
-
 
 def test_model_target_overlay_drawing() -> None:
-    """Verify set_model_target_point and draw_model_target_overlay rendering."""
+    """Verify set_model_targets and draw_model_target_overlay rendering."""
     set_target_overlay_enabled(True)
-    set_model_target_point((500.0, 500.0), label="TEST_TARGET [500, 500]")
-    pt, lbl = get_model_target_point()
-    assert pt == (500.0, 500.0)
-    assert lbl == "TEST_TARGET [500, 500]"
+    set_model_targets([{"point": (500.0, 500.0), "label": "TEST_TARGET [500, 500]"}])
+    targets = get_model_targets()
+    assert len(targets) == 1
+    assert targets[0]["point"] == (500.0, 500.0)
+    assert targets[0]["label"] == "TEST_TARGET [500, 500]"
 
-    # Test overlay drawing on dummy frame
     blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     rendered = draw_model_target_overlay(blank_frame)
     assert rendered.shape == (480, 640, 3)
-    assert np.any(rendered != 0)  # Drawing added non-zero pixels
+    assert np.any(rendered != 0)
 
-    # Clear target
-    clear_model_target_point()
-    pt, lbl = get_model_target_point()
-    assert pt is None
-    assert lbl is None
+    clear_model_targets()
+    assert get_model_targets() == []
 
 
 def test_multi_target_management_and_drawing() -> None:
@@ -99,7 +69,6 @@ def test_multi_target_management_and_drawing() -> None:
     clear_model_targets()
     assert len(get_model_targets()) == 0
 
-    # Set multiple targets
     targets_data = [
         {"point": (300.0, 400.0), "label": "RED CUBE [300, 400]"},
         {"point": (600.0, 700.0), "label": "BLUE CYLINDER [600, 700]"},
@@ -111,15 +80,9 @@ def test_multi_target_management_and_drawing() -> None:
     assert len(active_targets) == 3
     assert active_targets[0]["point"] == (300.0, 400.0)
     assert active_targets[1]["point"] == (600.0, 700.0)
-    # 3rd target point is computed center of box_2d: (175.0, 275.0)
     assert active_targets[2]["point"] == (175.0, 275.0)
     assert active_targets[2]["box_2d"] == [100.0, 200.0, 250.0, 350.0]
 
-    # Add another target
-    add_model_target((450.0, 550.0), label="YELLOW PRISM")
-    assert len(get_model_targets()) == 4
-
-    # Draw multi-target overlay on a blank frame
     blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     rendered = draw_model_target_overlay(blank_frame)
     assert rendered.shape == (480, 640, 3)
@@ -136,11 +99,6 @@ def test_dual_buffer_stream_zero_leakage(
     import vision.frames as stream_mod
 
     raw_canvas = neutral_frame.copy()
-    with stream_mod._global_frame_lock:
-        if hasattr(stream_mod, "_global_latest_raw_frame"):
-            stream_mod._global_latest_raw_frame = raw_canvas.copy()
-        stream_mod._global_latest_frame = raw_canvas.copy()
-
     set_target_overlay_enabled(True)
     set_model_targets(
         [
@@ -151,6 +109,7 @@ def test_dual_buffer_stream_zero_leakage(
             }
         ]
     )
+    stream_mod._on_sim_frame(raw_canvas)
 
     raw_jpeg = get_latest_raw_jpeg()
     annotated_jpeg = get_latest_jpeg()
@@ -174,9 +133,8 @@ def test_stream_color_fidelity_rgb_vs_bgr(
     test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     test_frame[:, :, 0] = 230  # High Red, Zero Blue
     with stream_mod._global_frame_lock:
-        if hasattr(stream_mod, "_global_latest_raw_frame"):
-            stream_mod._global_latest_raw_frame = test_frame.copy()
-        stream_mod._global_latest_frame = test_frame.copy()
+        stream_mod._global_latest_raw_frame = test_frame.copy()
+        stream_mod._global_latest_annotated_frame = test_frame.copy()
 
     raw_jpeg = get_latest_raw_jpeg()
     assert raw_jpeg is not None
@@ -195,9 +153,8 @@ def test_stream_concurrency_thread_safety(
     import vision.frames as stream_mod
 
     with stream_mod._global_frame_lock:
-        if hasattr(stream_mod, "_global_latest_raw_frame"):
-            stream_mod._global_latest_raw_frame = neutral_frame.copy()
-        stream_mod._global_latest_frame = neutral_frame.copy()
+        stream_mod._global_latest_raw_frame = neutral_frame.copy()
+        stream_mod._global_latest_annotated_frame = neutral_frame.copy()
 
     errors: list[Exception] = []
 
@@ -285,8 +242,6 @@ def test_chat_status_banner_initial_state() -> None:
     assert banner_no_api.value == "⚠️ **Status: Gemini API Unavailable**"
 
     # Real mode without calibration
-    from vision import get_calibrator
-
     calib = get_calibrator(mode="real")
     if calib is not None:
         calib.homography_matrix = None
@@ -379,8 +334,6 @@ def test_process_instruction_recovers_on_exception() -> None:
         yield "Starting task..."
         raise RuntimeError("Simulated WebSocket connection drop")
 
-    from unittest.mock import MagicMock
-
     controller_sim.interrupt = MagicMock()
     controller_sim.process_instruction_stream = mock_failing_stream
 
@@ -423,8 +376,6 @@ def test_process_instruction_recovers_on_exception() -> None:
 
 def test_process_instruction_uncalibrated_status() -> None:
     """Verify status banner and placeholder when workspace calibration is missing in real mode."""
-    from vision import get_calibrator
-
     calib = get_calibrator(mode="real")
     if calib is not None:
         calib.homography_matrix = None
@@ -518,8 +469,6 @@ def test_clear_chat_resets_status_banner() -> None:
 
 def test_chat_uses_raw_jpeg_stream() -> None:
     """Verify that chat instruction execution passes get_latest_raw_jpeg to the controller."""
-    import vision as stream_mod
-
     controller_sim = VLAController(mode="sim", robot=None)
     controller_sim._api_available = True
     captured_kwargs: dict = {}
@@ -552,12 +501,7 @@ def test_chat_uses_raw_jpeg_stream() -> None:
     assert "get_latest_jpeg_fn" in captured_kwargs
     fn_passed = captured_kwargs["get_latest_jpeg_fn"]
     assert callable(fn_passed)
-
-    if hasattr(stream_mod, "get_latest_raw_jpeg"):
-        assert (
-            fn_passed is stream_mod.get_latest_raw_jpeg
-            or fn_passed.__name__ == "get_latest_raw_jpeg"
-        )
+    assert fn_passed is get_latest_raw_jpeg or fn_passed.__name__ == "get_latest_raw_jpeg"
 
 
 def test_build_controls_interface_structure() -> None:
@@ -576,6 +520,57 @@ def test_build_controls_interface_structure() -> None:
         assert slider.value == init_deg[idx]
 
     assert isinstance(joint_state_panel, gr.HTML)
+
+
+def test_telemetry_timer_shows_distinct_commanded_and_measured_joints() -> None:
+    """Bug 2 regression: telemetry timer renders distinct commanded and measured joint angles."""
+    from simulation.sim_robot import SO101Robot
+    from tests.robot.test_fail_closed_characterization import _make_mock_real_robot
+
+    cmd_deg = [10.0, -20.0, 30.0, -15.0, 5.0, -40.0]
+    cmd_rad = np.radians(cmd_deg, dtype=np.float32)
+
+    # 1. Fake-bus RealSO101Robot where commanded != measured ([0, 0, 0, 0, 0, 0] deg)
+    fake_bus = MagicMock()
+    fake_bus.sync_read.return_value = {name: 0.0 for name in JOINT_NAMES}
+    real_robot = _make_mock_real_robot(fake_bus)
+    real_robot.set_joint_positions(cmd_rad)
+    assert np.allclose(real_robot.get_commanded_joint_positions(), cmd_rad)
+    assert np.allclose(real_robot.get_joint_positions(), np.zeros(6, dtype=np.float32))
+
+    with gr.Blocks() as demo_real:
+        build_controls_interface(robot=real_robot, mode="real", init_deg=[0.0] * 6)
+    fns_real = demo_real.fns.values() if isinstance(demo_real.fns, dict) else demo_real.fns
+    sync_fn_real = next(
+        bf.fn for bf in fns_real if getattr(bf.fn, "__name__", "") == "sync_robot_state_html"
+    )
+    html_real = sync_fn_real()
+    for val in cmd_deg:
+        assert f"{val:.1f}" in html_real
+    assert "0.0" in html_real
+
+    # 2. Sim SO101Robot where commanded != measured (snap_gripper=False + qpos zeroed)
+    sim_robot = SO101Robot()
+    try:
+        sim_robot.set_joint_positions(cmd_rad)
+        with sim_robot._sim_lock:
+            for j_id in sim_robot.joint_ids:
+                sim_robot.data.qpos[sim_robot.model.jnt_qposadr[j_id]] = 0.0
+        assert np.allclose(sim_robot.get_commanded_joint_positions(), cmd_rad)
+        assert np.allclose(sim_robot.get_joint_positions(), np.zeros(6))
+
+        with gr.Blocks() as demo_sim:
+            build_controls_interface(robot=sim_robot, mode="sim", init_deg=[0.0] * 6)
+        fns_sim = demo_sim.fns.values() if isinstance(demo_sim.fns, dict) else demo_sim.fns
+        sync_fn_sim = next(
+            bf.fn for bf in fns_sim if getattr(bf.fn, "__name__", "") == "sync_robot_state_html"
+        )
+        html_sim = sync_fn_sim()
+        for val in cmd_deg:
+            assert f"{val:.1f}" in html_sim
+        assert "0.0" in html_sim
+    finally:
+        sim_robot.close()
 
 
 def test_build_vision_interface_real() -> None:

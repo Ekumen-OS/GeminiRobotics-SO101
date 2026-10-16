@@ -373,7 +373,7 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
 @pytest.mark.asyncio
 async def test_move_to_spatial_point_custom_label() -> None:
     """Verify that custom label parameter is preserved on the visual overlay."""
-    from vision import clear_model_targets, get_model_targets
+    from vision.targets import clear_model_targets, get_model_targets
 
     clear_model_targets()
     robot = MockRobot()

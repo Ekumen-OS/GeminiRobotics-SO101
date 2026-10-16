@@ -7,13 +7,13 @@ scenarios and prints the metrics table.
 import numpy as np
 import pytest
 
-from robot.vision_detector import detect_workspace_objects
 from tests.e2e.sim_pick_harness import (
     ScenarioResult,
     SimPickHarness,
     format_metrics_table,
     run_scenario,
 )
+from vision.detector import detect_workspace_objects
 
 
 def _assert_clean(result: ScenarioResult) -> None:

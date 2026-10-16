@@ -9,9 +9,14 @@ import numpy as np
 from agent.vla_controller import VLAController
 from robot.errors import CalibrationUnavailable
 from ui.state import get_ui_joint_positions
-from vision import get_calibrator, get_latest_raw_jpeg, get_raw_jpeg_after
+from vision.calibrator import get_calibrator
+from vision.frames import get_latest_raw_jpeg, get_raw_jpeg_after
 
 logger = logging.getLogger(__name__)
+
+READY_PROMPT_PLACEHOLDER = (
+    'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
+)
 
 
 def build_chat_interface(controller: VLAController, api_available: bool = True) -> tuple:
@@ -70,7 +75,7 @@ def build_chat_interface(controller: VLAController, api_available: bool = True) 
     prompt_input = gr.Textbox(
         label="Instruction Prompt",
         placeholder=(
-            'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
+            READY_PROMPT_PLACEHOLDER
             if is_calibrated
             else "⚠️ Calibrate workspace before issuing commands..."
         ),
@@ -231,9 +236,7 @@ def wire_chat_events(
                 default_placeholder = "⚠️ Calibrate workspace before issuing commands..."
             else:
                 ready_status = "🟢 **Status: Ready**"
-                default_placeholder = (
-                    'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
-                )
+                default_placeholder = READY_PROMPT_PLACEHOLDER
 
             # Re-enable inputs on completion / finally
             btn_updates = [
