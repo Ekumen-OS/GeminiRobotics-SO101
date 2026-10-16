@@ -7,7 +7,6 @@ directly to physical millimeter/meter coordinates in the robot base frame.
 
 import json
 import logging
-import sys
 import threading
 import warnings
 from dataclasses import dataclass
@@ -23,29 +22,6 @@ from robot.logger import log_with_tag
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
-
-
-def __getattr__(name: str) -> Any:
-    """Dynamically resolve configuration defaults from central Settings."""
-    if name == "DEFAULT_CONFIG_PATH":
-        return get_settings().calibration_config_path
-    if name == "DEFAULT_SAVE_PATH":
-        return get_settings().calibration_save_path
-    if name == "DEFAULT_SIM_SAVE_PATH":
-        return get_settings().calibration_sim_save_path
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def _get_default_config_path() -> Path:
-    return getattr(sys.modules[__name__], "DEFAULT_CONFIG_PATH")
-
-
-def _get_default_save_path() -> Path:
-    return getattr(sys.modules[__name__], "DEFAULT_SAVE_PATH")
-
-
-def _get_default_sim_save_path() -> Path:
-    return getattr(sys.modules[__name__], "DEFAULT_SIM_SAVE_PATH")
 
 
 @dataclass(frozen=True)
@@ -146,7 +122,9 @@ class ArucoWorkspaceCalibrator:
             save_path: Optional path to saved homography (.npz) file.
             mode: Operating mode ('real' or 'sim').
         """
-        self.config_path = Path(config_path) if config_path else _get_default_config_path()
+        self.config_path = (
+            Path(config_path) if config_path else get_settings().calibration_config_path
+        )
         self.mode = mode
         self.config: dict[str, Any] = {}
         # Everything derived from one homography lives in one immutable snapshot that is replaced
@@ -163,7 +141,11 @@ class ArucoWorkspaceCalibrator:
         target_save_path = (
             Path(save_path)
             if save_path
-            else (_get_default_sim_save_path() if mode == "sim" else _get_default_save_path())
+            else (
+                get_settings().calibration_sim_save_path
+                if mode == "sim"
+                else get_settings().calibration_save_path
+            )
         )
 
         # Try to load existing saved homography if available
@@ -215,10 +197,7 @@ class ArucoWorkspaceCalibrator:
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_attr)
         self.detector_params = cv2.aruco.DetectorParameters()
 
-        if hasattr(cv2.aruco, "ArucoDetector"):
-            self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_params)
-        else:
-            self.detector = None
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_params)
 
     @property
     def is_calibrated(self) -> bool:
@@ -398,12 +377,7 @@ class ArucoWorkspaceCalibrator:
             Dictionary mapping integer marker ID to (4, 2) array of corner pixel coordinates.
         """
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        if self.detector is not None:
-            corners, ids, _ = self.detector.detectMarkers(gray)
-        else:
-            corners, ids, _ = cv2.aruco.detectMarkers(
-                gray, self.aruco_dict, parameters=self.detector_params
-            )
+        corners, ids, _ = self.detector.detectMarkers(gray)
 
         detected: dict[int, np.ndarray] = {}
         if ids is not None and len(ids) > 0:
@@ -795,7 +769,9 @@ class ArucoWorkspaceCalibrator:
             return "Cannot save: calibrator has not computed a valid homography."
 
         default_path = (
-            _get_default_sim_save_path() if self.mode == "sim" else _get_default_save_path()
+            get_settings().calibration_sim_save_path
+            if self.mode == "sim"
+            else get_settings().calibration_save_path
         )
         save_p = Path(path) if path else default_path
         save_p.parent.mkdir(parents=True, exist_ok=True)
@@ -822,7 +798,7 @@ class ArucoWorkspaceCalibrator:
         Returns:
             True if successfully loaded, False otherwise.
         """
-        load_p = Path(path) if path else _get_default_save_path()
+        load_p = Path(path) if path else get_settings().calibration_save_path
         if not load_p.exists():
             return False
 

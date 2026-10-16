@@ -4,6 +4,7 @@ import pytest
 from google.genai import types
 
 from agent.vla_controller import VLAController
+from robot.settings import Settings, set_settings
 from tests.conftest import (
     MockRobot,
     _real_sleep,
@@ -224,11 +225,11 @@ def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> Non
 
 
 @pytest.mark.usefixtures("real_sleep")
-def test_frame_streamer_does_not_delay_tool_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_frame_streamer_does_not_delay_tool_response(restore_settings: None) -> None:
     """Verify blocking tool taking 0.25s produces tool response within 0.5s of tool returning."""
     import time
 
-    monkeypatch.setenv("VISION_SETTLE_S", "0.05")
+    set_settings(Settings.from_env(vision_settle_s=0.05))
 
     robot = MockRobot()
     tool_return_time: float = 0.0
