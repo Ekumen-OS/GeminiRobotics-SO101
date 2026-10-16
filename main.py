@@ -3,7 +3,6 @@
 import argparse
 import logging
 import sys
-import time
 
 from dotenv import load_dotenv
 
@@ -18,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Create the CLI argument parser."""
+    """Create the CLI argument parser.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
     parser = argparse.ArgumentParser(
         description="GeminiRobotics-SO101 Main CLI — Run VLA Web UI or verification routines."
     )
@@ -36,15 +39,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[
             "check_environment",
             "generate_markers",
-            "setup_workspace",
-            "calibrate_workspace",
         ],
         default=None,
         help=(
             "Optional verification or setup task: 'check_environment' (System & hardware "
-            "diagnostics), or 'generate_markers' / "
-            "'setup_workspace' (Interactive workspace calibration & sheet generator). "
-            "If omitted, defaults to launching the Gradio VLA Web UI."
+            "diagnostics), or 'generate_markers' (Interactive workspace calibration & sheet "
+            "generator). If omitted, defaults to launching the Gradio VLA Web UI."
         ),
     )
     parser.add_argument(
@@ -67,22 +67,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip interactive prompts during setup tasks and use default/existing config.",
     )
-    from robot.settings import _get_platform_serial_port
-
-    default_port = _get_platform_serial_port()
     parser.add_argument(
         "--port",
         default=None,
-        help=(
-            f"Serial port for physical arm (default: {default_port}). "
-            "Can also be configured via ROBOT_PORT or SO101_PORT environment variable."
-        ),
+        help="Serial port for physical arm (defaults to ROBOT_PORT or the platform default).",
     )
     return parser
 
 
 def _run_once(args: argparse.Namespace) -> None:
-    """Execute a single run of the selected mode/task."""
+    """Execute a single run of the selected mode/task.
+
+    Args:
+        args: Parsed command-line arguments namespace.
+    """
     task_display = args.task.upper() if args.task is not None else "WEB_UI"
     print("=" * 60)
     print(f"GeminiRobotics-SO101 Execution — Mode: [{args.mode.upper()}] | Task: [{task_display}]")
@@ -95,7 +93,7 @@ def _run_once(args: argparse.Namespace) -> None:
         check_environment()
         return
 
-    elif args.task in ("generate_markers", "setup_workspace", "calibrate_workspace"):
+    elif args.task == "generate_markers":
         from tools.setup_wizard import setup_workspace_interactive
 
         reuse_flag = True if args.reuse else (False if args.regenerate else None)
@@ -108,9 +106,8 @@ def _run_once(args: argparse.Namespace) -> None:
         return
 
     # 2. Initialize Robot based on mode for Web UI operation without native window popups
-    robot = None
     settings = get_settings()
-    port = args.port or settings.serial_port
+    port = settings.serial_port
 
     if args.mode == "sim":
         print("Initializing MuJoCo simulation robot arm in headless UI mode...")
@@ -120,6 +117,16 @@ def _run_once(args: argparse.Namespace) -> None:
         print(f"Connecting real SO-101 arm on port {port} for Real Mode VLA UI...")
         try:
             robot = RealSO101Robot(port=port)
+        except ImportError as e:
+            logger.error(f"Missing dependency for real mode: {e}")
+            print(
+                f"\n❌ {e}\nTo use real mode, install the hw extra: `uv sync --extra hw --extra ui`"
+            )
+            sys.exit(1)
+        except FileNotFoundError as e:
+            logger.error(f"Missing motor calibration for real mode: {e}")
+            print(f"\n❌ {e}")
+            sys.exit(1)
         except HardwareError as e:
             logger.error(f"Hardware connection failed on port {port}: {e}")
             print(f"\n⚠️ Hardware connection failed on port {port}: {e}")
@@ -141,15 +148,8 @@ def _run_once(args: argparse.Namespace) -> None:
     finally:
         # Always park robot safely to HOME pose on completion/exit
         print("\nSafely parking robot to HOME pose...")
-        if hasattr(robot, "move_to_pose"):
-            robot.move_to_pose(PRESET_POSES["HOME"], duration_sec=1.0)
-        elif robot is not None and hasattr(robot, "set_joint_positions"):
-            robot.set_joint_positions(PRESET_POSES["HOME"])
-            time.sleep(1.0)
-
-        if robot is not None and hasattr(robot, "disconnect"):
-            robot.disconnect()
-
+        robot.move_to_pose(PRESET_POSES["HOME"], duration_sec=1.0)
+        robot.disconnect()
         print("Task execution finished successfully.")
 
 
@@ -161,11 +161,8 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    settings = Settings.from_env(
-        serial_port=args.port if args.port is not None else None,
-    )
+    settings = Settings.from_env(serial_port=args.port)
     set_settings(settings)
-    args.port = settings.serial_port
 
     _run_once(args)
 

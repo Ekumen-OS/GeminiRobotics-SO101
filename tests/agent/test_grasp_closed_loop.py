@@ -5,7 +5,6 @@ through ``SimPickHarness``; tests of gate wiring that need only a scriptable gri
 ``MockRobot`` through the controller and a fake Live session.
 """
 
-import os
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -27,6 +26,7 @@ from agent.tools import (
 )
 from agent.vla_controller import VLAController
 from robot.camera_model import PinholeCamera
+from robot.settings import Settings, set_settings
 from tests.conftest import MockRobot, fake_live_session
 from tests.e2e.pick_helpers import patch_measurements
 from tests.e2e.sim_pick_harness import SimPickHarness
@@ -362,23 +362,25 @@ def test_dropped_object_during_transport_is_detected(scripted_harness: SimPickHa
 
 
 # -- gate wiring through the controller -------------------------------------------------------
-def test_descent_gate_perception_unavailable_when_no_hover_measurement() -> None:
+def test_descent_gate_perception_unavailable_when_no_hover_measurement(
+    restore_settings: None,
+) -> None:
     """Descent attempted without prior hover measurement: refused with error_type='perception'."""
+    set_settings(Settings.from_env(descent_gate="block"))
     robot = MockRobot()
     state = GuardrailState()
     ctx = ToolContext(robot=robot, guardrail_state=state, mode="sim")
 
     from agent.tools import _handle_move_to_spatial_point
 
-    with patch.dict(os.environ, {"DESCENT_GATE": "block"}):
-        res = _handle_move_to_spatial_point(
-            ctx, {"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"}
-        )
-        assert res.get("status") == "error"
-        assert res.get("error_type") == "perception"
-        assert res.get("robot_moved") is False
-        assert "z_height_cm=3.0" in res.get("error", "")
-        assert robot.move_to_pose_called is False
+    res = _handle_move_to_spatial_point(
+        ctx, {"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"}
+    )
+    assert res.get("status") == "error"
+    assert res.get("error_type") == "perception"
+    assert res.get("robot_moved") is False
+    assert "z_height_cm=3.0" in res.get("error", "")
+    assert robot.move_to_pose_called is False
 
 
 @pytest.mark.asyncio
@@ -543,98 +545,98 @@ def test_close_without_a_lock_uses_the_fk_jaw_xy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_er2_locator_is_report_only_and_uses_its_own_model() -> None:
+async def test_er2_locator_is_report_only_and_uses_its_own_model(
+    restore_settings: None,
+) -> None:
     """ER2 pointing is report-only: own model id, payload field, never the alignment source."""
-    with patch.dict(os.environ, {"GRIPPER_LOCATOR_ER2": "1"}):
-        robot = MockRobot()
-        controller = VLAController(mode="real", robot=robot)
-        controller._api_available = True
+    set_settings(Settings.from_env(gripper_locator_er2=True))
+    robot = MockRobot()
+    controller = VLAController(mode="real", robot=robot)
+    controller._api_available = True
 
-        turns = [
-            types.LiveServerMessage(
-                tool_call=types.LiveServerToolCall(
-                    function_calls=[
-                        types.FunctionCall(
-                            name="move_to_spatial_point",
-                            args={
-                                "point": [700.0, 500.0],
-                                "z_height_cm": 5.0,
-                                "approach": "top_down",
-                            },
-                            id="call_hover_er2",
-                        )
-                    ]
-                )
-            ),
-            types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)),
-        ]
-        mock_session = fake_live_session(turns)
-        controller._session = mock_session
+    turns = [
+        types.LiveServerMessage(
+            tool_call=types.LiveServerToolCall(
+                function_calls=[
+                    types.FunctionCall(
+                        name="move_to_spatial_point",
+                        args={
+                            "point": [700.0, 500.0],
+                            "z_height_cm": 5.0,
+                            "approach": "top_down",
+                        },
+                        id="call_hover_er2",
+                    )
+                ]
+            )
+        ),
+        types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)),
+    ]
+    mock_session = fake_live_session(turns)
+    controller._session = mock_session
 
-        from tests.e2e.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
+    from tests.e2e.test_e2e_perception_guardrails import make_synthetic_red_cube_frame
 
-        cube_frame = make_synthetic_red_cube_frame(700.0, 500.0)
-        _, enc = cv2.imencode(".jpg", cv2.cvtColor(cube_frame, cv2.COLOR_RGB2BGR))
-        frame_jpeg = enc.tobytes()
+    cube_frame = make_synthetic_red_cube_frame(700.0, 500.0)
+    _, enc = cv2.imencode(".jpg", cv2.cvtColor(cube_frame, cv2.COLOR_RGB2BGR))
+    frame_jpeg = enc.tobytes()
 
-        query_in_progress = False
-        send_instruction_during_query = False
-        send_text_during_query = False
+    query_in_progress = False
+    send_instruction_during_query = False
+    send_text_during_query = False
 
-        orig_send_instruction = mock_session.send_instruction
-        orig_send_text = mock_session.send_text
+    orig_send_instruction = mock_session.send_instruction
+    orig_send_text = mock_session.send_text
 
-        async def spy_send_instruction(*args: Any, **kwargs: Any) -> Any:
-            nonlocal send_instruction_during_query
-            if query_in_progress:
-                send_instruction_during_query = True
-            return await orig_send_instruction(*args, **kwargs)
+    async def spy_send_instruction(*args: Any, **kwargs: Any) -> Any:
+        nonlocal send_instruction_during_query
+        if query_in_progress:
+            send_instruction_during_query = True
+        return await orig_send_instruction(*args, **kwargs)
 
-        async def spy_send_text(*args: Any, **kwargs: Any) -> Any:
-            nonlocal send_text_during_query
-            if query_in_progress:
-                send_text_during_query = True
-            return await orig_send_text(*args, **kwargs)
+    async def spy_send_text(*args: Any, **kwargs: Any) -> Any:
+        nonlocal send_text_during_query
+        if query_in_progress:
+            send_text_during_query = True
+        return await orig_send_text(*args, **kwargs)
 
-        mock_session.send_instruction = AsyncMock(side_effect=spy_send_instruction)
-        mock_session.send_text = AsyncMock(side_effect=spy_send_text)
+    mock_session.send_instruction = AsyncMock(side_effect=spy_send_instruction)
+    mock_session.send_text = AsyncMock(side_effect=spy_send_text)
 
-        async def mock_generate_content(*args: Any, **kwargs: Any) -> Any:
-            nonlocal query_in_progress
-            query_in_progress = True
-            try:
-                return '{"gripper_fingertips": [690, 515], "target": [700, 500]}'
-            finally:
-                query_in_progress = False
+    async def mock_generate_content(*args: Any, **kwargs: Any) -> Any:
+        nonlocal query_in_progress
+        query_in_progress = True
+        try:
+            return '{"gripper_fingertips": [690, 515], "target": [700, 500]}'
+        finally:
+            query_in_progress = False
 
-        mock_session.client.aio.models.generate_content = AsyncMock(
-            side_effect=mock_generate_content
+    mock_session.client.aio.models.generate_content = AsyncMock(side_effect=mock_generate_content)
+
+    with patch(
+        "google.genai.models.AsyncModels.generate_content",
+        new_callable=AsyncMock,
+        side_effect=mock_generate_content,
+    ):
+        chunks = list(
+            controller.process_instruction_stream(
+                "hover at target", get_latest_jpeg_fn=lambda: frame_jpeg
+            )
         )
 
-        with patch(
-            "google.genai.models.AsyncModels.generate_content",
-            new_callable=AsyncMock,
-            side_effect=mock_generate_content,
-        ):
-            chunks = list(
-                controller.process_instruction_stream(
-                    "hover at target", get_latest_jpeg_fn=lambda: frame_jpeg
-                )
-            )
+    assert len(chunks) >= 1
+    assert mock_session.send_tool_response.call_count == 1
+    tool_resp = mock_session.send_tool_response.call_args[0][0][0].response
 
-        assert len(chunks) >= 1
-        assert mock_session.send_tool_response.call_count == 1
-        tool_resp = mock_session.send_tool_response.call_args[0][0][0].response
+    assert tool_resp.get("gripper_source") != "er2"
+    assert tool_resp["perception"]["gripper_source"] != "er2"
+    assert tool_resp["perception"]["er2_gripper_point_1000"] == [690.0, 515.0]
+    assert not send_instruction_during_query
+    assert not send_text_during_query
+    assert mock_session.client.aio.models.generate_content.call_count == 1
+    gen_kwargs = mock_session.client.aio.models.generate_content.call_args.kwargs
+    from robot.settings import get_settings
 
-        assert tool_resp.get("gripper_source") != "er2"
-        assert tool_resp["perception"]["gripper_source"] != "er2"
-        assert tool_resp["perception"]["er2_gripper_point_1000"] == [690.0, 515.0]
-        assert not send_instruction_during_query
-        assert not send_text_during_query
-        assert mock_session.client.aio.models.generate_content.call_count == 1
-        gen_kwargs = mock_session.client.aio.models.generate_content.call_args.kwargs
-        from robot.settings import get_settings
-
-        assert gen_kwargs["model"] == get_settings().er2_locator_model
-        assert get_settings().er2_locator_model != get_settings().gemini_model_id
-        assert len(gen_kwargs["contents"]) == 2
+    assert gen_kwargs["model"] == get_settings().er2_locator_model
+    assert get_settings().er2_locator_model != get_settings().gemini_model_id
+    assert len(gen_kwargs["contents"]) == 2

@@ -1,6 +1,5 @@
 """Tests for table-relative height calculations and TABLE_Z_MM support."""
 
-import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -14,32 +13,25 @@ from robot.constants import PRESET_POSES
 from robot.settings import (
     Settings,
     robot_to_table_xy_mm,
-    robot_to_table_xyz_mm,
     robot_z_to_table_height_mm,
+    set_settings,
     table_height_to_robot_z_m,
     table_to_robot_xy_mm,
-    table_to_robot_xyz_mm,
 )
 from tests.conftest import DummyToolCall, MockRobot
 from vision.gripper_locator import locate_jaw_xy_mm
 
 
-def test_get_table_z_mm(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_table_z_mm() -> None:
     """Verify get_table_z_mm returns 0 in sim regardless of env, and table_z_mm in real."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24")
-    settings = Settings()
-    assert settings.get_table_z_mm("sim") == 0.0
-    assert settings.get_table_z_mm("real") == -24.0
-
-    monkeypatch.delenv("TABLE_Z_MM", raising=False)
     custom_settings = Settings(table_z_mm=-24.0)
     assert custom_settings.get_table_z_mm("sim") == 0.0
     assert custom_settings.get_table_z_mm("real") == -24.0
 
 
-def test_table_height_helpers_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_table_height_helpers_round_trip(restore_settings: None) -> None:
     """Verify table_height_to_robot_z_m and robot_z_to_table_height_mm round-trip."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24")
+    set_settings(Settings.from_env(table_z_mm=-24.0))
 
     for mode in ("real", "sim"):
         height_m = 0.035
@@ -49,9 +41,9 @@ def test_table_height_helpers_round_trip(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_spatial_tools_with_table_z(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_spatial_tools_with_table_z(restore_settings: None) -> None:
     """Verify tool commands map to correct robot z coordinates with TABLE_Z_MM=-24 in real mode."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24")
+    set_settings(Settings.from_env(table_z_mm=-24.0, descent_gate="off"))
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
 
     mock_calib = MagicMock()
@@ -73,14 +65,13 @@ async def test_spatial_tools_with_table_z(monkeypatch: pytest.MonkeyPatch) -> No
         assert res_hover["target_xyz_m"][2] == pytest.approx(0.006, abs=1e-4)
 
         # 2. Contact at 0 cm commands robot z = -0.024 m (0.0 + (-0.024))
-        with patch.dict(os.environ, {"DESCENT_GATE": "off"}):
-            call_contact = DummyToolCall(
-                "move_to_spatial_point",
-                {"point": [500.0, 500.0], "z_height_cm": 0.0, "approach": "top_down"},
-            )
-            res_contact = await execute_tool_call(call_contact, robot=robot)
-            assert res_contact.get("status") == "success"
-            assert res_contact["target_xyz_m"][2] == pytest.approx(-0.024, abs=1e-4)
+        call_contact = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "z_height_cm": 0.0, "approach": "top_down"},
+        )
+        res_contact = await execute_tool_call(call_contact, robot=robot)
+        assert res_contact.get("status") == "success"
+        assert res_contact["target_xyz_m"][2] == pytest.approx(-0.024, abs=1e-4)
 
         # 3. Lift to 5 cm commands robot z = 0.026 m (0.05 + (-0.024))
         state = GuardrailState()
@@ -94,9 +85,9 @@ async def test_spatial_tools_with_table_z(monkeypatch: pytest.MonkeyPatch) -> No
         assert res_lift["target_xyz_m"][2] == pytest.approx(0.026, abs=1e-4)
 
 
-def test_plan_approach_segments_table_height(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plan_approach_segments_table_height(restore_settings: None) -> None:
     """Verify that with table at -24 mm, a site at robot z=15 mm is not a low pose in real mode."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24")
+    set_settings(Settings.from_env(table_z_mm=-24.0))
     ik = CartesianIK()
     target_start = np.array([0.25, 0.0, 0.015])
     qpos_start = ik.solve_ik(target_start, approach="top_down")
@@ -115,9 +106,9 @@ def test_plan_approach_segments_table_height(monkeypatch: pytest.MonkeyPatch) ->
     assert len(segs_sim) == 3
 
 
-def test_locate_jaw_xy_mm_parallax_height(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_locate_jaw_xy_mm_parallax_height(restore_settings: None) -> None:
     """Verify locate_jaw_xy_mm passes parallax height = robot z + 24 mm when TABLE_Z_MM=-24."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24")
+    set_settings(Settings.from_env(table_z_mm=-24.0))
     ik = CartesianIK()
     q = np.radians([0.0, 20.0, 20.0, 20.0, 0.0, 0.0])
 
@@ -147,18 +138,8 @@ def test_locate_jaw_xy_mm_parallax_height(monkeypatch: pytest.MonkeyPatch) -> No
         assert height_passed_sim == pytest.approx(tag_z_robot, abs=1e-4)
 
 
-def test_get_table_xy_mm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify get_table_x_mm and get_table_y_mm return 0 in sim, and env values in real."""
-    monkeypatch.setenv("TABLE_X_MM", "12.5")
-    monkeypatch.setenv("TABLE_Y_MM", "-18.0")
-    settings = Settings()
-    assert settings.get_table_x_mm("sim") == 0.0
-    assert settings.get_table_y_mm("sim") == 0.0
-    assert settings.get_table_x_mm("real") == 12.5
-    assert settings.get_table_y_mm("real") == -18.0
-
-    monkeypatch.delenv("TABLE_X_MM", raising=False)
-    monkeypatch.delenv("TABLE_Y_MM", raising=False)
+def test_get_table_xy_mm() -> None:
+    """Verify get_table_x_mm and get_table_y_mm return 0 in sim, and settings values in real."""
     custom = Settings(table_x_mm=5.0, table_y_mm=-10.0)
     assert custom.get_table_x_mm("sim") == 0.0
     assert custom.get_table_y_mm("sim") == 0.0
@@ -166,11 +147,9 @@ def test_get_table_xy_mm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert custom.get_table_y_mm("real") == -10.0
 
 
-def test_table_xy_helpers_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_table_xy_helpers_round_trip(restore_settings: None) -> None:
     """Verify table_to_robot_xy_mm and robot_to_table_xy_mm round trip."""
-    monkeypatch.setenv("TABLE_X_MM", "15.0")
-    monkeypatch.setenv("TABLE_Y_MM", "-25.0")
-    monkeypatch.setenv("TABLE_Z_MM", "-30.0")
+    set_settings(Settings.from_env(table_x_mm=15.0, table_y_mm=-25.0, table_z_mm=-30.0))
 
     for mode in ("real", "sim"):
         x_table, y_table, z_table = 240.0, 10.0, 30.0
@@ -179,19 +158,22 @@ def test_table_xy_helpers_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
         assert recovered_x == pytest.approx(x_table, abs=1e-5)
         assert recovered_y == pytest.approx(y_table, abs=1e-5)
 
-        r_xyz = table_to_robot_xyz_mm(x_table, y_table, z_table, mode=mode)
-        rec_x, rec_y, rec_z = robot_to_table_xyz_mm(*r_xyz, mode=mode)
-        assert rec_x == pytest.approx(x_table, abs=1e-5)
-        assert rec_y == pytest.approx(y_table, abs=1e-5)
+        rz_m = table_height_to_robot_z_m(z_table / 1000.0, mode=mode)
+        rec_z = robot_z_to_table_height_mm(rz_m * 1000.0, mode=mode)
         assert rec_z == pytest.approx(z_table, abs=1e-5)
 
 
 @pytest.mark.asyncio
-async def test_spatial_tools_with_table_xy(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_spatial_tools_with_table_xy(restore_settings: None) -> None:
     """Verify spatial tools apply TABLE_X_MM and TABLE_Y_MM in real mode and not in sim."""
-    monkeypatch.setenv("TABLE_X_MM", "10.0")
-    monkeypatch.setenv("TABLE_Y_MM", "-20.0")
-    monkeypatch.setenv("TABLE_Z_MM", "-24.0")
+    set_settings(
+        Settings.from_env(
+            table_x_mm=10.0,
+            table_y_mm=-20.0,
+            table_z_mm=-24.0,
+            descent_gate="off",
+        )
+    )
 
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
 
@@ -226,9 +208,9 @@ async def test_spatial_tools_with_table_xy(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_actual_position_logged_on_move(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actual_position_logged_on_move(restore_settings: None) -> None:
     """Verify that move_to_spatial_point logs the reached FK position and projected camera point."""
-    monkeypatch.setenv("TABLE_Z_MM", "-24.0")
+    set_settings(Settings.from_env(table_z_mm=-24.0, descent_gate="off"))
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
 
     mock_calib = MagicMock()

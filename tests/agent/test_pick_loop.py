@@ -37,6 +37,7 @@ from agent.tools import (
 )
 from agent.vla_controller import VLAController
 from robot.constants import PRESET_POSES
+from robot.settings import Settings, set_settings
 from robot.vision_detector import detect_workspace_objects
 from tests.conftest import DummyToolCall, MockRobot
 from tests.e2e.pick_helpers import (
@@ -261,15 +262,18 @@ def test_descent_requires_a_still_valid_hover(harness: SimPickHarness) -> None:
     assert nxt is not None and nxt[1] == 3.0
 
 
-def test_unobservable_alignment_blocks_and_escalates_in_block_mode(harness: SimPickHarness) -> None:
+def test_unobservable_alignment_blocks_and_escalates_in_block_mode(
+    harness: SimPickHarness,
+    restore_settings: None,
+) -> None:
     """FK-only alignment is unobservable: block refuses and escalates at once (no loop)."""
+    set_settings(Settings.from_env(descent_gate="block"))
     point = harness.image_point_for(*CUBE_XY)
     harness.call("open_gripper")
     with patch_measurements([(0.0, 0.0)], source="kinematic"):
         hover = _move(harness, point, 3.0)
         assert hover["perception"]["is_aligned"] is None
-        with patch.dict("os.environ", {"DESCENT_GATE": "block"}):
-            refused = _move(harness, point, 0.0)
+        refused = _move(harness, point, 0.0)
     assert refused["error_type"] == "descent_gate"
     assert "unobservable" in refused["error"]
     assert harness.state.escalated is True
@@ -277,14 +281,17 @@ def test_unobservable_alignment_blocks_and_escalates_in_block_mode(harness: SimP
     assert _move(harness, point, 3.0)["error_type"] == "retry_exhausted"
 
 
-def test_unobservable_alignment_warns_and_descends_in_warn_mode(harness: SimPickHarness) -> None:
+def test_unobservable_alignment_warns_and_descends_in_warn_mode(
+    harness: SimPickHarness,
+    restore_settings: None,
+) -> None:
     """With DESCENT_GATE=warn an unobservable alignment descends with a warning."""
+    set_settings(Settings.from_env(descent_gate="warn"))
     point = harness.image_point_for(*CUBE_XY)
     harness.call("open_gripper")
     with patch_measurements([(0.0, 0.0)], source="kinematic"):
         _move(harness, point, 3.0)
-        with patch.dict("os.environ", {"DESCENT_GATE": "warn"}):
-            descent = _move(harness, point, 0.0)
+        descent = _move(harness, point, 0.0)
     assert descent["status"] == "success"
     assert "unobservable" in descent["guardrail_warning"]
 

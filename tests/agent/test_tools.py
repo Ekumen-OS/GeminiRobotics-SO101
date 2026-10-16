@@ -17,6 +17,7 @@ from agent.tools import (
 )
 from robot.constants import JOINT_LIMITS, JOINT_NAMES, PRESET_POSES
 from robot.interface import RobotInterface
+from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
 
 
@@ -278,9 +279,9 @@ async def test_execute_tool_send_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tools_visual_hints_enrichment(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tools_visual_hints_enrichment(restore_settings: None) -> None:
     """Test all tool returns contain the expected enriched visual_hint strings."""
-    monkeypatch.setenv("DESCENT_GATE", "off")
+    set_settings(Settings.from_env(descent_gate="off"))
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
 
     mock_calibrator = MagicMock()

@@ -56,7 +56,7 @@ def _calibrator_mock() -> MagicMock:
 @pytest.mark.asyncio
 async def test_physical_robot_spatial_move_loads_real_homography() -> None:
     """Regression: a physical robot must not be routed through the sim calibration file."""
-    from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
+    from robot.settings import get_settings
 
     robot = MockRobot()
     calib = _calibrator_mock()
@@ -68,15 +68,17 @@ async def test_physical_robot_spatial_move_loads_real_homography() -> None:
         res = await execute_tool_call(call, robot=robot)
 
     assert res.get("status") == "success"
-    calib.load_calibration.assert_called_once_with(DEFAULT_SAVE_PATH)
+    real_path = get_settings().calibration_save_path
+    sim_path = get_settings().calibration_sim_save_path
+    calib.load_calibration.assert_called_once_with(real_path)
     assert calib.mode == "real"
-    assert DEFAULT_SIM_SAVE_PATH not in [c.args[0] for c in calib.load_calibration.call_args_list]
+    assert sim_path not in [c.args[0] for c in calib.load_calibration.call_args_list]
 
 
 @pytest.mark.asyncio
 async def test_sim_robot_spatial_move_loads_sim_homography() -> None:
     """A robot declaring mode='sim' selects the simulation calibration file."""
-    from robot.calibration import DEFAULT_SIM_SAVE_PATH
+    from robot.settings import get_settings
 
     calib = _calibrator_mock()
     call = DummyToolCall(
@@ -87,14 +89,15 @@ async def test_sim_robot_spatial_move_loads_sim_homography() -> None:
         res = await execute_tool_call(call, robot=_SimLikeRobot())
 
     assert res.get("status") == "success"
-    calib.load_calibration.assert_called_once_with(DEFAULT_SIM_SAVE_PATH)
+    sim_path = get_settings().calibration_sim_save_path
+    calib.load_calibration.assert_called_once_with(sim_path)
     assert calib.mode == "sim"
 
 
 @pytest.mark.asyncio
 async def test_controller_mode_argument_overrides_robot_mode() -> None:
     """The controller's mode (what the user launched) wins over the robot's own attribute."""
-    from robot.calibration import DEFAULT_SIM_SAVE_PATH
+    from robot.settings import get_settings
 
     calib = _calibrator_mock()
     call = DummyToolCall(
@@ -105,7 +108,8 @@ async def test_controller_mode_argument_overrides_robot_mode() -> None:
         res = await execute_tool_call(call, robot=MockRobot(), mode="sim")
 
     assert res.get("status") == "success"
-    calib.load_calibration.assert_called_once_with(DEFAULT_SIM_SAVE_PATH)
+    sim_path = get_settings().calibration_sim_save_path
+    calib.load_calibration.assert_called_once_with(sim_path)
 
 
 def test_main_parser_accepts_only_real_and_sim() -> None:

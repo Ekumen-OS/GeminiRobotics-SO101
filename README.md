@@ -106,7 +106,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 # GOOGLE_CLOUD_PROJECT=your_project_id
 # GOOGLE_CLOUD_LOCATION=us-central1
 
-# Physical SO-101 Serial Port (optional, defaults to /dev/tty.usbmodem5B415332861)
+# Physical SO-101 Serial Port (optional, platform default: /dev/ttyACM0 on Linux, /dev/tty.usbmodem5B415332861 on macOS)
 # ROBOT_PORT=/dev/ttyACM0
 
 # Grasp Sensing & Verification (Phase 3a)
@@ -123,7 +123,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
-| `GRIPPER_EMPTY_APERTURE_DEG` | `-75.0` | Aperture the gripper servo reports when closed on nothing. Set from step 1 of the checklist below; the arm's calibration decides this value, not the model. |
+| `GRIPPER_EMPTY_APERTURE_DEG` | *unset* (anchors to `GRIPPER_CLOSE_DEG`) | Aperture the gripper servo reports when closed on nothing. Set from step 1 of the checklist below; the arm's calibration decides this value, not the model. |
 | `GRASP_EMPTY_MARGIN_DEG` | `6.0` | Margin in degrees above the empty aperture to classify as `closed_on_air` (threshold = empty aperture + margin). |
 | `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
 | `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
@@ -136,7 +136,7 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `GRIPPER_LOCATOR_ER2` | `0` | Ask ER2 to point at the fingertips (`1` or `0`). Report-only: the point appears as `perception.er2_gripper_point_1000` and never decides alignment. |
 | `ER2_LOCATOR_MODEL` | `gemini-robotics-er-2-preview` | Model for that pointing query (`generate_content`; the streaming Live model does not serve it). |
 | `VISION_SETTLE_S` | `0.3` | Camera stabilization settling delay in seconds before capturing post-action verification frames. |
-| `ROBOT_PORT` / `SO101_PORT` | `/dev/tty.usbmodem...` | Serial device path for physical Feetech bus adapter. |
+| `ROBOT_PORT` | Platform default (`/dev/ttyACM0` on Linux, `/dev/tty.usbmodem...` on macOS) | Serial device path for physical Feetech bus adapter. |
 | `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
 | `WEB_STREAM_FPS` | `15` | Frame rate for operator MJPEG stream. |
 | `WEB_JPEG_QUALITY` | `75` | JPEG encoding quality for operator MJPEG stream. |
@@ -191,7 +191,7 @@ uv run python main.py --mode sim --reload
 ```
 
 > [!NOTE]
-> The `--port` argument defaults to the value set in `ROBOT_PORT` (or `SO101_PORT`) in your `.env` file, falling back to `/dev/tty.usbmodem5B415332861`. If your serial adapter differs, configure `ROBOT_PORT` in `.env` or pass `--port <path>` (e.g., `/dev/ttyACM0` on Linux or `/dev/tty.usbmodem...` on macOS).
+> The `--port` argument defaults to the value set in `ROBOT_PORT` in your `.env` file, falling back to the platform default (`/dev/ttyACM0` on Linux and `/dev/tty.usbmodem5B415332861` on macOS). If your serial adapter differs, configure `ROBOT_PORT` in `.env` or pass `--port <path>` (e.g., `/dev/ttyACM0` on Linux or `/dev/tty.usbmodem...` on macOS).
 >
 > **Linux Serial Permissions**: On Linux, ensure your user has read/write permissions for the serial port device (e.g., `/dev/ttyACM0`). You can grant immediate access with `sudo chmod 666 /dev/ttyACM0` or permanent access with `sudo usermod -a -G dialout $USER` (requires logout or `newgrp dialout`). You can run `uv run python main.py --task check_environment` to verify port access.
 
