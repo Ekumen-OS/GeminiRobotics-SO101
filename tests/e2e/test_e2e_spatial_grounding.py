@@ -23,7 +23,7 @@ from robot.settings import Settings, get_settings, set_settings
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
 from tests.conftest import DummyToolCall
-from vision import get_calibrator
+from vision.calibrator import get_calibrator
 
 # ==============================================================================
 # TIER 1: ISOLATED FEATURE MECHANICS (F1, F2, F3, F4)

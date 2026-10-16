@@ -274,6 +274,14 @@ class RealSO101Robot(RobotInterface):
                     )
             return qpos
 
+    def get_commanded_joint_positions(self) -> np.ndarray:
+        """Return the last commanded joint positions in radians.
+
+        Returns:
+            A numpy array of 6 commanded joint positions in radians.
+        """
+        return self._last_qpos.copy()
+
     def disconnect(self) -> None:
         """Disconnect and release the serial bus."""
         if self.connected and self.bus is not None:

@@ -98,13 +98,13 @@ def detect_workspace_objects(
     mask_roi: np.ndarray | None = None
     if workspace_polygon_px is not None and len(workspace_polygon_px) >= 3:
         mask_roi = np.zeros((h, w), dtype=np.uint8)
-        pts = np.int32([workspace_polygon_px])
-        cv2.fillPoly(mask_roi, pts, 255)
+        pts_roi = [np.asarray(workspace_polygon_px, dtype=np.int32)]
+        cv2.fillPoly(mask_roi, pts_roi, 255)
 
     detected: list[dict[str, Any]] = []
 
     for color_name, ranges in COLOR_HSV_RANGES.items():
-        color_mask = np.zeros((h, w), dtype=np.uint8)
+        color_mask: np.ndarray = np.zeros((h, w), dtype=np.uint8)
         for lower, upper in ranges:
             part = cv2.inRange(hsv, lower, upper)
             color_mask = cv2.bitwise_or(color_mask, part)
@@ -130,8 +130,8 @@ def detect_workspace_objects(
 
             # Extent of the blob's lowest pixel rows: the object's near bottom edge. The bbox
             # centre is not the bottom-edge centre (vertical edges lean in perspective).
-            pts = cnt.reshape(-1, 2)
-            low = pts[pts[:, 1] >= by + bh - 3]
+            cnt_pts: np.ndarray = cnt.reshape(-1, 2)
+            low = cnt_pts[cnt_pts[:, 1] >= by + bh - 3]
             bottom_edge = [float(low[:, 0].min()), float(low[:, 0].max() + 1), float(by + bh)]
 
             # Lowest boundary of the blob (bottom-most pixel in each column)
@@ -220,14 +220,6 @@ def locate_target_footprint(
     """
     bx, by, bw, bh = obj["bbox_px"]
     inv_h = np.linalg.inv(homography)
-
-    if camera is None:
-        try:
-            from robot.camera_model import PinholeCamera
-
-            camera = PinholeCamera.from_homography(homography)
-        except Exception:
-            camera = None
 
     cam_xy = (
         np.asarray(camera.centre_mm[:2], dtype=np.float64)
@@ -372,7 +364,7 @@ def locate_target_footprint(
             hull = cv2.convexHull(uvs)
             hull_crop = hull - np.array([bx, by], dtype=np.float32)
             sim_mask = np.zeros((bh, bw), dtype=np.uint8)
-            cv2.fillPoly(sim_mask, [np.int32(hull_crop)], 255)
+            cv2.fillPoly(sim_mask, [np.asarray(hull_crop, dtype=np.int32)], 255)
             inter = cv2.countNonZero(cv2.bitwise_and(blob_mask, sim_mask))
             union = cv2.countNonZero(cv2.bitwise_or(blob_mask, sim_mask))
             if union == 0:

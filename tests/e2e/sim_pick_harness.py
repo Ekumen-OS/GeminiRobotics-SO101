@@ -30,10 +30,10 @@ from agent.tools import execute_tool_call_sync
 from robot.interface import RobotInterface
 from robot.registry import get_active_robot, set_active_robot
 from robot.settings import Settings, get_settings, set_settings
-from robot.vision_detector import detect_workspace_objects
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
-from vision import get_calibrator
+from vision.calibrator import get_calibrator
+from vision.detector import detect_workspace_objects
 
 # Pixel noise of the emulated model's pointing, in normalised [0, 1000] units.
 MODEL_POINT_SIGMA = 8.0

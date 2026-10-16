@@ -10,7 +10,7 @@ import numpy as np
 
 from agent.guardrails import GuardrailState, Phase, TargetLock
 from robot.camera_model import PinholeCamera
-from robot.vision_detector import detect_workspace_objects
+from vision.detector import detect_workspace_objects
 
 # At least this many of the 4 mat markers must be visible for a frame to be trusted.
 MIN_VISIBLE_MARKERS = 3

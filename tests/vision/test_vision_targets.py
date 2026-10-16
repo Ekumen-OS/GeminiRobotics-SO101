@@ -1,72 +1,57 @@
-"""Characterization tests for stream overlay toggles and model-target blackboard."""
+"""Characterization tests for stream overlay toggles, workspace overlay, and model targets."""
+
+import hashlib
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-import vision as stream_mod
+from robot.calibration import ArucoWorkspaceCalibrator
+from simulation.sim_calibration import init_sim_workspace_calibration
+from vision.overlays import (
+    draw_workspace_overlay,
+    is_calibration_overlay_enabled,
+    is_target_overlay_enabled,
+    set_calibration_overlay,
+    set_target_overlay_enabled,
+)
+from vision.targets import (
+    clear_model_targets,
+    draw_model_target_overlay,
+    get_model_targets,
+    set_model_targets,
+)
 
 
 @pytest.fixture(autouse=True)
 def reset_stream_overlay_state():
     """Reset stream overlay toggles and model targets before and after each test."""
-    stream_mod.set_target_overlay_enabled(True)
-    stream_mod.set_calibration_overlay(False)
-    stream_mod.set_bounding_boxes_overlay(False)
-    stream_mod.set_grid_overlay(False)
-    stream_mod.set_crosshair_overlay(False)
-    stream_mod.clear_model_targets()
+    set_target_overlay_enabled(True)
+    set_calibration_overlay(False)
+    clear_model_targets()
     yield
-    stream_mod.set_target_overlay_enabled(True)
-    stream_mod.set_calibration_overlay(False)
-    stream_mod.set_bounding_boxes_overlay(False)
-    stream_mod.set_grid_overlay(False)
-    stream_mod.set_crosshair_overlay(False)
-    stream_mod.clear_model_targets()
+    set_target_overlay_enabled(True)
+    set_calibration_overlay(False)
+    clear_model_targets()
 
 
 def test_overlay_toggles_calibration() -> None:
     """Verify calibration overlay toggle state transitions."""
-    assert not stream_mod.is_calibration_overlay_enabled()
-    stream_mod.set_calibration_overlay(True)
-    assert stream_mod.is_calibration_overlay_enabled()
-    stream_mod.set_calibration_overlay(False)
-    assert not stream_mod.is_calibration_overlay_enabled()
-
-
-def test_overlay_toggles_bounding_boxes() -> None:
-    """Verify bounding boxes overlay toggle state transitions."""
-    assert not stream_mod.is_bounding_boxes_overlay_enabled()
-    stream_mod.set_bounding_boxes_overlay(True)
-    assert stream_mod.is_bounding_boxes_overlay_enabled()
-    stream_mod.set_bounding_boxes_overlay(False)
-    assert not stream_mod.is_bounding_boxes_overlay_enabled()
-
-
-def test_overlay_toggles_grid() -> None:
-    """Verify grid overlay toggle state transitions."""
-    assert not stream_mod.is_grid_overlay_enabled()
-    stream_mod.set_grid_overlay(True)
-    assert stream_mod.is_grid_overlay_enabled()
-    stream_mod.set_grid_overlay(False)
-    assert not stream_mod.is_grid_overlay_enabled()
-
-
-def test_overlay_toggles_crosshair() -> None:
-    """Verify crosshair overlay toggle state transitions."""
-    assert not stream_mod.is_crosshair_overlay_enabled()
-    stream_mod.set_crosshair_overlay(True)
-    assert stream_mod.is_crosshair_overlay_enabled()
-    stream_mod.set_crosshair_overlay(False)
-    assert not stream_mod.is_crosshair_overlay_enabled()
+    assert not is_calibration_overlay_enabled()
+    set_calibration_overlay(True)
+    assert is_calibration_overlay_enabled()
+    set_calibration_overlay(False)
+    assert not is_calibration_overlay_enabled()
 
 
 def test_overlay_toggles_target() -> None:
     """Verify model target overlay toggle state transitions."""
-    assert stream_mod.is_target_overlay_enabled()
-    stream_mod.set_target_overlay_enabled(False)
-    assert not stream_mod.is_target_overlay_enabled()
-    stream_mod.set_target_overlay_enabled(True)
-    assert stream_mod.is_target_overlay_enabled()
+    assert is_target_overlay_enabled()
+    set_target_overlay_enabled(False)
+    assert not is_target_overlay_enabled()
+    set_target_overlay_enabled(True)
+    assert is_target_overlay_enabled()
 
 
 def test_model_targets_set_and_get() -> None:
@@ -84,8 +69,8 @@ def test_model_targets_set_and_get() -> None:
         },
         [200.0, 300.0],
     ]
-    stream_mod.set_model_targets(targets)
-    retrieved = stream_mod.get_model_targets()
+    set_model_targets(targets)
+    retrieved = get_model_targets()
     assert len(retrieved) == 3
     assert retrieved[0]["point"] == (450.0, 550.0)
     assert retrieved[0]["label"] == "red block"
@@ -99,64 +84,14 @@ def test_model_targets_set_and_get() -> None:
     assert retrieved[2]["point"] == (200.0, 300.0)
     assert retrieved[2]["label"] is None
 
-    # Primary target point
-    pt, label = stream_mod.get_model_target_point()
-    assert pt == (450.0, 550.0)
-    assert label == "red block"
-
 
 def test_model_targets_clear() -> None:
-    """Verify clearing model targets resets blackboard and primary point."""
-    stream_mod.set_model_targets([{"point": (100.0, 100.0), "label": "test"}])
-    assert len(stream_mod.get_model_targets()) == 1
+    """Verify clearing model targets resets blackboard."""
+    set_model_targets([{"point": (100.0, 100.0), "label": "test"}])
+    assert len(get_model_targets()) == 1
 
-    stream_mod.clear_model_targets()
-    assert stream_mod.get_model_targets() == []
-    assert stream_mod.get_model_target_point() == (None, None)
-
-
-def test_model_targets_add_incremental() -> None:
-    """Verify adding model targets incrementally preserves primary target."""
-    assert stream_mod.get_model_targets() == []
-    stream_mod.add_model_target(
-        point=(300.0, 400.0),
-        label="first",
-        box_2d=[250.0, 350.0, 350.0, 450.0],
-        color=(0, 255, 0),
-    )
-    assert len(stream_mod.get_model_targets()) == 1
-    pt, lbl = stream_mod.get_model_target_point()
-    assert pt == (300.0, 400.0)
-    assert lbl == "first"
-
-    stream_mod.add_model_target(point=(600.0, 700.0), label="second")
-    assert len(stream_mod.get_model_targets()) == 2
-    # Primary remains first target
-    pt2, lbl2 = stream_mod.get_model_target_point()
-    assert pt2 == (300.0, 400.0)
-    assert lbl2 == "first"
-
-    # Invalid additions should be no-ops
-    stream_mod.add_model_target(point=None)  # type: ignore[arg-type]
-    stream_mod.add_model_target(point=[1.0])  # type: ignore[arg-type]
-    assert len(stream_mod.get_model_targets()) == 2
-
-
-def test_set_and_clear_model_target_point() -> None:
-    """Verify setting and clearing single target point."""
-    stream_mod.set_model_target_point([350.0, 450.0], label="single point")
-    pt, lbl = stream_mod.get_model_target_point()
-    assert pt == (350.0, 450.0)
-    assert lbl == "single point"
-
-    stream_mod.clear_model_target_point()
-    assert stream_mod.get_model_target_point() == (None, None)
-
-    # Calling set_model_target_point with None clears
-    stream_mod.set_model_target_point([100.0, 100.0])
-    assert stream_mod.get_model_target_point()[0] == (100.0, 100.0)
-    stream_mod.set_model_target_point(None)
-    assert stream_mod.get_model_target_point() == (None, None)
+    clear_model_targets()
+    assert get_model_targets() == []
 
 
 def test_draw_model_target_overlay() -> None:
@@ -164,13 +99,67 @@ def test_draw_model_target_overlay() -> None:
     frame = np.full((480, 640, 3), 128, dtype=np.uint8)
 
     # When target overlay is disabled, frame is untouched
-    stream_mod.set_target_overlay_enabled(False)
-    stream_mod.set_model_targets([{"point": (250.0, 250.0), "label": "test"}])
-    res = stream_mod.draw_model_target_overlay(frame)
+    set_target_overlay_enabled(False)
+    set_model_targets([{"point": (250.0, 250.0), "label": "test"}])
+    res = draw_model_target_overlay(frame)
     assert np.array_equal(res, frame)
 
     # When target overlay is enabled, overlay is rendered onto frame
-    stream_mod.set_target_overlay_enabled(True)
-    res2 = stream_mod.draw_model_target_overlay(frame.copy())
+    set_target_overlay_enabled(True)
+    res2 = draw_model_target_overlay(frame.copy())
     # Frame should be modified by drawing markers/labels
     assert not np.array_equal(res2, frame)
+
+
+def test_overlay_drawing() -> None:
+    """Test draw_workspace_overlay returns an annotated image with matching dimensions."""
+    calibrator = ArucoWorkspaceCalibrator()
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    mock_detected = {
+        0: np.array([[100, 50], [140, 50], [140, 90], [100, 90]], dtype=np.float32),
+        1: np.array([[500, 50], [540, 50], [540, 90], [500, 90]], dtype=np.float32),
+        2: np.array([[500, 400], [540, 400], [540, 440], [500, 440]], dtype=np.float32),
+        3: np.array([[100, 400], [140, 400], [140, 440], [100, 440]], dtype=np.float32),
+    }
+
+    annotated = draw_workspace_overlay(
+        calibrator=calibrator,
+        frame_rgb=frame,
+        detected_markers=mock_detected,
+        show_markers=True,
+    )
+
+    assert annotated.shape == frame.shape
+    assert annotated.dtype == frame.dtype
+    assert not np.array_equal(annotated, frame)
+
+
+def test_draw_workspace_overlay_byte_identical_regression() -> None:
+    """Verify draw_workspace_overlay produces byte-identical output to original method."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        calibrator = init_sim_workspace_calibration(save_path=Path(tmp_dir) / "sim.npz")
+        rng = np.random.default_rng(42)
+        frame = rng.integers(0, 255, (480, 640, 3), dtype=np.uint8)
+        mock_detected = {
+            0: np.array([[100, 400], [140, 400], [140, 440], [100, 440]], dtype=np.float32),
+            1: np.array([[100, 50], [140, 50], [140, 90], [100, 90]], dtype=np.float32),
+            2: np.array([[500, 50], [540, 50], [540, 90], [500, 90]], dtype=np.float32),
+            3: np.array([[500, 400], [540, 400], [540, 440], [500, 440]], dtype=np.float32),
+        }
+
+        out_markers = draw_workspace_overlay(
+            calibrator, frame.copy(), detected_markers=mock_detected, show_markers=True
+        )
+        out_no_markers = draw_workspace_overlay(
+            calibrator, frame.copy(), detected_markers={}, show_markers=False
+        )
+
+        assert (
+            hashlib.sha256(out_markers.tobytes()).hexdigest()
+            == "305d579ecc3f0eefdb7c9d044205598712eeac5f71d09b58bef38ac8ed7f9455"
+        )
+        assert (
+            hashlib.sha256(out_no_markers.tobytes()).hexdigest()
+            == "a551d23998adb99e1fe60e088a36e844e792e8816c9e9f070844e21ffb146507"
+        )

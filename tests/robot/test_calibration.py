@@ -131,32 +131,6 @@ def test_save_and_load_calibration() -> None:
         assert save_file.exists()
 
 
-def test_overlay_drawing() -> None:
-    """Test overlay drawing functions return an annotated image with matching dimensions."""
-    calibrator = ArucoWorkspaceCalibrator()
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    mock_detected = {
-        0: np.array([[100, 50], [140, 50], [140, 90], [100, 90]], dtype=np.float32),
-        1: np.array([[500, 50], [540, 50], [540, 90], [500, 90]], dtype=np.float32),
-        2: np.array([[500, 400], [540, 400], [540, 440], [500, 440]], dtype=np.float32),
-        3: np.array([[100, 400], [140, 400], [140, 440], [100, 440]], dtype=np.float32),
-    }
-
-    annotated = calibrator.draw_workspace_overlay(
-        frame_rgb=frame,
-        detected_markers=mock_detected,
-        show_axes=True,
-        show_markers=True,
-        active_target_px=(320.0, 240.0),
-    )
-
-    assert annotated.shape == frame.shape
-    assert annotated.dtype == frame.dtype
-    # Check that drawing actually modified some pixels
-    assert not np.array_equal(annotated, frame)
-
-
 def test_generate_aruco_markers() -> None:
     """Test marker generation utility creates expected files."""
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -296,7 +270,7 @@ def test_sim_spatial_point_execution() -> None:
     from agent.tools import execute_tool_call
     from simulation.sim_calibration import init_sim_workspace_calibration
     from simulation.sim_robot import SO101Robot
-    from vision import get_calibrator
+    from vision.calibrator import get_calibrator
 
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)

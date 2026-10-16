@@ -16,7 +16,6 @@ from robot.registry import get_active_robot, set_active_robot
 
 __all__ = [
     "ensure_centered_meshes",
-    "get_active_robot",
     "get_robot_state_dict",
     "get_ui_joint_positions",
     "set_active_robot",
@@ -88,9 +87,6 @@ def ensure_centered_meshes() -> None:
                 f.write(struct.pack("<3f", float(v2[0]), float(v2[1]), float(v2[2])))
                 f.write(struct.pack("<3f", float(v3[0]), float(v3[1]), float(v3[2])))
                 f.write(struct.pack("<H", 0))
-
-
-_ensure_centered_meshes = ensure_centered_meshes
 
 
 def set_target_joints_deg(deg: list[float]) -> None:

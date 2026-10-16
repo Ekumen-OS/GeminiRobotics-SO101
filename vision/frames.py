@@ -8,11 +8,12 @@ import numpy as np
 
 from robot.registry import get_active_robot
 from vision.calibrator import get_calibrator
-from vision.overlays import is_calibration_overlay_enabled, is_target_overlay_enabled
-from vision.patterns import (
-    generate_raw_sim_placeholder_pattern,
-    generate_sim_placeholder_pattern,
+from vision.overlays import (
+    draw_workspace_overlay,
+    is_calibration_overlay_enabled,
+    is_target_overlay_enabled,
 )
+from vision.patterns import generate_raw_sim_placeholder_pattern
 from vision.sim_runtime import _SIM_RUNTIME, _robot_can_render
 from vision.targets import draw_model_target_overlay
 
@@ -21,19 +22,28 @@ _global_latest_raw_frame: np.ndarray | None = None
 # for a frame captured *after* the arm finished moving instead of reading a stale one.
 _global_latest_raw_ts: float = 0.0
 _global_latest_annotated_frame: np.ndarray | None = None
-_global_latest_frame: np.ndarray | None = None
 _global_frame_lock = threading.Lock()
 
 
 def _on_sim_frame(raw_frame: np.ndarray | None) -> None:
     """Callback for simulation runtime worker to publish rendered frames to global buffers."""
-    global _global_latest_raw_frame, _global_latest_annotated_frame, _global_latest_frame
-    global _global_latest_raw_ts
+    global _global_latest_raw_frame, _global_latest_annotated_frame, _global_latest_raw_ts
+    annotated: np.ndarray | None = None
+    if raw_frame is not None:
+        annotated = raw_frame.copy()
+        if is_calibration_overlay_enabled():
+            calib = get_calibrator(mode="sim")
+            if calib.is_calibrated:
+                annotated = draw_workspace_overlay(
+                    calib, annotated, detected_markers={}, show_markers=False
+                )
+        if is_target_overlay_enabled():
+            annotated = draw_model_target_overlay(annotated)
+
     with _global_frame_lock:
         _global_latest_raw_frame = raw_frame.copy() if raw_frame is not None else None
         _global_latest_raw_ts = time.monotonic()
-        _global_latest_annotated_frame = raw_frame.copy() if raw_frame is not None else None
-        _global_latest_frame = raw_frame.copy() if raw_frame is not None else None
+        _global_latest_annotated_frame = annotated
 
 
 _SIM_RUNTIME.set_frame_sink(_on_sim_frame)
@@ -46,7 +56,6 @@ def has_published_frame() -> bool:
             frame is not None
             for frame in (
                 _global_latest_annotated_frame,
-                _global_latest_frame,
                 _global_latest_raw_frame,
             )
         )
@@ -111,7 +120,7 @@ def get_latest_raw_jpeg() -> bytes | None:
             return None
     else:
         if frame is None:
-            frame = _SIM_RUNTIME.get_latest_raw_frame(robot)
+            frame = _SIM_RUNTIME.get_latest_frame(robot)
         if frame is None:
             frame = generate_raw_sim_placeholder_pattern()
 
@@ -129,7 +138,7 @@ def get_latest_raw_jpeg() -> bytes | None:
 def get_latest_jpeg(quality: int = 95) -> bytes | None:
     """Get the most recent camera frame from any active stream as a JPEG with UI overlays.
 
-    Used by Web UI endpoints (/api/stream, /api/sim_stream) and preview viewers.
+    Used by the Web UI endpoint (/api/stream) and preview viewers.
 
     Args:
         quality: JPEG quality (1-100). The model path uses ``get_latest_raw_jpeg`` instead.
@@ -141,15 +150,7 @@ def get_latest_jpeg(quality: int = 95) -> bytes | None:
         frame = (
             _global_latest_annotated_frame.copy()
             if _global_latest_annotated_frame is not None
-            else (
-                _global_latest_frame.copy()
-                if _global_latest_frame is not None
-                else (
-                    _global_latest_raw_frame.copy()
-                    if _global_latest_raw_frame is not None
-                    else None
-                )
-            )
+            else (_global_latest_raw_frame.copy() if _global_latest_raw_frame is not None else None)
         )
 
     if frame is None:
@@ -158,15 +159,7 @@ def get_latest_jpeg(quality: int = 95) -> bytes | None:
             frame = _SIM_RUNTIME.get_latest_frame(robot)
 
     if frame is None:
-        frame = generate_sim_placeholder_pattern()
-
-    if frame is not None:
-        if is_calibration_overlay_enabled():
-            calib = get_calibrator(mode="sim")
-            if calib.is_calibrated:
-                frame = calib.draw_workspace_overlay(frame, detected_markers={}, show_markers=False)
-        if is_target_overlay_enabled():
-            frame = draw_model_target_overlay(frame)
+        frame = generate_raw_sim_placeholder_pattern()
 
     bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     success, encoded = cv2.imencode(

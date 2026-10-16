@@ -25,7 +25,7 @@ The repository strictly enforces a layered dependency architecture (`robot < sim
    - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`robot/constants.py`](robot/constants.py)).
    - **Kinematics & Theory**: Numerical damped least-squares Inverse Kinematics with null-space projection ([`robot/cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`robot/theory.md`](robot/theory.md)).
    - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`robot/calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
-   - **Programmatic Perception**: OpenCV visual alignment offset engine and post-lift grasp verification ([`robot/perception.py`](robot/perception.py), [`robot/vision_detector.py`](robot/vision_detector.py)).
+   - **Programmatic Perception**: OpenCV visual alignment offset engine ([`robot/perception.py`](robot/perception.py)).
    - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`robot/real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
    - **Active Robot Registry**: Thread-safe global active-robot registry ([`robot/registry.py`](robot/registry.py)).
 
@@ -38,7 +38,8 @@ The repository strictly enforces a layered dependency architecture (`robot < sim
    - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`vision/camera.py`](vision/camera.py)).
    - **Shared Capture Manager**: Multi-consumer shared capture thread and video stream production ([`vision/capture.py`](vision/capture.py)).
    - **Dual Frame Buffer Engine**: Separation between untouched raw model observations (`get_latest_raw_jpeg`) and operator annotated display frames ([`vision/frames.py`](vision/frames.py)).
-   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`vision/calibrator.py`](vision/calibrator.py)) and model-target blackboard with sleek corner-notched bounding box overlays ([`vision/targets.py`](vision/targets.py)).
+   - **Object & Footprint Detector**: HSV salient color segmentation, contour detection, and target footprint locator ([`vision/detector.py`](vision/detector.py)).
+   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`vision/calibrator.py`](vision/calibrator.py)), workspace overlay drawing ([`vision/overlays.py`](vision/overlays.py)), and model-target blackboard with sleek corner-notched bounding box overlays ([`vision/targets.py`](vision/targets.py)).
    - **Simulation Frame Runtime**: Dedicated background sim rendering worker ([`vision/sim_runtime.py`](vision/sim_runtime.py)).
 
 4. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
@@ -52,7 +53,7 @@ The repository strictly enforces a layered dependency architecture (`robot < sim
    - **Interactive Setup Wizard**: Terminal CLI wizard configuring table dimensions, clearances, and marker reuse ([`tools/setup_wizard.py`](tools/setup_wizard.py)).
 
 6. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
-   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`, `/ui_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` and `/api/sim_stream` MJPEG endpoints, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`ui/app.py`](ui/app.py)).
+   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` MJPEG endpoint, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`ui/app.py`](ui/app.py)).
    - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`ui/assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
    - **Lazy Kinematics State Management**: Centralized robot state manager and lazy kinematics transforms ([`ui/state.py`](ui/state.py)).
    - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`ui/components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`ui/components/controls.py`](ui/components/controls.py)).

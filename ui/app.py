@@ -16,17 +16,17 @@ from robot.constants import JOINT_NAMES, PRESET_POSES
 from robot.errors import RoboticsError
 from robot.interface import RobotInterface
 from robot.settings import get_settings
-from ui.components.chat import build_chat_interface, wire_chat_events
+from ui.components.chat import (
+    READY_PROMPT_PLACEHOLDER,
+    build_chat_interface,
+    wire_chat_events,
+)
 from ui.components.controls import build_controls_interface
 from ui.components.vision import build_vision_interface
 from ui.state import ensure_centered_meshes, get_robot_state_dict, set_active_robot
-from vision import (
-    ensure_sim_runtime_started,
-    get_calibrator,
-    get_latest_jpeg,
-    has_published_frame,
-    save_workspace_calibration_file,
-)
+from vision.calibrator import get_calibrator, save_workspace_calibration_file
+from vision.frames import get_latest_jpeg, has_published_frame
+from vision.sim_runtime import ensure_sim_runtime_started
 
 logger = logging.getLogger(__name__)
 
@@ -223,30 +223,28 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
             rand_btn=rand_btn,
         )
 
-        ready_placeholder = (
-            'e.g., "Pick up red cube and place in sorting basket..." (Press Enter to Send)'
-        )
+        def _build_calibrated_chat_updates(history: list | None) -> tuple:
+            ready_status = "🟢 **Status: Ready**"
+            prompt_upd = gr.update(
+                placeholder=READY_PROMPT_PLACEHOLDER,
+                interactive=vla_controller.is_api_available,
+            )
+            exec_upd = gr.update(interactive=vla_controller.is_api_available)
+            new_hist = list(history) if history else []
+            if new_hist and "Workspace Not Calibrated" in new_hist[0].get("content", ""):
+                new_hist[0]["content"] = (
+                    f"🤖 **System Active**: Ready in `{mode.upper()}` mode with "
+                    "calibrated workspace. Type commands below to invoke spatial reasoning."
+                )
+            return gr.update(value=ready_status), prompt_upd, exec_upd, new_hist
 
         # Live synchronization between workspace calibration and Chat interface
         if save_calib_btn is not None and calib_status is not None:
 
             def on_save_calibration(history: list) -> tuple:
                 msg = save_workspace_calibration_file()
-                calib = get_calibrator(mode=mode)
-                if calib.is_calibrated:
-                    ready_status = "🟢 **Status: Ready**"
-                    prompt_upd = gr.update(
-                        placeholder=ready_placeholder,
-                        interactive=vla_controller.is_api_available,
-                    )
-                    exec_upd = gr.update(interactive=vla_controller.is_api_available)
-                    new_hist = list(history) if history else []
-                    if new_hist and "Workspace Not Calibrated" in new_hist[0].get("content", ""):
-                        new_hist[0]["content"] = (
-                            f"🤖 **System Active**: Ready in `{mode.upper()}` mode with "
-                            "calibrated workspace. Type commands below to invoke spatial reasoning."
-                        )
-                    return msg, gr.update(value=ready_status), prompt_upd, exec_upd, new_hist
+                if get_calibrator(mode=mode).is_calibrated:
+                    return msg, *_build_calibrated_chat_updates(history)
                 return msg, gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
             save_calib_btn.click(
@@ -258,26 +256,10 @@ def build_vla_interface(robot: RobotInterface | None = None, mode: str = "real")
         if calib_timer is not None:
 
             def sync_calibration_timer(history: list, current_status: str) -> tuple:
-                calib = get_calibrator(mode=mode)
-                if calib.is_calibrated and "Workspace Not Calibrated" in (current_status or ""):
-                    ready_status = "🟢 **Status: Ready**"
-                    prompt_upd = gr.update(
-                        placeholder=ready_placeholder,
-                        interactive=vla_controller.is_api_available,
-                    )
-                    exec_upd = gr.update(interactive=vla_controller.is_api_available)
-                    new_hist = list(history) if history else []
-                    if new_hist and "Workspace Not Calibrated" in new_hist[0].get("content", ""):
-                        new_hist[0]["content"] = (
-                            f"🤖 **System Active**: Ready in `{mode.upper()}` mode with "
-                            "calibrated workspace. Type commands below to invoke spatial reasoning."
-                        )
-                    return (
-                        gr.update(value=ready_status),
-                        prompt_upd,
-                        exec_upd,
-                        new_hist,
-                    )
+                if get_calibrator(mode=mode).is_calibrated and "Workspace Not Calibrated" in (
+                    current_status or ""
+                ):
+                    return _build_calibrated_chat_updates(history)
                 return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
             calib_timer.tick(
@@ -345,9 +327,6 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
     if sim_assets_dir.exists():
         app.mount("/sim_assets", StaticFiles(directory=str(sim_assets_dir)), name="sim_assets")
 
-    if ui_assets_dir.exists():
-        app.mount("/ui_assets", StaticFiles(directory=str(ui_assets_dir)), name="ui_assets")
-
     if aruco_markers_dir.exists():
         app.mount(
             "/aruco_markers", StaticFiles(directory=str(aruco_markers_dir)), name="aruco_markers"
@@ -370,29 +349,13 @@ def create_app(robot: RobotInterface | None = None, mode: str = "real") -> FastA
 
     @app.get("/api/workspace_config")
     async def get_workspace_config():
-        cfg_path = project_root / "config" / "workspace_calibration.json"
+        cfg_path = get_settings().calibration_config_path
         if cfg_path.exists():
             try:
                 return JSONResponse(json.loads(cfg_path.read_text()))
             except (json.JSONDecodeError, OSError):
                 pass
         return JSONResponse({})
-
-    @app.get("/api/sim_stream")
-    async def get_sim_stream():
-        import asyncio
-
-        async def frame_generator():
-            while True:
-                jpg = get_latest_jpeg()
-                if jpg is not None:
-                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n")
-                await asyncio.sleep(0.033)
-
-        return StreamingResponse(
-            frame_generator(),
-            media_type="multipart/x-mixed-replace; boundary=frame",
-        )
 
     @app.get("/api/stream")
     async def get_camera_stream():

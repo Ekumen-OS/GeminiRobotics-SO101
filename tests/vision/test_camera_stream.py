@@ -1,20 +1,34 @@
 """Tests for the shared camera capture and the browser MJPEG stream (/api/stream)."""
 
 import asyncio
+import logging
 import threading
 from collections.abc import Generator
 from typing import Any
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
 import pytest
 
-import vision as stream_mod
 import vision.capture as capture_mod
 import vision.frames as frames_mod
 import vision.sim_runtime as sim_runtime_mod
+from robot.registry import set_active_robot
 from robot.settings import Settings
 from ui.app import mjpeg_frames
+from vision.capture import (
+    ensure_camera_capture,
+    is_camera_alive,
+    stop_camera_capture,
+    switch_camera_capture,
+)
+from vision.frames import (
+    get_latest_jpeg,
+    get_latest_raw_jpeg,
+    has_published_frame,
+)
+from vision.patterns import generate_no_camera_pattern
 
 JPEG_SOI = b"\xff\xd8"
 
@@ -38,30 +52,27 @@ def frames(clean_stream_state: None) -> Generator[None, None, None]:
         saved = (
             frames_mod._global_latest_raw_frame,
             frames_mod._global_latest_annotated_frame,
-            frames_mod._global_latest_frame,
         )
         frames_mod._global_latest_raw_frame = raw.copy()
         frames_mod._global_latest_annotated_frame = raw.copy()
-        frames_mod._global_latest_frame = raw.copy()
     yield
     with frames_mod._global_frame_lock:
         (
             frames_mod._global_latest_raw_frame,
             frames_mod._global_latest_annotated_frame,
-            frames_mod._global_latest_frame,
         ) = saved
 
 
 def test_web_jpeg_quality_changes_size_but_model_path_stays_full_quality(frames: None) -> None:
     """Lower web quality shrinks the browser JPEG; the raw (model) JPEG is unaffected by it."""
-    low = stream_mod.get_latest_jpeg(quality=30)
-    high = stream_mod.get_latest_jpeg(quality=95)
+    low = get_latest_jpeg(quality=30)
+    high = get_latest_jpeg(quality=95)
     assert low is not None and high is not None
     assert low.startswith(JPEG_SOI) and len(low) < len(high)
 
-    raw_a = stream_mod.get_latest_raw_jpeg()
-    stream_mod.get_latest_jpeg(quality=10)
-    assert stream_mod.get_latest_raw_jpeg() == raw_a
+    raw_a = get_latest_raw_jpeg()
+    get_latest_jpeg(quality=10)
+    assert get_latest_raw_jpeg() == raw_a
 
 
 def test_raw_jpeg_is_free_of_overlays_even_when_annotated_differs(frames: None) -> None:
@@ -72,10 +83,9 @@ def test_raw_jpeg_is_free_of_overlays_even_when_annotated_differs(frames: None) 
     with frames_mod._global_frame_lock:
         frames_mod._global_latest_raw_frame = raw
         frames_mod._global_latest_annotated_frame = annotated
-        frames_mod._global_latest_frame = annotated
 
-    raw_patch = _decode_jpeg(stream_mod.get_latest_raw_jpeg() or b"")[150:250, 150:250]
-    web_patch = _decode_jpeg(stream_mod.get_latest_jpeg(quality=95) or b"")[150:250, 150:250]
+    raw_patch = _decode_jpeg(get_latest_raw_jpeg() or b"")[150:250, 150:250]
+    web_patch = _decode_jpeg(get_latest_jpeg(quality=95) or b"")[150:250, 150:250]
     assert np.abs(raw_patch.astype(int) - 128).max() < 8  # still flat grey: no overlay leaked
     assert web_patch[..., 0].mean() > 230 and web_patch[..., 2].mean() < 30  # overlay present
 
@@ -111,24 +121,23 @@ def test_web_stream_settings_defaults_and_env_override(monkeypatch: pytest.Monke
 
 
 @pytest.fixture
-def fake_capture(monkeypatch: pytest.MonkeyPatch) -> Generator[list[tuple[int, str]], None, None]:
-    """Replace ``stream_video`` with a generator that idles until the stream token changes."""
-    started: list[tuple[int, str]] = []
+def fake_capture(monkeypatch: pytest.MonkeyPatch) -> Generator[list[int], None, None]:
+    """Replace ``stream_video`` with a blocking loop that idles until the stream token changes."""
+    started: list[int] = []
     ready = threading.Event()
 
-    def fake_stream_video(camera_index: int, mode: str, robot: Any = None):
+    def fake_stream_video(camera_index: int = 0) -> None:
         my_id = capture_mod._current_stream_id
-        started.append((camera_index, mode))
+        started.append(camera_index)
         ready.set()
         while capture_mod._current_stream_id == my_id:
-            yield None
             ready.wait(0.005)
 
     monkeypatch.setattr(capture_mod, "stream_video", fake_stream_video)
     monkeypatch.setattr(capture_mod, "_capture_thread", None)
     monkeypatch.setattr(capture_mod, "_capture_key", None)
     yield started
-    capture_mod.prepare_stream_switch()  # let the fake generator exit
+    capture_mod.prepare_stream_switch()  # let the fake capture exit
     thread = capture_mod._capture_thread
     if thread is not None:
         thread.join(timeout=2)
@@ -144,30 +153,30 @@ def _wait_until(predicate, timeout: float = 2.0) -> bool:
     return False
 
 
-def test_second_page_load_joins_running_capture(fake_capture: list[tuple[int, str]]) -> None:
+def test_second_page_load_joins_running_capture(fake_capture: list[int]) -> None:
     """A second tab must share the running capture, not restart or replace it."""
-    assert stream_mod.ensure_camera_capture(2, "real") == 2
-    assert _wait_until(lambda: fake_capture == [(2, "real")])
+    assert ensure_camera_capture(2) == 2
+    assert _wait_until(lambda: fake_capture == [2])
 
     # Second tab loads with a different dropdown default; it must join camera 2.
-    assert stream_mod.ensure_camera_capture(0, "real") == 2
-    assert fake_capture == [(2, "real")]
+    assert ensure_camera_capture(0) == 2
+    assert fake_capture == [2]
 
 
 def test_switch_restarts_only_when_camera_changes_or_forced(
-    fake_capture: list[tuple[int, str]],
+    fake_capture: list[int],
 ) -> None:
     """Switching to the same camera is a no-op; a new camera or force=True restarts capture."""
-    stream_mod.ensure_camera_capture(2, "real")
+    ensure_camera_capture(2)
     assert _wait_until(lambda: len(fake_capture) == 1)
 
-    stream_mod.switch_camera_capture(2, "real")
+    switch_camera_capture(2)
     assert len(fake_capture) == 1
 
-    stream_mod.switch_camera_capture(0, "real")
-    assert _wait_until(lambda: fake_capture[-1] == (0, "real"))
+    switch_camera_capture(0)
+    assert _wait_until(lambda: fake_capture[-1] == 0)
 
-    stream_mod.switch_camera_capture(0, "real", force=True)
+    switch_camera_capture(0, force=True)
     assert _wait_until(lambda: len(fake_capture) == 3)
 
 
@@ -178,17 +187,14 @@ def empty_frames(clean_stream_state: None) -> Generator[None, None, None]:
         saved = (
             frames_mod._global_latest_raw_frame,
             frames_mod._global_latest_annotated_frame,
-            frames_mod._global_latest_frame,
         )
         frames_mod._global_latest_raw_frame = None
         frames_mod._global_latest_annotated_frame = None
-        frames_mod._global_latest_frame = None
     yield
     with frames_mod._global_frame_lock:
         (
             frames_mod._global_latest_raw_frame,
             frames_mod._global_latest_annotated_frame,
-            frames_mod._global_latest_frame,
         ) = saved
 
 
@@ -216,11 +222,9 @@ def test_empty_buffers_with_physical_robot_do_not_attempt_sim_render(
     empty_frames: None, mock_robot: Any, capsys: pytest.CaptureFixture
 ) -> None:
     """Regression: polling before the first camera frame logged 'Sim render failed' per poll."""
-    from ui.state import set_active_robot
-
     set_active_robot(mock_robot)  # a robot that cannot render, like the real arm
-    assert stream_mod.get_latest_jpeg(quality=70) is not None
-    assert stream_mod.get_latest_raw_jpeg() is None
+    assert get_latest_jpeg(quality=70) is not None
+    assert get_latest_raw_jpeg() is None
     captured = capsys.readouterr()
     assert "Sim render failed" not in captured.out + captured.err
 
@@ -229,18 +233,15 @@ def test_mjpeg_waits_for_first_frame_instead_of_serving_sim_placeholder(
     empty_frames: None,
 ) -> None:
     """Real mode must not flash the 'MODE: SIMULATION' placeholder while the camera warms up."""
-    assert stream_mod.has_published_frame() is False
+    assert has_published_frame() is False
 
     async def run() -> bytes:
         gen = mjpeg_frames(quality=70, fps=100)
-        # asyncio.wait (unlike wait_for) does not cancel the pending step, which would end the
-        # generator; we only want to observe that it has produced nothing yet.
         pending = asyncio.ensure_future(gen.__anext__())
         try:
             done, _ = await asyncio.wait({pending}, timeout=0.3)
             assert not done, "stream emitted a frame before any camera frame was published"
             with frames_mod._global_frame_lock:
-                frames_mod._global_latest_frame = _noise_frame()
                 frames_mod._global_latest_annotated_frame = _noise_frame()
             return await asyncio.wait_for(pending, timeout=2)
         finally:
@@ -250,16 +251,102 @@ def test_mjpeg_waits_for_first_frame_instead_of_serving_sim_placeholder(
     assert asyncio.run(run()).startswith(b"--frame")
 
 
-def test_stop_camera_capture_joins_thread_and_clears_key(fake_capture) -> None:
+def test_stop_camera_capture_joins_thread_and_clears_key(fake_capture: list[int]) -> None:
     """Shutdown stops the shared capture thread so no V4L2 read is pending at interpreter exit."""
-    stream_mod.ensure_camera_capture(4, "real")
+    ensure_camera_capture(4)
     assert _wait_until(lambda: len(fake_capture) == 1)
     thread = capture_mod._capture_thread
     assert thread is not None and thread.is_alive()
 
-    stream_mod.stop_camera_capture(timeout_s=2.0)
+    stop_camera_capture(timeout_s=2.0)
 
     assert not thread.is_alive()
     assert capture_mod._capture_thread is None
     assert capture_mod._capture_key is None
-    stream_mod.stop_camera_capture()  # idempotent when nothing is running
+    stop_camera_capture()  # idempotent when nothing is running
+
+
+def test_switch_camera_capture_keeps_camera_alive_after_old_thread_exits(
+    frames: None,
+    fake_capture: list[int],
+    mock_robot: Any,
+) -> None:
+    """Regression: superseded capture thread exiting must not clear is_camera_alive()."""
+    set_active_robot(mock_robot)
+    ensure_camera_capture(0)
+    assert _wait_until(lambda: fake_capture == [0])
+    old_thread = capture_mod._capture_thread
+    assert old_thread is not None
+
+    with frames_mod._global_frame_lock:
+        frames_mod._global_latest_raw_frame = _noise_frame()
+
+    switch_camera_capture(1)
+    assert _wait_until(lambda: fake_capture == [0, 1])
+    old_thread.join(timeout=2.0)
+    assert not old_thread.is_alive()
+
+    assert is_camera_alive() is True
+    assert get_latest_raw_jpeg() is not None
+
+    stop_camera_capture(timeout_s=2.0)
+    assert is_camera_alive() is False
+
+
+def test_real_camera_open_failure_and_read_failure_fail_closed(
+    empty_frames: None,
+    mock_robot: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bug 7 regression: open failure and read failure stop capture thread and fail closed."""
+    set_active_robot(mock_robot)
+    expected_no_cam = generate_no_camera_pattern()
+
+    # Case (a): _open_capture returns an unopened VideoCapture
+    unopened_cap = MagicMock()
+    unopened_cap.isOpened.return_value = False
+    monkeypatch.setattr(capture_mod, "_open_capture", lambda idx: unopened_cap)
+    monkeypatch.setattr(capture_mod, "_capture_thread", None)
+    monkeypatch.setattr(capture_mod, "_capture_key", None)
+
+    with caplog.at_level(logging.WARNING, logger="vision.capture"):
+        switch_camera_capture(0, force=True)
+        assert _wait_until(lambda: not is_camera_alive() and not capture_mod._capture_alive())
+
+    assert is_camera_alive() is False
+    assert get_latest_raw_jpeg() is None
+    with frames_mod._global_frame_lock:
+        assert frames_mod._global_latest_raw_frame is None
+        assert frames_mod._global_latest_annotated_frame is not None
+        assert np.array_equal(frames_mod._global_latest_annotated_frame, expected_no_cam)
+    assert any("Failed to open" in rec.message for rec in caplog.records)
+
+    # Case (b): cap.read() returns 2 valid frames, then (False, None)
+    caplog.clear()
+    good_bgr = np.full((480, 640, 3), 64, dtype=np.uint8)
+    failing_cap = MagicMock()
+    failing_cap.isOpened.return_value = True
+    failing_cap.getBackendName.return_value = "V4L2"
+    failing_cap.get.return_value = 30.0
+    failing_cap.read.side_effect = [
+        (True, good_bgr),
+        (True, good_bgr),
+        (False, None),
+    ]
+    monkeypatch.setattr(capture_mod, "_open_capture", lambda idx: failing_cap)
+    monkeypatch.setattr(capture_mod.time, "sleep", lambda _: None)
+
+    with caplog.at_level(logging.WARNING, logger="vision.capture"):
+        switch_camera_capture(1, force=True)
+        assert _wait_until(lambda: not is_camera_alive() and not capture_mod._capture_alive())
+
+    assert is_camera_alive() is False
+    assert get_latest_raw_jpeg() is None
+    with frames_mod._global_frame_lock:
+        assert frames_mod._global_latest_raw_frame is None
+        assert frames_mod._global_latest_annotated_frame is not None
+        assert np.array_equal(frames_mod._global_latest_annotated_frame, expected_no_cam)
+    assert any("Read failed for index 1" in rec.message for rec in caplog.records)
+    failing_cap.release.assert_called_once()
+    stop_camera_capture()

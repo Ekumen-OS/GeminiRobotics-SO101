@@ -38,7 +38,6 @@ from agent.tools import (
 from agent.vla_controller import VLAController
 from robot.constants import PRESET_POSES
 from robot.settings import Settings, set_settings
-from robot.vision_detector import detect_workspace_objects
 from tests.conftest import DummyToolCall, MockRobot
 from tests.e2e.pick_helpers import (
     next_call_from,
@@ -46,6 +45,7 @@ from tests.e2e.pick_helpers import (
     patch_measurements,
 )
 from tests.e2e.sim_pick_harness import DESTINATION_XY_M, SimPickHarness
+from vision.detector import detect_workspace_objects
 
 CUBE_XY = (0.24, 0.0)
 
@@ -82,7 +82,7 @@ def _pick_until_lift(h: SimPickHarness, point: list[float]) -> dict[str, Any]:
 def test_lock_is_created_once_and_never_rerefined(harness: SimPickHarness) -> None:
     """Two requests within 40 mm of the lock centre are the same lock; detection runs once."""
     point = harness.image_point_for(*CUBE_XY)
-    from robot.vision_detector import refine_point_to_nearest_object as real_refine
+    from vision.detector import refine_point_to_nearest_object as real_refine
 
     with (
         patch("agent.tools.refine_point_to_nearest_object", side_effect=real_refine) as refine,
@@ -193,7 +193,7 @@ def test_place_path_not_refined_or_gated(harness: SimPickHarness) -> None:
     lock_id = harness.state.target.lock_id
     dest = harness.image_point_for(*DESTINATION_XY_M)
 
-    from robot.vision_detector import refine_point_to_nearest_object as real_refine
+    from vision.detector import refine_point_to_nearest_object as real_refine
 
     with patch("agent.tools.refine_point_to_nearest_object", side_effect=real_refine) as refine:
         travel = _move(harness, dest, 5.0)
