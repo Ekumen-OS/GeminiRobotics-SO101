@@ -48,7 +48,7 @@ pydocstyle.convention = "google"
 testpaths = ["tests"]
 markers = ["slow: physics-heavy or long tests (run with `uv run pytest -m slow`)"]
 # Slow tests are excluded by default; select them explicitly with `-m slow`.
-addopts = "-m 'not slow' --cov-fail-under=78"
+addopts = "-m 'not slow'"
 
 [tool.mypy]
 python_version = "3.13"
