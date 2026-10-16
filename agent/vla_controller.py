@@ -5,7 +5,6 @@ import concurrent.futures
 import json
 import logging
 import re
-import sys
 import threading
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -471,7 +470,7 @@ class VLAController:
                 await frame_task
 
             # Post-action observation frame for the model (measurement waits are in the tools)
-            settle_s = get_settings().get_vision_settle_s()
+            settle_s = get_settings().vision_settle_s
             if settle_s > 0:
                 await asyncio.sleep(settle_s)
 
@@ -519,7 +518,6 @@ class VLAController:
             "TOOL_RESULT",
             f"{status_emoji} Tool '{call.name}' completed [ID: {call.id}] | Result: {result_dict}",
             level=logging.ERROR if has_error else logging.INFO,
-            stream=sys.stderr if has_error else sys.stdout,
         )
 
         if has_error:

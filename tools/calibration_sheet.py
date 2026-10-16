@@ -8,7 +8,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from robot.calibration import _get_default_config_path
+from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def generate_calibration_sheet(
         Path to the generated calibration sheet PNG file.
     """
     if config_data is None:
-        cfg_file = _get_default_config_path()
+        cfg_file = get_settings().calibration_config_path
         if cfg_file.exists():
             try:
                 config_data = json.loads(cfg_file.read_text())

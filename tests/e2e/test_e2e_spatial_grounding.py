@@ -16,14 +16,10 @@ import numpy as np
 import pytest
 
 from agent.tools import execute_tool_call, image_point_to_xyz, validate_and_clamp_joints
-from robot.calibration import (
-    DEFAULT_CONFIG_PATH,
-    DEFAULT_SAVE_PATH,
-    DEFAULT_SIM_SAVE_PATH,
-    ArucoWorkspaceCalibrator,
-)
+from robot.calibration import ArucoWorkspaceCalibrator
 from robot.cartesian_ik import CartesianIK
 from robot.constants import JOINT_LIMITS
+from robot.settings import Settings, get_settings, set_settings
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
 from tests.conftest import DummyToolCall
@@ -36,8 +32,9 @@ from vision import get_calibrator
 
 def test_t1_f1_config_marker_id_and_corner_definitions() -> None:
     """Validate that workspace calibration JSON specifies standardized marker IDs and corners."""
-    assert DEFAULT_CONFIG_PATH.exists(), f"Missing calibration config at {DEFAULT_CONFIG_PATH}"
-    config = json.loads(DEFAULT_CONFIG_PATH.read_text())
+    cfg_path = get_settings().calibration_config_path
+    assert cfg_path.exists(), f"Missing calibration config at {cfg_path}"
+    config = json.loads(cfg_path.read_text())
 
     # Verify ArUco dictionary and marker size
     assert config.get("aruco_dictionary") == "DICT_4X4_50"
@@ -177,13 +174,15 @@ def test_t1_f3_calibrator_mode_routing_sim_and_real() -> None:
     real_calib = ArucoWorkspaceCalibrator(mode="real")
     assert real_calib.mode == "real"
 
-    assert DEFAULT_SIM_SAVE_PATH.exists()
-    sim_calib.load_calibration(DEFAULT_SIM_SAVE_PATH)
+    sim_save_path = get_settings().calibration_sim_save_path
+    assert sim_save_path.exists()
+    sim_calib.load_calibration(sim_save_path)
     assert sim_calib.is_calibrated is True
     assert sim_calib.homography_matrix.shape == (3, 3)
 
-    assert DEFAULT_SAVE_PATH.exists()
-    real_calib.load_calibration(DEFAULT_SAVE_PATH)
+    real_save_path = get_settings().calibration_save_path
+    assert real_save_path.exists()
+    real_calib.load_calibration(real_save_path)
     assert real_calib.is_calibrated is True
     assert real_calib.homography_matrix.shape == (3, 3)
 
@@ -210,7 +209,8 @@ def test_t1_f4_cartesian_ik_reachability_within_envelope() -> None:
 def test_t2_f1_workspace_four_boundary_corners_reachability() -> None:
     """Validate IK convergence on all 4 physical workspace boundary corners."""
     ik = CartesianIK()
-    config = json.loads(DEFAULT_CONFIG_PATH.read_text())
+    cfg_path = get_settings().calibration_config_path
+    config = json.loads(cfg_path.read_text())
     corners = config["workspace_corners_mm"]
 
     for corner_name, coords in corners.items():
@@ -392,10 +392,10 @@ def test_t3_cross_feature_camera_fov_containment() -> None:
 
 @pytest.mark.asyncio
 async def test_t4_scenario_pick_hover_and_descend_workflow(
-    monkeypatch: pytest.MonkeyPatch,
+    restore_settings: None,
 ) -> None:
     """Real-World Scenario 1: Model moves to hover above target, then descends to contact."""
-    monkeypatch.setenv("DESCENT_GATE", "off")
+    set_settings(Settings.from_env(descent_gate="off"))
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
 
