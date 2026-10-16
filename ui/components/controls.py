@@ -3,7 +3,7 @@
 import gradio as gr
 import numpy as np
 
-from robot.constants import JOINT_LIMITS, PRESET_POSES
+from robot.constants import JOINT_LIMITS
 from robot.errors import RoboticsError
 from robot.interface import RobotInterface
 from ui.components.telemetry import read_measured_joint_degrees, render_joint_state_panel
@@ -90,13 +90,6 @@ def build_controls_interface(
                             else "⚠️ Hardware Offline. Arm not connected."
                         ),
                         interactive=False,
-                        scale=3,
-                    )
-                    reset_btn = gr.Button(
-                        "🏠 Reset to HOME Pose",
-                        variant="secondary",
-                        scale=1,
-                        interactive=is_online,
                     )
 
         with gr.Column(scale=1, min_width=320):
@@ -145,7 +138,12 @@ def build_controls_interface(
         try:
             curr_rad = robot.get_joint_positions()
             curr_deg = [round(float(v), 1) for v in np.degrees(curr_rad)]
-            return render_joint_state_panel(curr_deg, curr_deg)
+            if hasattr(robot, "get_commanded_joint_positions"):
+                cmd_rad = robot.get_commanded_joint_positions()
+                commanded_deg = [round(float(v), 1) for v in np.degrees(cmd_rad)]
+            else:
+                commanded_deg = curr_deg
+            return render_joint_state_panel(commanded_deg, curr_deg)
         except (RoboticsError, OSError, RuntimeError):
             return render_joint_state_panel(init_deg, None)
 
@@ -153,35 +151,6 @@ def build_controls_interface(
         fn=sync_robot_state_html,
         inputs=None,
         outputs=[joint_state_panel],
-    )
-
-    def reset_to_home():
-        home_q = PRESET_POSES["HOME"]
-        home_deg = [round(float(np.degrees(x)), 1) for x in home_q]
-        if robot is not None and not getattr(robot, "connected", True):
-            return [
-                *home_deg,
-                "⚠️ Robot is disconnected. Command dropped.",
-                render_joint_state_panel(home_deg, None),
-            ]
-        set_target_joints_deg(home_deg)
-        try:
-            if robot is not None:
-                robot.move_to_pose(home_q, duration_sec=1.0)
-                if mode != "sim":
-                    robot.step(1)
-            msg = f"🏠 Moving arm back to HOME pose: {home_deg}°"
-        except (RoboticsError, OSError, RuntimeError) as e:
-            msg = f"⚠️ Reset failed: {e}"
-        measured_deg = read_measured_joint_degrees(robot)
-        panel_html = render_joint_state_panel(home_deg, measured_deg)
-        return [*home_deg, msg, panel_html]
-
-    reset_btn.click(
-        fn=reset_to_home,
-        inputs=None,
-        outputs=[*sliders, status_display, joint_state_panel],
-        queue=False if mode == "sim" else True,
     )
 
     return sliders, joint_state_panel

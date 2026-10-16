@@ -3,15 +3,15 @@
 import numpy as np
 import pytest
 
-from robot.vision_detector import (
+from simulation.sim_calibration import init_sim_workspace_calibration
+from tests.simulation.test_sim_physics import _Scene
+from vision.calibrator import get_calibrator
+from vision.detector import (
     color_from_label,
     detect_workspace_objects,
     locate_target_footprint,
     refine_point_to_nearest_object,
 )
-from simulation.sim_calibration import init_sim_workspace_calibration
-from tests.simulation.test_sim_physics import _Scene
-from vision import get_calibrator
 
 
 @pytest.fixture(scope="module")

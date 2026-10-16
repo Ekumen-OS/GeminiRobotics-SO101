@@ -81,7 +81,7 @@ def patch_measurements(residuals: list[tuple[float, float] | None], source: str 
 
 def table_xy_of_point(point: list[float]) -> np.ndarray:
     """Return the robot-frame table XY (mm) of a normalised image point (sim calibration)."""
-    from vision import get_calibrator
+    from vision.calibrator import get_calibrator
 
     calib = get_calibrator(mode="sim")
     px, py = calib.gemini_to_pixel(point)

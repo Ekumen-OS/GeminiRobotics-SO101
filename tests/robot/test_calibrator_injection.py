@@ -1,6 +1,6 @@
 """Tests that production callers supply the workspace calibrator to the detector.
 
-Phase 2 made the calibrator an explicit parameter of ``robot/vision_detector.py``. Without it the
+Phase 2 made the calibrator an explicit parameter of ``vision/detector.py``. Without it the
 detector scans the whole frame instead of the ArUco-bounded workspace, so every production path
 must pass one through.
 """
@@ -27,7 +27,7 @@ async def test_move_to_spatial_point_passes_calibrator_to_refinement_and_snapsho
 ):
     """Lock detection receives the shared calibrator and the jaw locator its geometry snapshot."""
     from simulation.sim_calibration import init_sim_workspace_calibration
-    from vision import get_calibrator
+    from vision.calibrator import get_calibrator
 
     calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=calib)
@@ -35,7 +35,7 @@ async def test_move_to_spatial_point_passes_calibrator_to_refinement_and_snapsho
         "move_to_spatial_point",
         {"point": [755.0, 480.0], "z_height_cm": 4.0, "approach": "top_down"},
     )
-    from robot.vision_detector import refine_point_to_nearest_object as real_refine
+    from vision.detector import refine_point_to_nearest_object as real_refine
     from vision.gripper_locator import locate_jaw_xy_mm as real_locate
 
     with (
@@ -58,7 +58,7 @@ def test_vision_vote_forwards_calibrator_to_the_detector() -> None:
     from agent.guardrails import TargetLock
     from agent.pick_loop import vision_vote
     from simulation.sim_calibration import init_sim_workspace_calibration
-    from vision import get_calibrator
+    from vision.calibrator import get_calibrator
 
     sim_calib = get_calibrator(mode="sim")
     init_sim_workspace_calibration(calibrator=sim_calib)

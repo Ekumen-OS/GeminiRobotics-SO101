@@ -18,11 +18,11 @@ from google.genai import types
 from agent.tools import execute_tool_call
 from agent.vla_controller import VLAController, parse_targets_from_text
 from robot.settings import Settings, set_settings
-from robot.vision_detector import (
+from tests.conftest import DummyToolCall, MockRobot
+from vision.detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
 )
-from tests.conftest import DummyToolCall, MockRobot
 
 
 def make_synthetic_red_cube_frame(

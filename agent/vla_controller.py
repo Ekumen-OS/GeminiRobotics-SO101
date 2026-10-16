@@ -29,7 +29,8 @@ from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
-from vision import get_calibrator, set_model_targets
+from vision.calibrator import get_calibrator
+from vision.targets import set_model_targets
 
 logger = logging.getLogger(__name__)
 

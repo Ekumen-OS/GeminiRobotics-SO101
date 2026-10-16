@@ -52,9 +52,10 @@ from robot.settings import (
     table_height_to_robot_z_m,
     table_to_robot_xy_mm,
 )
-from robot.vision_detector import color_from_label, refine_point_to_nearest_object
-from vision import get_calibrator, get_model_targets, set_model_targets
+from vision.calibrator import get_calibrator
+from vision.detector import color_from_label, refine_point_to_nearest_object
 from vision.gripper_locator import locate_jaw_xy_mm
+from vision.targets import get_model_targets, set_model_targets
 
 logger = logging.getLogger(__name__)
 
