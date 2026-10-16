@@ -18,8 +18,6 @@ TARGET_PALETTE_RGB: list[tuple[int, int, int]] = [
 ]
 
 _model_targets: list[dict[str, Any]] = []
-_model_target_point: tuple[float, float] | None = None
-_model_target_label: str | None = None
 _model_target_lock = threading.Lock()
 
 
@@ -31,12 +29,10 @@ def set_model_targets(
     Args:
         targets: List of target dicts or points, or None to clear.
     """
-    global _model_targets, _model_target_point, _model_target_label
+    global _model_targets
     with _model_target_lock:
         if not targets:
             _model_targets = []
-            _model_target_point = None
-            _model_target_label = None
             return
 
         parsed: list[dict[str, Any]] = []
@@ -65,42 +61,6 @@ def set_model_targets(
                     }
                 )
         _model_targets = parsed
-        if _model_targets:
-            _model_target_point = _model_targets[0]["point"]
-            _model_target_label = _model_targets[0]["label"]
-        else:
-            _model_target_point = None
-            _model_target_label = None
-
-
-def add_model_target(
-    point: tuple[float, float] | list[float],
-    label: str | None = None,
-    box_2d: list[float] | tuple[float, ...] | None = None,
-    color: tuple[int, int, int] | None = None,
-) -> None:
-    """Add a target object to the active model targets list.
-
-    Args:
-        point: [y, x] normalized coordinates (0..1000).
-        label: Optional description label.
-        box_2d: Optional [ymin, xmin, ymax, xmax] normalized bounding box (0..1000).
-        color: Optional RGB color tuple.
-    """
-    global _model_targets, _model_target_point, _model_target_label
-    if point is None or len(point) < 2:
-        return
-    with _model_target_lock:
-        target_dict: dict[str, Any] = {
-            "point": (float(point[0]), float(point[1])),
-            "label": label,
-            "box_2d": [float(v) for v in box_2d] if box_2d and len(box_2d) == 4 else None,
-            "color": color,
-        }
-        _model_targets.append(target_dict)
-        if _model_target_point is None:
-            _model_target_point = target_dict["point"]
-            _model_target_label = target_dict["label"]
 
 
 def get_model_targets() -> list[dict[str, Any]]:
@@ -116,39 +76,6 @@ def get_model_targets() -> list[dict[str, Any]]:
 def clear_model_targets() -> None:
     """Clear all active model targets."""
     set_model_targets(None)
-
-
-def set_model_target_point(
-    point: tuple[float, float] | list[float] | None,
-    label: str | None = None,
-) -> None:
-    """Set the active primary 2D normalized target point [y, x] from the VLA model.
-
-    Args:
-        point: [y, x] coordinate in normalized range 0..1000, or None to clear.
-        label: Optional text label to display beside the target marker.
-    """
-    if point is None or len(point) < 2:
-        clear_model_targets()
-    else:
-        set_model_targets([{"point": point, "label": label}])
-
-
-def clear_model_target_point() -> None:
-    """Clear the active model target point overlay."""
-    clear_model_targets()
-
-
-def get_model_target_point() -> tuple[tuple[float, float] | None, str | None]:
-    """Get the active primary model target point and label.
-
-    Returns:
-        Tuple of (target_point, target_label).
-    """
-    with _model_target_lock:
-        if not _model_targets:
-            return None, None
-        return _model_targets[0]["point"], _model_targets[0]["label"]
 
 
 def draw_model_target_overlay(frame: np.ndarray) -> np.ndarray:

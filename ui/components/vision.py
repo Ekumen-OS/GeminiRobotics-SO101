@@ -3,20 +3,41 @@
 import gradio as gr
 
 from robot.interface import RobotInterface
-from vision import (
-    ensure_camera_capture,
-    get_available_camera_choices,
-    get_calibration_status_summary,
-    get_default_camera_index,
-    set_calibration_overlay,
-    set_target_overlay_enabled,
-    switch_camera_capture,
-)
+from vision.calibrator import get_calibration_status_summary
+from vision.camera import get_available_camera_choices, get_default_camera_index
+from vision.capture import ensure_camera_capture, switch_camera_capture
+from vision.overlays import set_calibration_overlay, set_target_overlay_enabled
 
 CAMERA_FEED_HTML = (
     '<img src="/api/stream" alt="LIVE Observation Stream" '
     'style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;" />'
 )
+
+
+def _build_overlay_toggles() -> None:
+    """Render the shared model-target and calibration overlay checkboxes and wire their events."""
+    with gr.Row():
+        target_chk = gr.Checkbox(
+            label="🎯 Show Model Targets",
+            value=True,
+            scale=1,
+        )
+        calib_chk = gr.Checkbox(
+            label="📐 Show Calibration Overlay",
+            value=False,
+            scale=1,
+        )
+
+    target_chk.change(
+        fn=set_target_overlay_enabled,
+        inputs=[target_chk],
+        outputs=None,
+    )
+    calib_chk.change(
+        fn=set_calibration_overlay,
+        inputs=[calib_chk],
+        outputs=None,
+    )
 
 
 def build_vision_interface(
@@ -50,60 +71,18 @@ def build_vision_interface(
                 '<div style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; '
                 "border: 1px solid #334155; position: relative; background: #0b0f19; "
                 'display: flex; align-items: center; justify-content: center;">'
-                '<img src="/api/sim_stream" '
+                '<img src="/api/stream" '
                 'style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;" '
                 'alt="MuJoCo Offscreen Camera Feed (workspace_cam)" />'
                 "</div>"
             )
             gr.HTML(value=mjpeg_viewer)
-            with gr.Row():
-                target_chk_sim = gr.Checkbox(
-                    label="🎯 Show Model Targets",
-                    value=True,
-                    scale=1,
-                )
-                calib_chk_sim = gr.Checkbox(
-                    label="📐 Show Calibration Overlay",
-                    value=False,
-                    scale=1,
-                )
-
-            target_chk_sim.change(
-                fn=set_target_overlay_enabled,
-                inputs=[target_chk_sim],
-                outputs=None,
-            )
-            calib_chk_sim.change(
-                fn=set_calibration_overlay,
-                inputs=[calib_chk_sim],
-                outputs=None,
-            )
+            _build_overlay_toggles()
         return None, None, None
 
     # Real mode
     gr.HTML(value=CAMERA_FEED_HTML, elem_id="vision-feed")
-    with gr.Row():
-        target_chk = gr.Checkbox(
-            label="🎯 Show Model Targets",
-            value=True,
-            scale=1,
-        )
-        calib_chk = gr.Checkbox(
-            label="📐 Show Calibration Overlay",
-            value=False,
-            scale=1,
-        )
-
-    target_chk.change(
-        fn=set_target_overlay_enabled,
-        inputs=[target_chk],
-        outputs=None,
-    )
-    calib_chk.change(
-        fn=set_calibration_overlay,
-        inputs=[calib_chk],
-        outputs=None,
-    )
+    _build_overlay_toggles()
 
     initial_choices = get_available_camera_choices()
     initial_value = get_default_camera_index(initial_choices)
@@ -123,7 +102,6 @@ def build_vision_interface(
             scale=1,
             elem_classes=["camera-refresh-btn"],
         )
-        mode_state = gr.State(value=mode)
 
     with gr.Accordion("🎯 ArUco Workspace Calibration", open=False):
         with gr.Row():
@@ -154,20 +132,14 @@ def build_vision_interface(
             new_val = updated[0][1]
         return gr.Dropdown(choices=updated, value=new_val)
 
-    def start_real_cam(cam_idx: int, m: str) -> int:
-        return ensure_camera_capture(cam_idx, m, robot)
-
-    def switch_real_cam(cam_idx: int, m: str) -> int:
-        return switch_camera_capture(cam_idx, m, robot)
-
-    def restart_real_cam(cam_idx: int, m: str) -> int:
-        return switch_camera_capture(cam_idx, m, robot, force=True)
+    def restart_real_cam(cam_idx: int) -> int:
+        return switch_camera_capture(cam_idx, force=True)
 
     # Capture is shared by every browser tab: page load joins the running capture (and shows
     # which camera it is using) instead of restarting it.
     demo.load(
-        fn=start_real_cam,
-        inputs=[camera_dropdown, mode_state],
+        fn=ensure_camera_capture,
+        inputs=[camera_dropdown],
         outputs=[camera_dropdown],
     )
 
@@ -177,13 +149,13 @@ def build_vision_interface(
         outputs=[camera_dropdown],
     ).then(
         fn=restart_real_cam,
-        inputs=[camera_dropdown, mode_state],
+        inputs=[camera_dropdown],
         outputs=None,
     )
 
     camera_dropdown.change(
-        fn=switch_real_cam,
-        inputs=[camera_dropdown, mode_state],
+        fn=switch_camera_capture,
+        inputs=[camera_dropdown],
         outputs=None,
     )
     return save_calib_btn, calib_status, calib_timer

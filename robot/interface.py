@@ -40,6 +40,17 @@ class RobotInterface(ABC):
         """
         pass
 
+    def get_commanded_joint_positions(self) -> np.ndarray:
+        """Return the last commanded joint positions (in radians).
+
+        Defaults to ``get_joint_positions()`` for controllers that do not track
+        commanded targets separately from measured positions.
+
+        Returns:
+            Array of commanded joint angles.
+        """
+        return self.get_joint_positions()
+
     def step(self, num_steps: int = 1) -> None:
         """Advance the physics simulation (no-op for purely physical robots).
 

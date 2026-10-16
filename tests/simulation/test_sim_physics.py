@@ -8,8 +8,8 @@ from agent.motion import plan_approach_segments, run_segments
 from robot.cartesian_ik import CartesianIK
 from robot.errors import HardwareError
 from robot.grasp import classify_grasp
-from robot.vision_detector import detect_workspace_objects
 from simulation.sim_robot import HOME_CLEARANCE_M, HOME_JAW_XY_M, SO101Robot
+from vision.detector import detect_workspace_objects
 from vision.gripper_locator import detect_jaw_tag
 
 CUBE_HALF = 0.015

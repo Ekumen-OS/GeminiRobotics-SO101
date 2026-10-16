@@ -6,7 +6,7 @@ import string
 import numpy as np
 
 from agent.vla_controller import parse_targets_from_text
-from robot.vision_detector import (
+from vision.detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
 )

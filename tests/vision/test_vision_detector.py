@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from robot.vision_detector import (
+from vision.detector import (
     detect_workspace_objects,
     get_workspace_polygon_from_calibrator,
     refine_point_to_nearest_object,

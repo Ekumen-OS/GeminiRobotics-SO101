@@ -16,7 +16,7 @@ from robot.settings import Settings
 from simulation.sim_calibration import compute_sim_calibration
 from simulation.sim_robot import SO101Robot
 from tests.conftest import DummyToolCall, MockRobot
-from vision import get_calibrator
+from vision.calibrator import get_calibrator
 
 
 @pytest.mark.asyncio
