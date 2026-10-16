@@ -1,13 +1,13 @@
 """Interactive wizard for workspace setup and ArUco marker configuration."""
 
-import argparse
 import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
-from robot.calibration import ArucoWorkspaceCalibrator, _get_default_config_path
+from robot.calibration import ArucoWorkspaceCalibrator
+from robot.settings import get_settings
 from tools.calibration_sheet import (
     generate_aruco_markers,
     generate_calibration_sheet,
@@ -41,7 +41,7 @@ def setup_workspace_interactive(
     Returns:
         Updated configuration dictionary.
     """
-    cfg_file = Path(config_path) if config_path else _get_default_config_path()
+    cfg_file = Path(config_path) if config_path else get_settings().calibration_config_path
     calibrator = ArucoWorkspaceCalibrator(config_path=cfg_file)
     cfg = dict(calibrator.config)
     out_path = Path(output_dir)
@@ -52,9 +52,6 @@ def setup_workspace_interactive(
     cur_y_max = float(corners.get("top_left", {}).get("y", 280))
     cur_y_min = float(corners.get("top_right", {}).get("y", -200))
     cur_marker_size = float(cfg.get("marker_size_mm", 40))
-    cur_hover_z = float(cfg.get("default_hover_z_mm", 30))
-    cur_grasp_z = float(cfg.get("default_grasp_z_mm", 5))
-    cur_dest_bin = cfg.get("default_destination_bin_xyz_mm", {"x": 180, "y": 250, "z": 30})
 
     # Check for existing markers in output directory
     marker_files = [out_path / f"marker_{i}.png" for i in range(4)]
@@ -63,6 +60,16 @@ def setup_workspace_interactive(
     has_existing = len(existing_found) > 0 or sheet_file.exists()
 
     def _prompt(text: str, default_val: Any, val_type: type = float) -> Any:
+        """Prompt user for input with default fallback.
+
+        Args:
+            text: Prompt description string.
+            default_val: Default value to return if skipped or non-interactive.
+            val_type: Target type to cast user input to.
+
+        Returns:
+            User input parsed as val_type, or default_val.
+        """
         if not interactive or not sys.stdin.isatty():
             return default_val
         try:
@@ -125,13 +132,6 @@ def setup_workspace_interactive(
     print("\n3. ArUco Marker Parameters:")
     marker_size = kwargs.get("marker_size", _prompt("Marker size (mm)", cur_marker_size))
 
-    # 5. Vertical clearances
-    print("\n4. Operating Heights (mm):")
-    hover_z = kwargs.get("hover_z", _prompt("Default hover clearance height (Z mm)", cur_hover_z))
-    grasp_z = kwargs.get(
-        "grasp_z", _prompt("Default grasp table surface height (Z mm)", cur_grasp_z)
-    )
-
     has_corner_overrides = any(k in kwargs for k in ("x_max", "x_min", "y_max", "y_min")) or (
         interactive and sys.stdin.isatty()
     )
@@ -154,37 +154,39 @@ def setup_workspace_interactive(
         ),
         "marker_size_mm": marker_size,
         "workspace_corners_mm": workspace_corners,
-        "default_hover_z_mm": hover_z,
-        "default_grasp_z_mm": grasp_z,
-        "default_destination_bin_xyz_mm": cur_dest_bin,
     }
 
     # Save JSON configuration
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
-    cfg_file.write_text(json.dumps(updated_config, indent=2))
+    cfg_file.write_text(json.dumps(updated_config, indent=2) + "\n")
     print(f"\n✅ Workspace calibration profile saved to: {cfg_file}")
 
     if not should_reuse:
         # Generate individual marker PNGs
         print(f"\n📦 Generating printable ArUco markers into '{output_dir}'...")
         created_markers = generate_aruco_markers(output_dir=output_dir, marker_ids=[0, 1, 2, 3, 10])
+        for p in created_markers:
+            print(f"   ✔ Created: {p}")
 
-        # Generate all-in-one calibration mat sheet
+        # Generate combined calibration sheet
+        print("\n📄 Rendering true-to-scale calibration sheets...")
         created_sheet = generate_calibration_sheet(
-            config_data=updated_config, output_dir=output_dir
+            config_data=updated_config,
+            output_dir=output_dir,
         )
+        print(f"   ✔ Workspace Calibration Sheet: {created_sheet}")
 
-        # Generate the 25 mm printable jaw tag sheet
+        # Generate standalone Jaw Tag Sheet
         created_jaw_sheet = generate_jaw_tag_sheet(output_dir=output_dir)
+        print(f"   ✔ Jaw Tag Marker Sheet:        {created_jaw_sheet}")
 
         print("\n" + "=" * 65)
-        print("🎉 WORKSPACE SETUP & MARKER GENERATION COMPLETE!")
+        print("🎉 WORKSPACE CALIBRATION SETUP COMPLETE!")
         print("=" * 65)
-        print("Generated Artifacts:")
-        for mf in created_markers:
-            print(f"  • Individual Marker : {mf}")
-        print(f"  • Full Printable Mat: {created_sheet}")
-        print(f"  • Jaw Tag Sheet     : {created_jaw_sheet}")
+        print(f"  • Marker PNGs generated in: {output_dir}")
+        print(f"  • Full printable sheet:     {created_sheet}")
+        print(f"  • Jaw Tag Sheet:            {created_jaw_sheet}")
+        print(f"  • Physical JSON profile:    {cfg_file}")
     else:
         print("\n" + "=" * 65)
         print("🎉 WORKSPACE DIMENSIONS UPDATED SUCCESSFULLY!")
@@ -197,43 +199,3 @@ def setup_workspace_interactive(
     print("  2. Run 'uv run python main.py' and enable 'Show Calibration Overlay'.\n")
 
     return updated_config
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="SO-101 ArUco Workspace Calibration & Setup Utility"
-    )
-    parser.add_argument(
-        "--generate-markers",
-        action="store_true",
-        help="Run interactive workspace setup and generate markers & sheet.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="assets/aruco_markers",
-        help="Directory to save generated markers.",
-    )
-    parser.add_argument(
-        "--reuse",
-        action="store_true",
-        help="Reuse existing markers in output directory without regenerating images.",
-    )
-    parser.add_argument(
-        "--regenerate",
-        action="store_true",
-        help="Force regeneration and overwrite of all marker images.",
-    )
-    parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Use existing config without prompting.",
-    )
-    args = parser.parse_args()
-
-    reuse_flag = True if args.reuse else (False if args.regenerate else None)
-
-    setup_workspace_interactive(
-        output_dir=args.output_dir,
-        interactive=not args.non_interactive,
-        reuse=reuse_flag,
-    )

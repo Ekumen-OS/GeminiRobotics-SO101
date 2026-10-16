@@ -42,7 +42,7 @@ from robot.errors import (
 )
 from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
-from robot.logger import log_compat, log_with_tag
+from robot.logger import log_with_tag
 from robot.perception import compute_alignment_mm
 from robot.registry import get_active_robot, set_active_robot
 from robot.settings import (
@@ -66,9 +66,6 @@ _UNCALIBRATED_MESSAGE = (
     "save calibration under the ArUco Workspace Calibration panel before executing "
     "spatial commands."
 )
-
-# Retain _log alias for backwards compatibility with tests importing _log from agent.tools
-_log = log_compat
 
 
 def build_move_spatial_response(
@@ -834,7 +831,7 @@ def _locate_jaw(
         JawReading.
     """
     er2_point: list[float] | None = None
-    if mode == "real" and get_settings().get_gripper_locator_er2() and ctx.query_er2_locator_fn:
+    if mode == "real" and get_settings().gripper_locator_er2 and ctx.query_er2_locator_fn:
         try:
             er2_dict = ctx.query_er2_locator_fn(raw_jpeg)
             if er2_dict and "gripper_fingertips" in er2_dict:
@@ -930,11 +927,10 @@ def _measure_alignment(
 
 def _ready_calibrator(mode: str) -> Any:
     """Return the calibrator for ``mode`` with its homography loaded (same routing as xyz)."""
-    from robot.calibration import DEFAULT_SAVE_PATH, DEFAULT_SIM_SAVE_PATH
-
     calib = get_calibrator(mode=mode)
     is_sim = mode == "sim"
-    target_path = DEFAULT_SIM_SAVE_PATH if is_sim else DEFAULT_SAVE_PATH
+    settings = get_settings()
+    target_path = settings.calibration_sim_save_path if is_sim else settings.calibration_save_path
     if calib is not None:
         if is_sim and (getattr(calib, "mode", None) != "sim" or not calib.is_calibrated):
             if target_path.exists():

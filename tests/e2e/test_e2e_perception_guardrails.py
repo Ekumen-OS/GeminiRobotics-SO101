@@ -8,8 +8,6 @@ Covers:
 - F9: Clean Diagnostic Logging & UI Separation (ISO-8601 millisecond logs, stdout/stderr routing)
 """
 
-import re
-from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
@@ -19,6 +17,7 @@ from google.genai import types
 
 from agent.tools import execute_tool_call
 from agent.vla_controller import VLAController, parse_targets_from_text
+from robot.settings import Settings, set_settings
 from robot.vision_detector import (
     detect_workspace_objects,
     refine_point_to_nearest_object,
@@ -60,9 +59,9 @@ def make_synthetic_red_cube_frame(
 
 
 @pytest.fixture(autouse=True)
-def configure_perception_guardrails_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def configure_perception_guardrails_env(restore_settings: None) -> None:
     """Configure perception guardrails environment for tests in this module."""
-    monkeypatch.setenv("DESCENT_GATE", "off")
+    set_settings(Settings.from_env(descent_gate="off"))
 
 
 @pytest.fixture
@@ -153,26 +152,6 @@ def test_t1_f7_system_prompt_mandates_descent_alignment_gate() -> None:
     assert "Only proceed to descend when `is_aligned` is `true`" in prompt
     assert "z_height_cm=3.0" in prompt  # the hover height of the closed loop
     assert "[dy, dx]" not in prompt  # no more image-space offsets for the model to compute
-
-
-def test_t1_f9_clean_diagnostic_logging_format_and_routing() -> None:
-    """Validate ISO-8601 millisecond log timestamp format and stderr/stdout stream separation."""
-    from agent.tools import _log
-
-    stdout_buf = StringIO()
-    stderr_buf = StringIO()
-
-    # Informational log should route to stdout
-    _log("Perception", "INFO", "Target aligned.", stream=stdout_buf)
-    out_line = stdout_buf.getvalue().strip()
-    pattern_info = r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[Perception\] \[INFO\]"
-    assert re.match(pattern_info, out_line)
-
-    # Error / Warn log should route to stderr
-    _log("Perception", "WARN", "Misalignment detected: dy=35", stream=stderr_buf)
-    err_line = stderr_buf.getvalue().strip()
-    pattern_warn = r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[Perception\] \[WARN\]"
-    assert re.match(pattern_warn, err_line)
 
 
 # ==============================================================================

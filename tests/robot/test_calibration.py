@@ -328,11 +328,12 @@ def test_f1_marker_id_harmonization_across_subsystems() -> None:
     import json
 
     from agent.vla_controller import VLAController
-    from robot.calibration import DEFAULT_CONFIG_PATH
+    from robot.settings import get_settings
 
     # 1. Check workspace_calibration.json
-    assert DEFAULT_CONFIG_PATH.exists()
-    cfg = json.loads(DEFAULT_CONFIG_PATH.read_text())
+    cfg_path = get_settings().calibration_config_path
+    assert cfg_path.exists()
+    cfg = json.loads(cfg_path.read_text())
     marker_ids = cfg.get("marker_ids", {})
     assert marker_ids["top_left"] == 1
     assert marker_ids["top_right"] == 2
@@ -411,7 +412,10 @@ def test_f3_image_point_to_xyz_mode_routing() -> None:
     pt = [760.0, 484.0]
     xyz_sim = image_point_to_xyz(pt, hover_z=0.03, mode="sim")
     xyz_real = image_point_to_xyz(pt, hover_z=0.03, mode="real")
-    table_x, table_y, table_z = get_settings().get_table_offset_mm("real")
+    s = get_settings()
+    table_x = s.get_table_x_mm("real")
+    table_y = s.get_table_y_mm("real")
+    table_z = s.get_table_z_mm("real")
     expected_real = xyz_sim + np.array([table_x / 1000.0, table_y / 1000.0, table_z / 1000.0])
     assert 0.12 <= xyz_sim[1] <= 0.17
     assert 0.12 + (table_y / 1000.0) <= xyz_real[1] <= 0.17 + (table_y / 1000.0)

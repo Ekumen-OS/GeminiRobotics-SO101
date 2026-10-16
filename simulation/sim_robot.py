@@ -14,7 +14,6 @@ if (
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
-from typing import Any
 
 import mujoco
 import numpy as np
@@ -38,17 +37,6 @@ HOME_JAW_XY_M = (0.181, 0.0)
 HOME_CLEARANCE_M = 0.06
 
 
-def __getattr__(name: str) -> Any:
-    """Dynamically resolve configuration defaults from central Settings."""
-    if name == "DEFAULT_CONFIG_PATH":
-        return get_settings().calibration_config_path
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-def _get_default_config_path() -> Path:
-    return getattr(sys.modules[__name__], "DEFAULT_CONFIG_PATH")
-
-
 class SO101Robot(RobotInterface):
     """High-level Python wrapper for controlling the SO-101 robot arm in MuJoCo.
 
@@ -65,26 +53,17 @@ class SO101Robot(RobotInterface):
     def __init__(
         self,
         xml_path: str | Path | None = None,
-        model: mujoco.MjModel | None = None,
-        data: mujoco.MjData | None = None,
     ) -> None:
         """Initialize SO101Robot with MuJoCo model, data, and joint/actuator references.
 
         Args:
             xml_path: Relative or absolute path to the MuJoCo XML scene file.
-            model: Optional preloaded MuJoCo model.
-            data: Optional preloaded MuJoCo data.
         """
-        if model is not None and data is not None:
-            self.model = model
-            self.data = data
-            self.xml_path = str(xml_path) if xml_path else "simulation/assets/scene.xml"
-        else:
-            default_scene = Path(__file__).parent / "assets" / "scene.xml"
-            scene_to_load = str(xml_path) if xml_path else str(default_scene)
-            self.xml_path = scene_to_load
-            self.model = mujoco.MjModel.from_xml_path(scene_to_load)
-            self.data = mujoco.MjData(self.model)
+        default_scene = Path(__file__).parent / "assets" / "scene.xml"
+        scene_to_load = str(xml_path) if xml_path else str(default_scene)
+        self.xml_path = scene_to_load
+        self.model = mujoco.MjModel.from_xml_path(scene_to_load)
+        self.data = mujoco.MjData(self.model)
 
         self.joint_ids = [self.model.joint(name).id for name in JOINT_NAMES]
         self.actuator_ids = [self.model.actuator(name).id for name in ACTUATOR_NAMES]
@@ -112,7 +91,7 @@ class SO101Robot(RobotInterface):
         Args:
             config_path: Path to workspace calibration JSON.
         """
-        cfg_file = Path(config_path) if config_path else _get_default_config_path()
+        cfg_file = Path(config_path) if config_path else get_settings().calibration_config_path
         if not cfg_file.exists():
             return
 

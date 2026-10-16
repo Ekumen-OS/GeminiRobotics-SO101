@@ -13,12 +13,10 @@ import numpy as np
 import pytest
 from google.genai import types
 
-import robot.calibration
-import simulation.sim_calibration
 from robot.contracts import GripperReading
 from robot.interface import RobotInterface
 from robot.logger import setup_logging
-from robot.settings import Settings, set_settings
+from robot.settings import Settings, get_settings, set_settings
 from simulation.sim_calibration import compute_sim_calibration
 
 setup_logging()
@@ -47,9 +45,15 @@ set_settings(_isolated_settings)
 compute_sim_calibration(save_path=_ISOLATED_SIM_PATH)
 compute_sim_calibration(save_path=_ISOLATED_REAL_PATH)
 
-simulation.sim_calibration.DEFAULT_SIM_SAVE_PATH = _ISOLATED_SIM_PATH
-robot.calibration.DEFAULT_SIM_SAVE_PATH = _ISOLATED_SIM_PATH
-robot.calibration.DEFAULT_SAVE_PATH = _ISOLATED_REAL_PATH
+
+@pytest.fixture
+def restore_settings() -> Any:
+    """Preserve global settings instance across tests."""
+    original = get_settings()
+    try:
+        yield
+    finally:
+        set_settings(original)
 
 
 class _FastSimTime:

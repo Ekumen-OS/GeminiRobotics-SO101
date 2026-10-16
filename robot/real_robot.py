@@ -86,7 +86,6 @@ class RealSO101Robot(RobotInterface):
     def __init__(
         self,
         port: str | None = None,
-        baudrate: int = 1_000_000,
         calibration_path: str | Path | None = None,
         connect_on_init: bool = True,
     ):
@@ -95,7 +94,6 @@ class RealSO101Robot(RobotInterface):
         Args:
             port: Serial port device path (e.g., /dev/tty.usbmodem1201 or /dev/ttyUSB0).
                 Defaults to get_settings().serial_port.
-            baudrate: Motors bus communication baudrate (default: 1,000,000).
             calibration_path: Explicit path to a LeRobot motor calibration JSON file.
                 Defaults to resolve_calibration_path().
             connect_on_init: Whether to connect to hardware during initialization.
@@ -107,7 +105,6 @@ class RealSO101Robot(RobotInterface):
             HardwareError: If connection to the real robot hardware cannot be established.
         """
         self.port = port if port is not None else get_settings().serial_port
-        self.baudrate = baudrate
         self.connected = False
         self.bus: Any = None
         self._bus_lock = threading.Lock()

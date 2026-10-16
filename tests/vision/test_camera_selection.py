@@ -4,18 +4,8 @@ import struct
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 import vision.camera as stream_mod
-from robot.settings import Settings, get_settings, set_settings
-
-
-@pytest.fixture
-def restore_settings():
-    """Restore original settings after test."""
-    original = get_settings()
-    yield
-    set_settings(original)
+from robot.settings import Settings, set_settings
 
 
 def test_get_default_camera_index_by_camera_index(restore_settings: None) -> None:
