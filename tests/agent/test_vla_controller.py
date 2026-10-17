@@ -5,19 +5,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.genai import types
 
-from agent.vla_controller import VLAController
+from agent.vla_controller import VLAController, load_system_prompt
+from robot.errors import CalibrationUnavailable
 from tests.conftest import MockRobot
 
 
 def test_vla_controller_init() -> None:
-    """Test VLAController initializes with correct prompt and history."""
+    """Test VLAController initializes and load_system_prompt renders expected sections."""
     robot = MockRobot()
     controller = VLAController(mode="sim", robot=robot)
-
-    history = controller.get_history()
-    assert len(history) == 1
-    assert history[0]["role"] == "system"
-    prompt = history[0]["content"]
+    assert controller.mode == "sim"
+    prompt = load_system_prompt("sim")
 
     # Verify system prompt components
     assert "Gemini Robotics Assistant" in prompt
@@ -33,16 +31,17 @@ def test_vla_controller_init() -> None:
 
 
 def test_vla_controller_history_management() -> None:
-    """Test get_history and clear_history preserve system prompt."""
+    """Test clear_history disconnects active session on the background event loop."""
+    import asyncio
+
     controller = VLAController(mode="sim")
-    controller.history.append({"role": "user", "content": "hello"})
-    controller.history.append({"role": "assistant", "content": "hi"})
-    assert len(controller.get_history()) == 3
+    mock_session = MagicMock()
+    mock_session.disconnect = AsyncMock()
+    controller._session = mock_session
 
     controller.clear_history()
-    history = controller.get_history()
-    assert len(history) == 1
-    assert history[0]["role"] == "system"
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), controller._loop).result(timeout=1.0)
+    mock_session.disconnect.assert_called_once()
 
 
 def test_vla_controller_api_unavailable() -> None:
@@ -60,23 +59,21 @@ def test_vla_controller_calibration_gate() -> None:
     controller_real = VLAController(mode="real")
     controller_real._api_available = True
 
-    mock_calibrator = MagicMock()
-    mock_calibrator.is_calibrated = False
-
-    with patch("agent.vla_controller.get_calibrator", return_value=mock_calibrator):
+    with patch(
+        "agent.vla_controller.get_ready_calibrator",
+        side_effect=CalibrationUnavailable("Workspace is not calibrated"),
+    ):
         chunks = list(controller_real.process_instruction_stream("Pick up the cube"))
         assert len(chunks) == 1
         assert "Action Blocked — Workspace Not Calibrated" in chunks[0]
 
 
 def test_vla_controller_empty_instruction() -> None:
-    """Test empty instruction yields nothing and does not modify history."""
+    """Test empty instruction yields nothing."""
     controller = VLAController(mode="sim")
-    initial_len = len(controller.get_history())
 
     chunks = list(controller.process_instruction_stream("   "))
     assert len(chunks) == 0
-    assert len(controller.get_history()) == initial_len
 
 
 def test_vla_controller_interrupt() -> None:
@@ -93,15 +90,6 @@ def test_vla_controller_interrupt() -> None:
     mock_task.cancel.assert_called_once()
 
 
-def test_vla_controller_process_instruction_sync() -> None:
-    """Test process_instruction synchronous convenience wrapper."""
-    controller = VLAController(mode="sim")
-    controller._api_available = False
-
-    res = controller.process_instruction("test instruction")
-    assert "Gemini API unavailable" in res
-
-
 def test_vla_controller_stream_processing_mocked() -> None:
     """Test end-to-end streaming processing with mocked live session."""
     robot = MockRobot()
@@ -114,7 +102,6 @@ def test_vla_controller_stream_processing_mocked() -> None:
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     # Generate mock live server messages
     async def mock_receive():
@@ -166,7 +153,6 @@ def test_vla_controller_post_action_frame_delivery() -> None:
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     async def mock_receive():
         # Tool call
@@ -246,7 +232,6 @@ def test_vla_controller_thought_and_narration_streaming() -> None:
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     async def mock_receive():
         # Thought part
@@ -324,13 +309,11 @@ def test_vla_controller_conversational_dialogue() -> None:
 
     assert "Hello! I see a calibrated tabletop" in full_output
     assert mock_session.send_instruction.called
-    assert len(controller.get_history()) == 3
 
 
 def test_vla_controller_move_look_correct_system_prompt() -> None:
     """Test system prompt rigorously mandates the 3-step Move -> Look -> Correct loop."""
-    controller = VLAController(mode="sim")
-    prompt = controller.get_history()[0]["content"]
+    prompt = load_system_prompt("sim")
 
     # Rule 1 (MOVE) assertions
     assert "1. **MOVE (Single Primitive Action)**" in prompt

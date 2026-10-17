@@ -145,20 +145,6 @@ def test_mid_turn_complete_with_tool_call_continues_loop() -> None:
     mock_session.send_tool_response.assert_called_once()
 
 
-def test_clear_history_keeps_system_prompt() -> None:
-    """Verify clear_history preserves system prompt while discarding subsequent history."""
-    controller = VLAController(mode="sim")
-    controller.history.append({"role": "user", "content": "hello"})
-    controller.history.append({"role": "assistant", "content": "world"})
-    assert len(controller.get_history()) == 3
-
-    controller.clear_history()
-    history = controller.get_history()
-    assert len(history) == 1
-    assert history[0]["role"] == "system"
-    assert "Gemini Robotics Assistant" in history[0]["content"]
-
-
 @pytest.mark.slow
 def test_streaming_frames_during_blocking_tool_and_single_tool_response() -> None:
     """Verify frames are streamed during blocking tool and send_tool_response called once."""

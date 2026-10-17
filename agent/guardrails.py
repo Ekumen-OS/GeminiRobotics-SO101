@@ -166,7 +166,6 @@ class TargetLock:
         c_mm: Accumulated bias correction ([dx, dy] mm) applied to hovers and the descent.
         hovers_since_descent: Hovers at this lock since the last successful descent.
         grasp_attempts: Missed or unverified grasps at this lock.
-        refusals: Refusals issued while this lock was active.
     """
 
     lock_id: int
@@ -180,7 +179,6 @@ class TargetLock:
     c_mm: tuple[float, float] = (0.0, 0.0)
     hovers_since_descent: int = 0
     grasp_attempts: int = 0
-    refusals: int = 0
 
     def distance_to_mm(self, xy_mm: tuple[float, float] | list[float]) -> float:
         """Return the table distance from the lock centre to ``xy_mm``."""
@@ -212,7 +210,6 @@ class GuardrailState:
         self.last_commanded_gripper: str | None = None
         self.last_grasp_reason: str | None = None
         self.last_verdict: dict[str, Any] | None = None
-        self.grasp_xy_mm: tuple[float, float] | None = None
         self.grasp_z_mm: float | None = None
         self.consecutive_refusals = 0
         self.descent_refusals = 0
@@ -222,11 +219,6 @@ class GuardrailState:
         self.attempt_counted = False
 
     # -- derived views -------------------------------------------------------------------
-    @property
-    def gripper_closed(self) -> bool:
-        """True while the gripper is (believed) closed: any phase other than APPROACH."""
-        return self.phase != Phase.APPROACH
-
     @property
     def transport_allowed(self) -> bool:
         """True only after a confirmed lift."""
@@ -293,7 +285,6 @@ class GuardrailState:
                 self.target = None
                 self.last_verdict = None
                 self.last_grasp_reason = None
-                self.grasp_xy_mm = None
                 self.grasp_z_mm = None
                 self.consecutive_unavailable = 0
 
@@ -308,7 +299,6 @@ class GuardrailState:
             if self.phase == Phase.APPROACH:
                 self.target = None
                 self.last_grasp_reason = None
-                self.grasp_xy_mm = None
                 self.grasp_z_mm = None
                 self.consecutive_unavailable = 0
             self.last_motion = None
@@ -397,8 +387,6 @@ class GuardrailState:
         """Count a refusal; escalate after too many in a row without a successful motion."""
         with self._lock:
             self.consecutive_refusals += 1
-            if self.target is not None:
-                self.target.refusals += 1
             if self.consecutive_refusals >= MAX_CONSECUTIVE_REFUSALS and not self.escalated:
                 self.escalate("refusals")
 
@@ -442,20 +430,17 @@ class GuardrailState:
     def on_closed(
         self,
         phase: Phase,
-        grasp_xy_mm: tuple[float, float] | None,
         grasp_z_mm: float | None = None,
     ) -> None:
         """The gripper was commanded closed.
 
         Args:
             phase: HELD_UNVERIFIED, or CLOSED_EMPTY when the aperture shows empty jaws.
-            grasp_xy_mm: Where the grasp happened (FK jaw XY).
             grasp_z_mm: Height where the grasp happened (FK site Z in mm).
         """
         with self._lock:
             self.phase = phase
             self.last_commanded_gripper = "closed"
-            self.grasp_xy_mm = grasp_xy_mm
             self.grasp_z_mm = grasp_z_mm
             self.last_verdict = None
             self.last_motion = "close"
@@ -472,7 +457,6 @@ class GuardrailState:
             self.last_verdict = None
             self.last_motion = "open"
             self.last_hover = None
-            self.grasp_xy_mm = None
             self.grasp_z_mm = None
             self.consecutive_refusals = 0
             if was == Phase.TRANSPORT:

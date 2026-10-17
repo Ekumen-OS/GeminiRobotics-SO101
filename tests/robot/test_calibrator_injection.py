@@ -39,7 +39,7 @@ async def test_move_to_spatial_point_passes_calibrator_to_refinement_and_snapsho
     from vision.gripper_locator import locate_jaw_xy_mm as real_locate
 
     with (
-        patch("agent.tools.get_calibrator", return_value=calib),
+        patch("vision.calibrator.get_calibrator", return_value=calib),
         patch("agent.tools.refine_point_to_nearest_object", side_effect=real_refine) as refine,
         patch("agent.tools.locate_jaw_xy_mm", side_effect=real_locate) as locate,
     ):
