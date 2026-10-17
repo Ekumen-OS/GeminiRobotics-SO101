@@ -7,7 +7,7 @@ says so, descend, close, lift, transport, place, open, retract (or open and retr
 attempts). Every claim is checked against MuJoCo ground truth, so a verdict that contradicts the
 physics is counted instead of trusted.
 
-Not a test module (no ``test_`` prefix): ``tests/test_sim_pick_e2e.py`` runs it.
+Not a test module (no ``test_`` prefix): ``tests/e2e/test_sim_pick_e2e.py`` runs it.
 """
 
 import contextlib
@@ -26,12 +26,12 @@ import mujoco
 import numpy as np
 
 from agent.guardrails import GuardrailState
-from agent.tools import execute_tool_call_sync
 from robot.interface import RobotInterface
 from robot.registry import get_active_robot, set_active_robot
 from robot.settings import Settings, get_settings, set_settings
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
+from tests.harness.tools_sync import execute_tool_call_sync
 from vision.calibrator import get_calibrator
 from vision.detector import detect_workspace_objects
 

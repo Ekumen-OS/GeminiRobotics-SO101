@@ -64,7 +64,7 @@ async def test_physical_robot_spatial_move_loads_real_homography() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("agent.tools.get_calibrator", return_value=calib):
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=robot)
 
     assert res.get("status") == "success"
@@ -85,7 +85,7 @@ async def test_sim_robot_spatial_move_loads_sim_homography() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("agent.tools.get_calibrator", return_value=calib):
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=_SimLikeRobot())
 
     assert res.get("status") == "success"
@@ -104,7 +104,7 @@ async def test_controller_mode_argument_overrides_robot_mode() -> None:
         "move_to_spatial_point",
         {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
     )
-    with patch("agent.tools.get_calibrator", return_value=calib):
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=MockRobot(), mode="sim")
 
     assert res.get("status") == "success"
@@ -121,3 +121,107 @@ def test_main_parser_accepts_only_real_and_sim() -> None:
     assert parser.parse_args(["--mode", "real"]).mode == "real"
     with pytest.raises(SystemExit):
         parser.parse_args(["--mode", "twin"])
+
+
+def test_get_ready_calibrator_sim_with_no_cached_file(
+    tmp_path: pytest.TempPathFactory, restore_settings: None
+) -> None:
+    """Sim mode with no cached file runs init_sim_workspace_calibration and returns mode=='sim'."""
+    from pathlib import Path
+
+    from robot.calibration import ArucoWorkspaceCalibrator
+    from robot.settings import Settings, set_settings
+    from vision.calibrator import get_ready_calibrator
+
+    sim_npz = Path(str(tmp_path)) / "nonexistent_sim.npz"
+    set_settings(Settings.from_env(calibration_sim_save_path=sim_npz))
+    calib = ArucoWorkspaceCalibrator(mode="real", save_path=sim_npz)
+
+    def fake_init_sim(calibrator: ArucoWorkspaceCalibrator) -> ArucoWorkspaceCalibrator:
+        h = np.eye(3, dtype=np.float64)
+        calibrator.set_geometry(h, h, 0.0)
+        calibrator.mode = "sim"
+        return calibrator
+
+    with (
+        patch("vision.calibrator.get_calibrator", return_value=calib),
+        patch(
+            "simulation.sim_calibration.init_sim_workspace_calibration",
+            side_effect=fake_init_sim,
+        ) as init_mock,
+    ):
+        ready = get_ready_calibrator("sim")
+
+    init_mock.assert_called_once_with(calibrator=calib)
+    assert ready is calib
+    assert ready.is_calibrated
+    assert ready.mode == "sim"
+
+
+def test_get_ready_calibrator_real_with_valid_npz(
+    real_homography_path: pytest.TempPathFactory, restore_settings: None
+) -> None:
+    """Real mode with a valid .npz file loads it and returns mode=='real'."""
+    from pathlib import Path
+
+    from robot.calibration import ArucoWorkspaceCalibrator
+    from robot.settings import Settings, set_settings
+    from vision.calibrator import get_ready_calibrator
+
+    real_npz = Path(str(real_homography_path))
+    set_settings(Settings.from_env(calibration_save_path=real_npz))
+    calib = ArucoWorkspaceCalibrator(mode="sim", save_path=real_npz)
+
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
+        ready = get_ready_calibrator("real")
+
+    assert ready is calib
+    assert ready.is_calibrated
+    assert ready.mode == "real"
+
+
+def test_get_ready_calibrator_real_with_no_npz_and_uncalibrated_raises(
+    tmp_path: pytest.TempPathFactory, restore_settings: None
+) -> None:
+    """Real mode with no .npz file and an uncalibrated singleton raises CalibrationUnavailable."""
+    from pathlib import Path
+
+    from robot.calibration import ArucoWorkspaceCalibrator
+    from robot.errors import CalibrationUnavailable
+    from robot.settings import Settings, set_settings
+    from vision.calibrator import get_ready_calibrator
+
+    missing_npz = Path(str(tmp_path)) / "missing_real.npz"
+    set_settings(Settings.from_env(calibration_save_path=missing_npz))
+    calib = ArucoWorkspaceCalibrator(mode="real", save_path=missing_npz)
+
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
+        with pytest.raises(CalibrationUnavailable):
+            get_ready_calibrator("real")
+
+
+def test_get_ready_calibrator_real_with_no_npz_clears_stale_sim_singleton_and_raises(
+    tmp_path: pytest.TempPathFactory, restore_settings: None
+) -> None:
+    """Real mode with no .npz file and singleton in mode=='sim' clears sim geometry and raises."""
+    from pathlib import Path
+
+    from robot.calibration import ArucoWorkspaceCalibrator
+    from robot.errors import CalibrationUnavailable
+    from robot.settings import Settings, set_settings
+    from vision.calibrator import get_ready_calibrator
+
+    missing_npz = Path(str(tmp_path)) / "missing_real.npz"
+    set_settings(Settings.from_env(calibration_save_path=missing_npz))
+    calib = ArucoWorkspaceCalibrator(mode="sim", save_path=missing_npz)
+    h = np.eye(3, dtype=np.float64)
+    calib.set_geometry(h, h, 0.0)
+    assert calib.is_calibrated
+    assert calib.mode == "sim"
+
+    with patch("vision.calibrator.get_calibrator", return_value=calib):
+        with pytest.raises(CalibrationUnavailable):
+            get_ready_calibrator("real")
+
+    assert not calib.is_calibrated
+    assert calib.mode == "real"

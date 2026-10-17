@@ -33,18 +33,18 @@ from agent.tools import (
     _handle_open_gripper,
     _resolve_lock,
     _table_xy_mm,
-    execute_tool_call_sync,
 )
 from agent.vla_controller import VLAController
 from robot.constants import PRESET_POSES
 from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
-from tests.e2e.pick_helpers import (
+from tests.harness.pick_helpers import (
     next_call_from,
     parse_move_call,
     patch_measurements,
 )
-from tests.e2e.sim_pick_harness import DESTINATION_XY_M, SimPickHarness
+from tests.harness.sim_pick import DESTINATION_XY_M, SimPickHarness
+from tests.harness.tools_sync import execute_tool_call_sync
 from vision.detector import detect_workspace_objects
 
 CUBE_XY = (0.24, 0.0)
@@ -299,7 +299,7 @@ def test_unobservable_alignment_warns_and_descends_in_warn_mode(
 # -- escalation ------------------------------------------------------------------------------
 def test_consecutive_refusals_escalate(harness: SimPickHarness) -> None:
     """Three refusals in a row without a successful motion escalate; a success resets the count."""
-    harness.state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
+    harness.state.on_closed(Phase.HELD_UNVERIFIED)
     for expected in (1, 2):
         assert harness.call("move_to_preset", pose_name="HOME")["error_type"] == "transport_gate"
         assert harness.state.consecutive_refusals == expected
@@ -308,7 +308,7 @@ def test_consecutive_refusals_escalate(harness: SimPickHarness) -> None:
         assert _move(harness, point, 5.0)["status"] == "success"
     assert harness.state.consecutive_refusals == 0
 
-    harness.state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
+    harness.state.on_closed(Phase.HELD_UNVERIFIED)
     for _ in range(3):
         assert harness.call("move_to_preset", pose_name="HOME")["error_type"] == "transport_gate"
     assert harness.state.escalated is True
@@ -346,7 +346,7 @@ def test_three_missed_grasps_at_one_lock_escalate() -> None:
     state = GuardrailState()
     state.new_lock("red", (240.0, 0.0), [500.0, 500.0], [10, 10, 20, 20], 30.0)
     for expected in (1, 2, 3):
-        state.on_closed(Phase.CLOSED_EMPTY, (240.0, 0.0))
+        state.on_closed(Phase.CLOSED_EMPTY)
         state.record_miss_or_unverified("closed_on_air")
         state.record_miss_or_unverified("object_still_on_table")  # same attempt: no double count
         assert state.retry_count == expected
@@ -373,7 +373,7 @@ def test_new_instruction_keeps_closed_gripper_gated() -> None:
     robot = MockRobot()
     robot.gripper_reading = {"aperture_deg": 25.0, "load": 150.0, "source": "measured"}
     controller = VLAController(mode="sim", robot=robot)
-    controller.guardrail_state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
+    controller.guardrail_state.on_closed(Phase.HELD_UNVERIFIED)
     controller._begin_guardrail_instruction()
     state = controller.guardrail_state
     assert state.phase == Phase.HELD_UNVERIFIED
@@ -430,15 +430,14 @@ def test_interrupt_in_approach_drops_lock_and_hover() -> None:
 
 
 def test_interrupt_when_held_preserves_lock() -> None:
-    """When held unverified, an interrupt keeps the lock and grasp location."""
+    """When held unverified, an interrupt keeps the lock and grasp phase."""
     state = GuardrailState()
     state.new_lock("red", (240.0, 0.0), [500.0, 500.0], None, None)
-    state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
+    state.on_closed(Phase.HELD_UNVERIFIED)
     epoch = state.epoch
     state.on_interrupt()
     assert state.epoch == epoch + 1
     assert state.target is not None
-    assert state.grasp_xy_mm == (240.0, 0.0)
     assert state.phase == Phase.HELD_UNVERIFIED
 
 

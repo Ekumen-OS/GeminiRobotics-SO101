@@ -7,11 +7,15 @@ from typing import AsyncIterator
 from google import genai
 from google.genai import types
 
-from agent.errors import SessionError
+from robot.errors import RoboticsError
 from robot.logger import log_with_tag
 from robot.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+class SessionError(ConnectionError, RoboticsError):
+    """Raised when Gemini Live API session connection, send, or receive fails."""
 
 
 def create_genai_client() -> genai.Client:
@@ -128,17 +132,6 @@ class GeminiLiveSession:
                 await self._session.send_realtime_input(text=text)
         except Exception as e:
             raise SessionError(f"Failed to send instruction: {e}") from e
-
-    async def send_text(self, text: str) -> None:
-        """Send a realtime text prompt to the session."""
-        if not self._session:
-            return
-        try:
-            async with self._ws_lock:
-                log_with_tag(logger, "INFO", f"Sending text: {text!r}")
-                await self._session.send_realtime_input(text=text)
-        except Exception as e:
-            raise SessionError(f"Failed to send text: {e}") from e
 
     async def send_frame(self, jpeg_bytes: bytes) -> None:
         """Send a JPEG frame to the model without instruction (proactive)."""

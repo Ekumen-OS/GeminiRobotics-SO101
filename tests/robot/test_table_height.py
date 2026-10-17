@@ -54,7 +54,7 @@ async def test_spatial_tools_with_table_z(restore_settings: None) -> None:
 
     mock_calib.gemini_to_robot_xyz.side_effect = dummy_gemini
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         # 1. Hover at 3 cm commands robot z = 0.006 m (0.03 + (-0.024))
         call_hover = DummyToolCall(
             "move_to_spatial_point",
@@ -185,7 +185,7 @@ async def test_spatial_tools_with_table_xy(restore_settings: None) -> None:
 
     mock_calib.gemini_to_robot_xyz.side_effect = dummy_gemini
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
@@ -225,7 +225,7 @@ async def test_actual_position_logged_on_move(restore_settings: None) -> None:
             logged_exec_messages.append(msg)
 
     with (
-        patch("agent.tools.get_calibrator", return_value=mock_calib),
+        patch("vision.calibrator.get_calibrator", return_value=mock_calib),
         patch("agent.tools.log_with_tag", side_effect=mock_log),
     ):
         call = DummyToolCall(

@@ -1,8 +1,0 @@
-[
-  "close_gripper",
-  "move_to_pose",
-  "move_to_preset",
-  "move_to_spatial_point",
-  "open_gripper",
-  "set_joint_positions"
-]

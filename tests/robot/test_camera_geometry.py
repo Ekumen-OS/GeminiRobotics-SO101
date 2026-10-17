@@ -240,7 +240,7 @@ def test_jaw_locator_parallax_free_sim(sim_scene) -> None:
 
 def test_jaw_locator_sees_a_pan_encoder_bias_that_fk_cannot(sim_scene) -> None:
     """With a 1.5 deg pan offset the tag-based XY follows the real arm; FK follows the belief."""
-    from tests.e2e.sim_pick_harness import PanOffsetRobot
+    from tests.harness.sim_pick import PanOffsetRobot
 
     robot, snapshot = sim_scene
     biased = PanOffsetRobot(robot, 1.5)

@@ -14,9 +14,8 @@ from typing import Any
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from agent.errors import SessionError
 from agent.guardrails import GuardrailState
-from agent.live_session import GeminiLiveSession
+from agent.live_session import GeminiLiveSession, SessionError
 from agent.response_assembler import ResponseAssembler
 from agent.tools import (
     ROBOT_TOOL_DECLARATIONS,
@@ -29,7 +28,7 @@ from robot.grasp import classify_grasp
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
-from vision.calibrator import get_calibrator
+from vision.calibrator import get_ready_calibrator
 from vision.targets import set_model_targets
 
 logger = logging.getLogger(__name__)
@@ -44,18 +43,6 @@ ER2_QUERY_ERRORS = (
     KeyError,
     OSError,
 )
-
-
-def _get_gemini_model() -> str:
-    """Return configured Gemini robotics model ID."""
-    return get_settings().gemini_model_id
-
-
-def __getattr__(name: str) -> Any:
-    """Resolve dynamic constants."""
-    if name == "GEMINI_ROBOTICS_MODEL":
-        return _get_gemini_model()
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
@@ -205,7 +192,6 @@ class _TurnContext:
     get_fresh_jpeg_fn: Callable[[float, float], bytes | None] | None
     response_queue: asyncio.Queue
     tool_executing_event: asyncio.Event
-    tool_status_callback: Callable[[str], None]
 
 
 class VLAController:
@@ -224,20 +210,12 @@ class VLAController:
         """
         self.mode = mode
         self.robot = robot
-        self.history: list[dict[str, str]] = []
         system_prompt = load_system_prompt(mode=self.mode)
-        self.history.append({"role": "system", "content": system_prompt})
 
         self._api_available = True
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-
-        if self.mode == "sim":
-            from simulation.sim_calibration import init_sim_workspace_calibration
-
-            calib = get_calibrator(mode="sim")
-            init_sim_workspace_calibration(calibrator=calib)
 
         self._session: GeminiLiveSession | None = None
         self._active_instruction_lock = threading.Lock()
@@ -248,7 +226,7 @@ class VLAController:
         # We try to initialize the session to test credentials, but don't connect yet.
         try:
             self._session = GeminiLiveSession(
-                model=_get_gemini_model(),
+                model=get_settings().gemini_model_id,
                 tools=ROBOT_TOOL_DECLARATIONS,
                 system_instruction=system_prompt,
             )
@@ -386,8 +364,6 @@ class VLAController:
             elif part.text:
                 log_with_tag(logger, "DECISION", f"📝 Model text: {part.text}")
                 await ctx.response_queue.put({"type": "text", "content": part.text})
-            elif part.executable_code:
-                pass
 
     async def _execute_tool(self, call: Any, ctx: _TurnContext) -> types.FunctionResponse:
         """Execute a single function call, emit UI updates, and return response payload.
@@ -457,7 +433,6 @@ class VLAController:
             call=call,
             robot=self.robot,
             get_latest_jpeg_fn=ctx.get_latest_jpeg_fn,
-            status_callback=ctx.tool_status_callback,
             mode=self.mode,
             guardrail_state=self.guardrail_state,
             query_er2_locator_fn=query_er2,
@@ -631,18 +606,11 @@ class VLAController:
         async with self._async_instruction_lock:
             initial_frame = get_latest_jpeg_fn() if get_latest_jpeg_fn else None
 
-            def tool_status_callback(status_msg: str) -> None:
-                asyncio.run_coroutine_threadsafe(
-                    response_queue.put({"type": "status", "content": status_msg}),
-                    self._loop,
-                )
-
             ctx = _TurnContext(
                 get_latest_jpeg_fn=get_latest_jpeg_fn,
                 get_fresh_jpeg_fn=get_fresh_jpeg_fn,
                 response_queue=response_queue,
                 tool_executing_event=asyncio.Event(),
-                tool_status_callback=tool_status_callback,
             )
 
             try:
@@ -686,29 +654,19 @@ class VLAController:
             return
 
         self._begin_guardrail_instruction()
-        self.history.append({"role": "user", "content": instruction})
 
         if not self._api_available:
             msg = (
                 "⚠️ Gemini API unavailable. Falling back to manual control. Check your credentials."
             )
-            self.history.append({"role": "assistant", "content": msg})
             yield msg
             return
 
         # In real mode, block execution if workspace calibration is missing
         if self.mode == "real":
-            calib = get_calibrator()
-            is_uncalibrated = False
-            if calib is None or not getattr(calib, "is_calibrated", False):
-                is_uncalibrated = True
-            elif hasattr(calib, "require_calibrated"):
-                try:
-                    calib.require_calibrated()
-                except CalibrationUnavailable:
-                    is_uncalibrated = True
-
-            if is_uncalibrated:
+            try:
+                get_ready_calibrator("real")
+            except CalibrationUnavailable:
                 block_msg = (
                     "⚠️ **Action Blocked — Workspace Not Calibrated**\n\n"
                     "The physical workspace has not been calibrated. The robot cannot safely "
@@ -718,7 +676,6 @@ class VLAController:
                     "2. Open the **🎯 ArUco Workspace Calibration** panel on the left.\n"
                     "3. Click **'💾 Save Calibration'** once the 4 corners are detected."
                 )
-                self.history.append({"role": "assistant", "content": block_msg})
                 yield block_msg
                 return
 
@@ -750,24 +707,6 @@ class VLAController:
 
             yield assembler.feed(item)
 
-        self.history.append({"role": "assistant", "content": assembler.finish().strip()})
-
-    def process_instruction(self, instruction: str, context_images: list | None = None) -> str:
-        """Process a user instruction and return the agent's full response.
-
-        Args:
-            instruction: The text instruction from the user.
-            context_images: Ignored. Used only for backward compatibility.
-
-        Returns:
-            The agent's complete response.
-        """
-        # Consume the entire stream and return the final string
-        final_text = ""
-        for chunk in self.process_instruction_stream(instruction):
-            final_text = chunk
-        return final_text
-
     def interrupt(self) -> None:
         """Interrupt any ongoing execution and halt the robot."""
         self.guardrail_state.on_interrupt()
@@ -777,17 +716,8 @@ class VLAController:
         if self._current_async_task and not self._current_async_task.done():
             self._current_async_task.cancel()
 
-    def get_history(self) -> list[dict[str, str]]:
-        """Retrieve the current conversation history."""
-        return self.history
-
     def clear_history(self) -> None:
-        """Clear the conversation history, keeping only the system prompt."""
-        if self.history:
-            system_prompt = self.history[0]
-            self.history = [system_prompt]
-
-        # Reset session
+        """Reset the active Gemini Live session."""
         if self._session:
             try:
                 asyncio.run_coroutine_threadsafe(self._session.disconnect(), self._loop)

@@ -374,8 +374,13 @@ def test_process_instruction_recovers_on_exception() -> None:
     assert "Simulated WebSocket connection drop" in hist_fin[-1]["content"]
 
 
-def test_process_instruction_uncalibrated_status() -> None:
+def test_process_instruction_uncalibrated_status(tmp_path: object, restore_settings: None) -> None:
     """Verify status banner and placeholder when workspace calibration is missing in real mode."""
+    from pathlib import Path
+
+    from robot.settings import Settings, set_settings
+
+    set_settings(Settings.from_env(calibration_save_path=Path(str(tmp_path)) / "missing_real.npz"))
     calib = get_calibrator(mode="real")
     if calib is not None:
         calib.homography_matrix = None

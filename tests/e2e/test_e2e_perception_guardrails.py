@@ -16,7 +16,7 @@ import pytest
 from google.genai import types
 
 from agent.tools import execute_tool_call
-from agent.vla_controller import VLAController, parse_targets_from_text
+from agent.vla_controller import VLAController, load_system_prompt, parse_targets_from_text
 from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
 from vision.detector import (
@@ -143,8 +143,7 @@ async def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
 
 def test_t1_f7_system_prompt_mandates_descent_alignment_gate() -> None:
     """The prompt makes the measured is_aligned the only descent criterion (mm tolerance)."""
-    controller = VLAController(mode="sim")
-    prompt = controller.get_history()[0]["content"]
+    prompt = load_system_prompt("sim")
 
     assert "offset more than 4 mm" in prompt
     assert "within 4 mm" in prompt
@@ -279,7 +278,6 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -371,7 +369,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
 
     fake_frame = b"\xff\xd8\xff\xe0mock_frame"
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Pick the red cube with visual self-correction",
@@ -398,7 +396,6 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -505,7 +502,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Pick red cube with grasp retry",
@@ -532,7 +529,6 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -600,7 +596,7 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Test retry exhaustion escalation",
@@ -653,7 +649,6 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
-    mock_session.send_text = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -745,7 +740,7 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     mock_session.receive = mock_stream
     controller._session = mock_session
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         chunks = list(
             controller.process_instruction_stream(
                 "Execute pick and place pipeline",
