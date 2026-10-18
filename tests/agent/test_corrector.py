@@ -13,8 +13,9 @@ from agent.guardrails import GuardrailState, Phase
 from agent.pick_loop import IMPLAUSIBLE_RESIDUAL_MM
 from robot.constants import JOINT_NAMES
 from robot.real_robot import CONVERGENCE_TOL_DEG, RealSO101Robot
-from tests.e2e.pick_helpers import next_call_from, patch_measurements
-from tests.e2e.sim_pick_harness import SimPickHarness, settings_override
+from tests.harness.pick_helpers import next_call_from, patch_measurements
+from tests.harness.sim_pick import SimPickHarness, settings_override
+from tests.harness.tools_sync import execute_tool_call_sync
 
 CUBE_XY = (0.24, 0.0)
 
@@ -192,7 +193,6 @@ def test_measurement_waits_for_fresh_frame(harness: SimPickHarness) -> None:
         return harness.fresh_jpeg(t_after, timeout_s)
 
     t_start = time.monotonic()
-    from agent.tools import execute_tool_call_sync
     from tests.conftest import DummyToolCall
 
     res = execute_tool_call_sync(
@@ -216,7 +216,6 @@ def test_measurement_waits_for_fresh_frame(harness: SimPickHarness) -> None:
 def test_no_fresh_frame_means_unmeasured_not_failed(harness: SimPickHarness) -> None:
     """If no newer frame arrives the motion still succeeded; the measurement is unavailable."""
     point = harness.image_point_for(*CUBE_XY)
-    from agent.tools import execute_tool_call_sync
     from tests.conftest import DummyToolCall
 
     res = execute_tool_call_sync(

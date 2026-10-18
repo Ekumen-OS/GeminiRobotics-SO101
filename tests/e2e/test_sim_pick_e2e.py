@@ -7,7 +7,7 @@ scenarios and prints the metrics table.
 import numpy as np
 import pytest
 
-from tests.e2e.sim_pick_harness import (
+from tests.harness.sim_pick import (
     ScenarioResult,
     SimPickHarness,
     format_metrics_table,
@@ -181,7 +181,6 @@ def test_pan_offset_wrapper_bias_is_invisible_to_fk() -> None:
     import numpy as np
 
     from robot.cartesian_ik import CartesianIK
-    from tests.e2e.sim_pick_harness import SimPickHarness
 
     harness = SimPickHarness(pan_offset_deg=1.5)
     try:

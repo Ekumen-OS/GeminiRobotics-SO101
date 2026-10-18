@@ -28,8 +28,8 @@ from agent.vla_controller import VLAController
 from robot.camera_model import PinholeCamera
 from robot.settings import Settings, set_settings
 from tests.conftest import MockRobot, fake_live_session
-from tests.e2e.pick_helpers import patch_measurements
-from tests.e2e.sim_pick_harness import SimPickHarness
+from tests.harness.pick_helpers import patch_measurements
+from tests.harness.sim_pick import SimPickHarness
 
 CUBE_XY = (0.24, 0.0)
 
@@ -437,7 +437,7 @@ async def test_three_misses_escalation_status_and_user_message() -> None:
             state = controller.guardrail_state
             state.new_lock("red", (240.0, 0.0), [760.0, 484.0], None, None)
             state.target.grasp_attempts = 2
-            state.on_closed(Phase.HELD_UNVERIFIED, (240.0, 0.0))
+            state.on_closed(Phase.HELD_UNVERIFIED)
             robot.gripper_reading = {"aperture_deg": -75.0, "load": 0.0, "source": "measured"}
         return await orig_exec(call, ctx)
 
@@ -496,7 +496,6 @@ def test_transport_gate_blocks_preset_pose_until_gripper_opened() -> None:
 
     close_res = _handle_close_gripper(ctx, {})
     assert close_res.get("status") == "success"
-    assert state.gripper_closed is True
     assert state.transport_allowed is False
     assert state.phase == Phase.CLOSED_EMPTY
 
@@ -521,7 +520,7 @@ def test_transport_gate_blocks_preset_pose_until_gripper_opened() -> None:
 
     open_res = _handle_open_gripper(ctx, {})
     assert open_res.get("status") == "success"
-    assert state.gripper_closed is False
+    assert state.phase == Phase.APPROACH
 
     preset_allowed = _handle_move_to_preset(ctx, {"pose_name": "HOME"})
     assert preset_allowed.get("status") == "success"
@@ -538,7 +537,6 @@ def test_close_without_a_lock_uses_the_fk_jaw_xy() -> None:
     from agent.tools import _site_xyz
 
     site = _site_xyz(robot)
-    assert state.grasp_xy_mm == pytest.approx((site[0] * 1000.0, site[1] * 1000.0))
     assert state.target is not None
     assert state.target.centre_xy_mm == pytest.approx((site[0] * 1000.0, site[1] * 1000.0))
     assert state.phase == Phase.HELD_UNVERIFIED
@@ -583,10 +581,8 @@ async def test_er2_locator_is_report_only_and_uses_its_own_model(
 
     query_in_progress = False
     send_instruction_during_query = False
-    send_text_during_query = False
 
     orig_send_instruction = mock_session.send_instruction
-    orig_send_text = mock_session.send_text
 
     async def spy_send_instruction(*args: Any, **kwargs: Any) -> Any:
         nonlocal send_instruction_during_query
@@ -594,14 +590,7 @@ async def test_er2_locator_is_report_only_and_uses_its_own_model(
             send_instruction_during_query = True
         return await orig_send_instruction(*args, **kwargs)
 
-    async def spy_send_text(*args: Any, **kwargs: Any) -> Any:
-        nonlocal send_text_during_query
-        if query_in_progress:
-            send_text_during_query = True
-        return await orig_send_text(*args, **kwargs)
-
     mock_session.send_instruction = AsyncMock(side_effect=spy_send_instruction)
-    mock_session.send_text = AsyncMock(side_effect=spy_send_text)
 
     async def mock_generate_content(*args: Any, **kwargs: Any) -> Any:
         nonlocal query_in_progress
@@ -632,7 +621,6 @@ async def test_er2_locator_is_report_only_and_uses_its_own_model(
     assert tool_resp["perception"]["gripper_source"] != "er2"
     assert tool_resp["perception"]["er2_gripper_point_1000"] == [690.0, 515.0]
     assert not send_instruction_during_query
-    assert not send_text_during_query
     assert mock_session.client.aio.models.generate_content.call_count == 1
     gen_kwargs = mock_session.client.aio.models.generate_content.call_args.kwargs
     from robot.settings import get_settings

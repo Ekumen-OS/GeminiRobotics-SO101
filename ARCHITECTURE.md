@@ -74,7 +74,7 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 | **F11**| Continuous Integration & Regression Shield | `tests/` (all modules) | Deterministic test harness with zero external network dependencies and 100% pass rate. |
 | **F12**| Adversarial Hardening | `tests/robot/test_cartesian_ik.py`, `tests/robot/test_perception.py`, `tests/ui/test_ui.py` | Stress testing against extreme coordinate noise, stream concurrency hammers, degenerate corner inputs, and servo angle clamping. |
 | **F13**| Physical Grasp Sensor & Sensor-First Lift Verdict | `robot/grasp.py`, `agent/guardrails.py`, `agent/pick_loop.py`, `robot/real_robot.py`, `simulation/sim_robot.py`, `agent/tools.py` | Bus register and physics-driven aperture and load telemetry (`classify_grasp`) decide whether the jaws closed on air or stalled on something; the post-lift re-read plus the lock-based vision veto (`vision_vote`) feed `decide_grasp`. Sensor or vision unavailability yields fail-closed unverified states that block transport. The simulated gripper has box finger pads (40 mm gap, 1.5 N·m torque cap) so a 30 mm cube is actually lifted. |
-| **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/errors.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
+| **F14**| Fail-Closed Error Taxonomy & Visual Verification Safety | `robot/errors.py`, `agent/live_session.py`, `robot/real_robot.py`, `agent/tools.py`, `vision/frames.py` | Hierarchical error taxonomy (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`, `SessionError`). Fails closed on driver read/write, calibration corruption, and missing camera frames (no synthetic placeholder fallback in real mode). Tool error responses communicate typed `error_type` and honest `robot_moved` telemetry. |
 
 ---
 
@@ -321,7 +321,7 @@ GeminiRobotics-SO101/
 │   ├── app.py                        # FastAPI application mounting Gradio Web UI
 │   ├── state.py                      # Lazy kinematics 3D state synchronization manager
 │   └── components/                   # Gradio chat, controls, and vision viewports
-└── tests/                            # 4-tier suite; tests/e2e/sim_pick_harness.py = scripted pick-and-place vs MuJoCo truth
+└── tests/                            # 4-tier suite; tests/harness/sim_pick.py = scripted pick-and-place vs MuJoCo truth
 ```
 
 ---

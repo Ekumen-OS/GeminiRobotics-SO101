@@ -10,7 +10,6 @@ These tests document the un-hardened failure paths that Phase 3c will close:
 import threading
 from unittest.mock import MagicMock, patch
 
-import cv2
 import numpy as np
 import pytest
 
@@ -160,27 +159,6 @@ def test_calibration_update_homography_atomic_leaves_previous_matrix() -> None:
     assert np.allclose(calib.homography_matrix, valid_h)
     assert np.allclose(calib.inverse_homography, valid_h)
     assert calib.reprojection_error == 0.5
-
-
-def test_perception_refinement_raises_perception_unavailable_flipped() -> None:
-    """FLIPPED: a detector crash during target refinement raises PerceptionUnavailable.
-
-    Refinement now happens once, in the tool (``_refine_point``); ``compute_visual_alignment``
-    no longer re-detects the target.
-    """
-    from agent.tools import _refine_point
-    from robot.errors import PerceptionUnavailable
-
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    ok, enc = cv2.imencode(".jpg", frame)
-    assert ok
-    with patch(
-        "agent.tools.refine_point_to_nearest_object",
-        side_effect=RuntimeError("Salient detector crash"),
-    ):
-        with pytest.raises(PerceptionUnavailable, match="Visual refinement failed") as exc:
-            _refine_point([500.0, 500.0], lambda: enc.tobytes())
-    assert exc.value.robot_moved is False
 
 
 def test_real_mode_placeholder_frame_fails_closed_flipped() -> None:

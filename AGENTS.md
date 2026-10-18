@@ -38,7 +38,7 @@
   - Confirm 100% pass rate before committing or reporting milestone completion.
 
 - **Typed Errors & Exception Rules**:
-  - Code must raise specific taxonomy errors from `robot/errors.py` (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`) and `agent/errors.py` (`SessionError`).
+  - Code must raise specific taxonomy errors from `robot/errors.py` (`RoboticsError`, `HardwareError`, `CalibrationUnavailable`, `PerceptionUnavailable`, `ToolArgumentError`) and `agent/live_session.py` (`SessionError`).
   - Broad catches (`except Exception`) are strictly restricted to designated safety boundaries:
     - `agent/tools.py`: `execute_tool_call` outer boundary (maps to typed `ToolErrorResponse`, halts robot on `HardwareError`).
     - `agent/vla_controller.py`: `_process_instruction_async` outer catch (halts robot and emits error).

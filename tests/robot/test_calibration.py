@@ -301,7 +301,7 @@ def test_f1_marker_id_harmonization_across_subsystems() -> None:
     """
     import json
 
-    from agent.vla_controller import VLAController
+    from agent.vla_controller import load_system_prompt
     from robot.settings import get_settings
 
     # 1. Check workspace_calibration.json
@@ -332,8 +332,7 @@ def test_f1_marker_id_harmonization_across_subsystems() -> None:
     assert 'name="aruco_bl_3"' in scene_text and 'material="mat_marker_0"' in scene_text
 
     # 4. Check VLAController system prompt text
-    controller = VLAController(mode="sim")
-    sys_prompt = controller.history[0]["content"]
+    sys_prompt = load_system_prompt("sim")
     expected_str = "ID 1 (Top-Left), ID 2 (Top-Right), ID 3 (Bottom-Right), ID 0 (Bottom-Left)"
     assert expected_str in sys_prompt
 

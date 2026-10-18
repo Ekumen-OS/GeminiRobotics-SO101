@@ -62,3 +62,43 @@ def test_end_while_in_thought_block() -> None:
     assembler.feed({"type": "thought", "content": "Mid-thought termination"})
     final_text = assembler.finish()
     assert final_text == "> 💭 *Mid-thought termination*\n\n"
+
+
+def test_full_multi_step_stream_sequence() -> None:
+    """Verify multi-step sequence across thoughts, text, statuses, and error."""
+    assembler = ResponseAssembler()
+    events = [
+        {"type": "thought", "content": "Thinking step 1..."},
+        {"type": "thought", "content": " and step 2."},
+        {"type": "text", "content": "I will check the joints."},
+        {"type": "status", "content": "⚙️ Executing `get_joint_positions`..."},
+        {"type": "status", "content": "✅ `get_joint_positions` completed."},
+        {"type": "thought", "content": "Evaluating joints."},
+        {"type": "error", "content": "Session error: Simulated connection failure"},
+    ]
+    chunks = [assembler.feed(ev) for ev in events]
+    assert chunks == [
+        "> 💭 *Thinking step 1...",
+        "> 💭 *Thinking step 1... and step 2.",
+        "> 💭 *Thinking step 1... and step 2.*\n\nI will check the joints.",
+        (
+            "> 💭 *Thinking step 1... and step 2.*\n\n"
+            "I will check the joints.\n⚙️ Executing `get_joint_positions`...\n"
+        ),
+        (
+            "> 💭 *Thinking step 1... and step 2.*\n\n"
+            "I will check the joints.\n⚙️ Executing `get_joint_positions`...\n"
+            "✅ `get_joint_positions` completed.\n"
+        ),
+        (
+            "> 💭 *Thinking step 1... and step 2.*\n\n"
+            "I will check the joints.\n⚙️ Executing `get_joint_positions`...\n"
+            "✅ `get_joint_positions` completed.\n> 💭 *Evaluating joints."
+        ),
+        (
+            "> 💭 *Thinking step 1... and step 2.*\n\n"
+            "I will check the joints.\n⚙️ Executing `get_joint_positions`...\n"
+            "✅ `get_joint_positions` completed.\n> 💭 *Evaluating joints.*\n\n\n"
+            "**Error:** Session error: Simulated connection failure\n"
+        ),
+    ]

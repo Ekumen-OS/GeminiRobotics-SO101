@@ -310,7 +310,6 @@ def fake_live_session(messages: list[Any] | None = None) -> MagicMock:
     mock_session.is_connected = True
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
-    mock_session.send_text = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
     mock_session.send_frame = AsyncMock()
     mock_session.disconnect = AsyncMock()

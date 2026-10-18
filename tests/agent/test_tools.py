@@ -6,19 +6,24 @@ import numpy as np
 import pytest
 
 from agent.tools import (
-    _BLOCKING_TOOLS,
-    GRIPPER_CLOSE_DEG,
-    GRIPPER_OPEN_DEG,
     ROBOT_TOOL_DECLARATIONS,
+    TOOL_REGISTRY,
     execute_tool_call,
-    execute_tool_call_sync,
     image_point_to_xyz,
     validate_and_clamp_joints,
 )
-from robot.constants import JOINT_LIMITS, JOINT_NAMES, PRESET_POSES
+from robot.constants import (
+    GRIPPER_CLOSE_DEG,
+    GRIPPER_OPEN_DEG,
+    JOINT_LIMITS,
+    JOINT_NAMES,
+    PRESET_POSES,
+)
+from robot.errors import CalibrationUnavailable
 from robot.interface import RobotInterface
 from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
+from tests.harness.tools_sync import execute_tool_call_sync
 
 
 def test_tool_declarations_structure() -> None:
@@ -49,10 +54,11 @@ def test_tool_declarations_structure() -> None:
         assert decl["parameters"]["type"] == "OBJECT"
 
     # Blocking tools check
-    for name in _BLOCKING_TOOLS:
-        matching = [d for d in ROBOT_TOOL_DECLARATIONS if d["name"] == name]
-        assert len(matching) == 1
-        assert matching[0].get("behavior") == "BLOCKING"
+    for name, spec in TOOL_REGISTRY.items():
+        if spec.blocking:
+            matching = [d for d in ROBOT_TOOL_DECLARATIONS if d["name"] == name]
+            assert len(matching) == 1
+            assert matching[0].get("behavior") == "BLOCKING"
 
 
 def test_move_to_spatial_point_schema() -> None:
@@ -202,7 +208,7 @@ async def test_execute_tool_move_to_spatial_point() -> None:
     mock_calibrator.is_calibrated = True
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
@@ -237,8 +243,11 @@ async def test_execute_tool_move_to_spatial_uncalibrated() -> None:
     robot = MockRobot()
     mock_calibrator = MagicMock()
     mock_calibrator.is_calibrated = False
+    mock_calibrator.require_calibrated.side_effect = CalibrationUnavailable(
+        "Workspace is not calibrated"
+    )
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall("move_to_spatial_point", {"point": [500.0, 500.0]})
         res = await execute_tool_call(call, robot=robot)
         assert "error" in res
@@ -246,7 +255,12 @@ async def test_execute_tool_move_to_spatial_uncalibrated() -> None:
 
 def test_image_point_to_xyz_uncalibrated() -> None:
     """Test image_point_to_xyz raises RuntimeError when uncalibrated."""
-    with patch("agent.tools.get_calibrator", return_value=None):
+    mock_calibrator = MagicMock()
+    mock_calibrator.is_calibrated = False
+    mock_calibrator.require_calibrated.side_effect = CalibrationUnavailable(
+        "Workspace is not calibrated"
+    )
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         with pytest.raises(RuntimeError, match="Workspace is not calibrated"):
             image_point_to_xyz([500.0, 500.0])
 
@@ -288,7 +302,7 @@ async def test_tools_visual_hints_enrichment(restore_settings: None) -> None:
     mock_calibrator.is_calibrated = True
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         # Hover height >= 3.0
         hover_call = DummyToolCall(
             "move_to_spatial_point",
@@ -339,7 +353,7 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
     mock_calibrator.gemini_to_robot_xyz.return_value = np.array([0.18, 0.05, 0.05])
 
     # 1. Successful move_to_spatial_point logs to stdout with ISO timestamp
-    with patch("agent.tools.get_calibrator", return_value=mock_calibrator):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [600.0, 400.0], "z_height_cm": 3.0, "approach": "top_down"},
@@ -381,7 +395,7 @@ async def test_move_to_spatial_point_custom_label() -> None:
     mock_calib.is_calibrated = True
     mock_calib.gemini_to_robot_xyz.return_value = np.array([0.2, 0.0, 0.05])
 
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         call = DummyToolCall(
             "move_to_spatial_point",
             {
@@ -461,7 +475,7 @@ async def test_execute_tool_taxonomic_error_responses() -> None:
     # 2. Calibration error
     mock_calib = MagicMock()
     mock_calib.require_calibrated.side_effect = CalibrationUnavailable("Workspace uncalibrated")
-    with patch("agent.tools.get_calibrator", return_value=mock_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         spatial_call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [500.0, 500.0], "approach": "top_down"},
@@ -474,7 +488,7 @@ async def test_execute_tool_taxonomic_error_responses() -> None:
     valid_calib = MagicMock()
     valid_calib.is_calibrated = True
     valid_calib.gemini_to_robot_xyz.return_value = np.array([0.2, 0.0, 0.05])
-    with patch("agent.tools.get_calibrator", return_value=valid_calib):
+    with patch("vision.calibrator.get_calibrator", return_value=valid_calib):
         spatial_call = DummyToolCall(
             "move_to_spatial_point",
             {"point": [500.0, 500.0], "approach": "top_down"},

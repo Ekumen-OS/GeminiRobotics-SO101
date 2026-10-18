@@ -3,6 +3,7 @@
 import threading
 
 from robot.calibration import ArucoWorkspaceCalibrator
+from robot.settings import get_settings
 
 _calibrator_lock = threading.Lock()
 _global_calibrator: ArucoWorkspaceCalibrator | None = None
@@ -31,6 +32,41 @@ def get_calibrator(mode: str = "real") -> ArucoWorkspaceCalibrator:
 
             _global_calibrator = init_sim_workspace_calibration(calibrator=_global_calibrator)
         return _global_calibrator
+
+
+def get_ready_calibrator(mode: str = "real") -> ArucoWorkspaceCalibrator:
+    """Return the calibrator for ``mode`` with its homography loaded.
+
+    Args:
+        mode: Operational mode ('real' or 'sim').
+
+    Returns:
+        The calibrated ArucoWorkspaceCalibrator instance for ``mode``.
+
+    Raises:
+        CalibrationUnavailable: If the workspace is not calibrated.
+    """
+    calib = get_calibrator(mode=mode)
+    is_sim = mode == "sim"
+    settings = get_settings()
+    target_path = settings.calibration_sim_save_path if is_sim else settings.calibration_save_path
+    if is_sim and (calib.mode != "sim" or not calib.is_calibrated):
+        if target_path.exists():
+            if calib.load_calibration(target_path):
+                calib.mode = "sim"
+        else:
+            from simulation.sim_calibration import init_sim_workspace_calibration
+
+            calib = init_sim_workspace_calibration(calibrator=calib)
+    elif not is_sim and (calib.mode != "real" or not calib.is_calibrated):
+        if target_path.exists():
+            if calib.load_calibration(target_path):
+                calib.mode = "real"
+        elif calib.mode == "sim":
+            calib.homography_matrix = None
+            calib.mode = "real"
+    calib.require_calibrated()
+    return calib
 
 
 def get_calibration_status_summary() -> str:
