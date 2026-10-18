@@ -61,7 +61,6 @@ files = [
   "robot/real_robot.py",
   "robot/registry.py",
   "agent/contracts.py",
-  "agent/errors.py",
   "robot/perception.py",
   "agent/tools.py",
   "agent/response_assembler.py",

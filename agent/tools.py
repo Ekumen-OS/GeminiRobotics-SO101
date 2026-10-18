@@ -32,7 +32,7 @@ from agent.pick_loop import (
     vision_vote,
 )
 from robot.cartesian_ik import CartesianIK
-from robot.constants import JOINT_LIMITS, PRESET_POSES
+from robot.constants import GRIPPER_CLOSE_DEG, GRIPPER_OPEN_DEG, JOINT_LIMITS, PRESET_POSES
 from robot.contracts import AlignmentMeasurement, GraspClassification
 from robot.errors import (
     CalibrationUnavailable,
@@ -52,7 +52,8 @@ from robot.settings import (
     table_height_to_robot_z_m,
     table_to_robot_xy_mm,
 )
-from vision.calibrator import get_calibrator
+from vision import calibrator as _calibrator_mod
+from vision.calibrator import get_ready_calibrator
 from vision.detector import color_from_label, refine_point_to_nearest_object
 from vision.gripper_locator import locate_jaw_xy_mm
 from vision.targets import get_model_targets, set_model_targets
@@ -61,12 +62,6 @@ logger = logging.getLogger(__name__)
 
 # Exceptions the OpenCV-based perception helpers raise on a bad frame or bad geometry.
 PERCEPTION_ERRORS = (cv2.error, ValueError, IndexError, KeyError, TypeError, RuntimeError)
-
-_UNCALIBRATED_MESSAGE = (
-    "Workspace is not calibrated. Please ensure 4 ArUco markers are in view and "
-    "save calibration under the ArUco Workspace Calibration panel before executing "
-    "spatial commands."
-)
 
 
 def build_move_spatial_response(
@@ -133,10 +128,6 @@ def build_gripper_response(
     return resp
 
 
-# Gripper limits derived from JOINT_LIMITS in degrees
-GRIPPER_OPEN_DEG = JOINT_LIMITS["gripper"][1]
-GRIPPER_CLOSE_DEG = JOINT_LIMITS["gripper"][0]
-
 # Lazy-initialized IK solver (avoids loading MuJoCo XML until first spatial call)
 _ik_solver: CartesianIK | None = None
 
@@ -151,9 +142,6 @@ def _get_ik_solver() -> CartesianIK:
     if _ik_solver is None:
         _ik_solver = CartesianIK()
     return _ik_solver
-
-
-DEFAULT_HOVER_Z = 0.03  # 3 cm above table
 
 
 def resolve_robot_mode(robot: RobotInterface | None, mode: str | None = None) -> str:
@@ -198,7 +186,7 @@ def image_point_to_xyz(
         CalibrationUnavailable: If the workspace is not calibrated.
     """
     active_mode = resolve_robot_mode(get_active_robot(), mode)
-    calib = _ready_calibrator(active_mode)
+    calib = get_ready_calibrator(active_mode)
     robot_z = table_height_to_robot_z_m(hover_z, active_mode)
 
     table_xyz = calib.gemini_to_robot_xyz(point, img_shape=img_shape, z_m=robot_z)
@@ -248,7 +236,6 @@ class ToolContext:
 
     robot: RobotInterface | None
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None
-    status_callback: Callable[[str], None] | None = None
     mode: str | None = None
     guardrail_state: GuardrailState | None = None
     query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None
@@ -586,7 +573,6 @@ def _handle_close_gripper(
             )
         s.on_closed(
             phase,
-            (float(jaw_xy_mm[0]), float(jaw_xy_mm[1])),
             grasp_z_mm=float(site[2] * 1000.0),
         )
         if grasp["grasped"] is False:
@@ -695,52 +681,6 @@ def _decode_frame(raw_jpeg: bytes | None, purpose: str, robot_moved: bool) -> np
             f"Failed to decode camera frame for {purpose}", robot_moved=robot_moved
         )
     return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-
-def _refine_point(
-    point: list[float],
-    get_latest_jpeg_fn: Callable[[], bytes | None] | None,
-    label: Any = None,
-) -> tuple[list[float], dict[str, Any] | None]:
-    """Snap a requested point to the footprint centre of the object it points at.
-
-    Args:
-        point: 2D image coordinates [y, x].
-        get_latest_jpeg_fn: Optional frame provider.
-        label: Optional model label; a colour word in it restricts the match to that colour.
-
-    Returns:
-        Tuple of (possibly refined [y, x] point, matched object dictionary or None). The object
-        dictionary carries ``centre_xy_mm`` / ``width_mm`` when the table homography is known.
-
-    Raises:
-        PerceptionUnavailable: If frame provider was supplied but returned None,
-            decoding failed, or visual refinement failed.
-    """
-    matched_obj: dict[str, Any] | None = None
-    if get_latest_jpeg_fn is not None:
-        frame_rgb = _decode_frame(get_latest_jpeg_fn(), "target refinement", robot_moved=False)
-        try:
-            refined_pt, matched_obj = refine_point_to_nearest_object(
-                point,
-                frame_rgb,
-                target_color=color_from_label(label),
-                calibrator=get_calibrator(),
-            )
-            if matched_obj is not None and (
-                abs(refined_pt[0] - point[0]) > 5 or abs(refined_pt[1] - point[1]) > 5
-            ):
-                log_with_tag(
-                    logger,
-                    "EXEC",
-                    f"Auto-refined coordinate [{point[0]:.0f}, {point[1]:.0f}] "
-                    f"→ [{refined_pt[0]:.0f}, {refined_pt[1]:.0f}] "
-                    f"(footprint centre of {matched_obj['color']} object)",
-                )
-                point = refined_pt
-        except PERCEPTION_ERRORS as e:
-            raise PerceptionUnavailable(f"Visual refinement failed: {e}", robot_moved=False) from e
-    return point, matched_obj
 
 
 def _update_target_overlay(
@@ -924,34 +864,6 @@ def _measure_alignment(
     if jaw.er2_point is not None:
         payload["er2_gripper_point_1000"] = jaw.er2_point
     return payload, jaw, frame_rgb
-
-
-def _ready_calibrator(mode: str) -> Any:
-    """Return the calibrator for ``mode`` with its homography loaded (same routing as xyz)."""
-    calib = get_calibrator(mode=mode)
-    is_sim = mode == "sim"
-    settings = get_settings()
-    target_path = settings.calibration_sim_save_path if is_sim else settings.calibration_save_path
-    if calib is not None:
-        if is_sim and (getattr(calib, "mode", None) != "sim" or not calib.is_calibrated):
-            if target_path.exists():
-                if calib.load_calibration(target_path):
-                    calib.mode = "sim"
-            else:
-                from simulation.sim_calibration import init_sim_workspace_calibration
-
-                calib = init_sim_workspace_calibration(calibrator=calib)
-        elif not is_sim and (getattr(calib, "mode", None) != "real" or not calib.is_calibrated):
-            if target_path.exists():
-                if calib.load_calibration(target_path):
-                    calib.mode = "real"
-    if calib is None:
-        raise CalibrationUnavailable(_UNCALIBRATED_MESSAGE)
-    if hasattr(calib, "require_calibrated"):
-        calib.require_calibrated()
-    elif getattr(calib, "is_calibrated", None) is False:
-        raise CalibrationUnavailable(_UNCALIBRATED_MESSAGE)
-    return calib
 
 
 def _table_xy_mm(
@@ -1360,7 +1272,7 @@ def _approach_move(
     if ctx.get_latest_jpeg_fn is not None:
         # One frame, captured before any motion, is the only evidence the lock is built from.
         frame0 = _decode_frame(ctx.get_latest_jpeg_fn(), "target refinement", robot_moved=False)
-        calib = _ready_calibrator(mode)
+        calib = get_ready_calibrator(mode)
         resolved = _resolve_lock(
             ctx, state, epoch, point, args.get("label"), calib, frame0, mode=mode
         )
@@ -1410,7 +1322,7 @@ def _approach_move(
     dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
     dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)
 
-    active_calib = calib if calib is not None else get_calibrator(mode=mode)
+    active_calib = calib if calib is not None else _calibrator_mod.get_calibrator(mode=mode)
     proj_str = _project_site_to_image_str(
         active_calib, (actual_table_xy_mm[0], actual_table_xy_mm[1])
     )
@@ -1637,7 +1549,7 @@ def _lift(
 
     grasp = classify_grasp(robot.read_gripper_state(), get_settings())
     has_frames = ctx.get_latest_jpeg_fn is not None or ctx.get_fresh_jpeg_fn is not None
-    calib = _ready_calibrator(mode) if has_frames else None
+    calib = get_ready_calibrator(mode) if has_frames else None
     vote = "unavailable"
     if has_frames:
         try:
@@ -1750,7 +1662,7 @@ def _transport_move(
     dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
     dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)
 
-    calib = get_calibrator(mode=mode)
+    calib = _calibrator_mod.get_calibrator(mode=mode)
     proj_str = _project_site_to_image_str(calib, (actual_table_xy_mm[0], actual_table_xy_mm[1]))
 
     log_with_tag(
@@ -2028,38 +1940,12 @@ def _build_declarations(registry: dict[str, ToolSpec]) -> list[dict[str, Any]]:
 
 
 ROBOT_TOOL_DECLARATIONS: list[dict[str, Any]] = _build_declarations(TOOL_REGISTRY)
-_BLOCKING_TOOLS: set[str] = {spec.name for spec in TOOL_REGISTRY.values() if spec.blocking}
-
-
-def register_tool(spec: ToolSpec) -> None:
-    """Register a new tool specification into the global registry.
-
-    Args:
-        spec: ToolSpec instance to register.
-    """
-    TOOL_REGISTRY[spec.name] = spec
-    ROBOT_TOOL_DECLARATIONS[:] = _build_declarations(TOOL_REGISTRY)
-    _BLOCKING_TOOLS.clear()
-    _BLOCKING_TOOLS.update(s.name for s in TOOL_REGISTRY.values() if s.blocking)
-
-
-def unregister_tool(name: str) -> None:
-    """Unregister a tool specification from the global registry.
-
-    Args:
-        name: Name of tool to remove.
-    """
-    TOOL_REGISTRY.pop(name, None)
-    ROBOT_TOOL_DECLARATIONS[:] = _build_declarations(TOOL_REGISTRY)
-    _BLOCKING_TOOLS.clear()
-    _BLOCKING_TOOLS.update(s.name for s in TOOL_REGISTRY.values() if s.blocking)
 
 
 async def execute_tool_call(
     call: Any,
     robot: RobotInterface | None,
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
-    status_callback: Callable[[str], None] | None = None,
     mode: str | None = None,
     guardrail_state: GuardrailState | None = None,
     query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None,
@@ -2071,7 +1957,6 @@ async def execute_tool_call(
         call: The tool call object with name and args.
         robot: The initialized RobotInterface instance.
         get_latest_jpeg_fn: Optional callable returning latest camera frame JPEG bytes.
-        status_callback: Optional callable for streaming status messages to UI.
         mode: Operational mode ('real' or 'sim') selecting the workspace calibration. When
             None it is taken from ``robot.mode``.
         guardrail_state: Optional GuardrailState for closed-loop safety gating.
@@ -2107,7 +1992,6 @@ async def execute_tool_call(
     ctx = ToolContext(
         robot=robot,
         get_latest_jpeg_fn=get_latest_jpeg_fn,
-        status_callback=status_callback,
         mode=mode,
         guardrail_state=guardrail_state,
         query_er2_locator_fn=query_er2_locator_fn,
@@ -2180,51 +2064,3 @@ async def _run_handler(
             "error_type": "internal",
             "robot_moved": False,
         }
-
-
-def execute_tool_call_sync(
-    call: Any,
-    robot: RobotInterface | None,
-    get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
-    status_callback: Callable[[str], None] | None = None,
-    mode: str | None = None,
-    guardrail_state: GuardrailState | None = None,
-    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None,
-    get_fresh_jpeg_fn: Callable[[float, float], bytes | None] | None = None,
-) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
-    """Synchronous convenience wrapper for execute_tool_call."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(
-                asyncio.run,
-                execute_tool_call(
-                    call=call,
-                    robot=robot,
-                    get_latest_jpeg_fn=get_latest_jpeg_fn,
-                    status_callback=status_callback,
-                    mode=mode,
-                    guardrail_state=guardrail_state,
-                    query_er2_locator_fn=query_er2_locator_fn,
-                    get_fresh_jpeg_fn=get_fresh_jpeg_fn,
-                ),
-            ).result()
-    else:
-        return asyncio.run(
-            execute_tool_call(
-                call=call,
-                robot=robot,
-                get_latest_jpeg_fn=get_latest_jpeg_fn,
-                status_callback=status_callback,
-                mode=mode,
-                guardrail_state=guardrail_state,
-                query_er2_locator_fn=query_er2_locator_fn,
-                get_fresh_jpeg_fn=get_fresh_jpeg_fn,
-            )
-        )
