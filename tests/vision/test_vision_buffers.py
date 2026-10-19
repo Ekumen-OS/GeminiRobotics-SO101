@@ -1,5 +1,6 @@
 """Characterization tests for frame buffers, JPEG getters, and calibrator caching."""
 
+import threading
 from unittest.mock import patch
 
 import cv2
@@ -25,6 +26,7 @@ from vision.overlays import (
     set_calibration_overlay,
     set_target_overlay_enabled,
 )
+from vision.targets import set_model_targets
 
 
 @pytest.fixture(autouse=True)
@@ -82,9 +84,85 @@ def test_has_published_frame_and_buffer_retrieval() -> None:
     assert annotated_jpeg.startswith(b"\xff\xd8")
 
 
+def test_dual_buffer_stream_zero_leakage(
+    neutral_frame: np.ndarray, clean_stream_state: None
+) -> None:
+    """Verify get_latest_raw_jpeg has zero annotations while get_latest_jpeg includes overlays."""
+    raw_canvas = neutral_frame.copy()
+    set_target_overlay_enabled(True)
+    set_model_targets(
+        [
+            {
+                "point": (350.0, 450.0),
+                "label": "VERIFY_TARGET",
+                "box_2d": [200, 300, 500, 600],
+            }
+        ]
+    )
+    frames_mod._on_sim_frame(raw_canvas)
+
+    raw_jpeg = get_latest_raw_jpeg()
+    annotated_jpeg = get_latest_jpeg()
+
+    assert raw_jpeg is not None
+    assert annotated_jpeg is not None
+    assert raw_jpeg != annotated_jpeg
+
+    raw_bgr = cv2.imdecode(np.frombuffer(raw_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
+    diff_raw = np.abs(raw_rgb.astype(int) - raw_canvas.astype(int))
+    assert np.max(diff_raw) <= 5
+
+
+def test_stream_color_fidelity_rgb_vs_bgr(clean_stream_state: None) -> None:
+    """Verify color channel ordering is preserved and does not swap R and B."""
+    test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    test_frame[:, :, 0] = 230  # High Red, Zero Blue
+    with frames_mod._global_frame_lock:
+        frames_mod._global_latest_raw_frame = test_frame.copy()
+        frames_mod._global_latest_annotated_frame = test_frame.copy()
+
+    raw_jpeg = get_latest_raw_jpeg()
+    assert raw_jpeg is not None
+    decoded_bgr = cv2.imdecode(np.frombuffer(raw_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    decoded_rgb = cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
+
+    # Red channel should dominate, Blue should remain near zero
+    assert decoded_rgb[200, 200, 0] > 200
+    assert decoded_rgb[200, 200, 2] < 20
+
+
+def test_stream_concurrency_thread_safety(
+    neutral_frame: np.ndarray, clean_stream_state: None
+) -> None:
+    """Verify thread safety under concurrent reads of raw and annotated buffers."""
+    with frames_mod._global_frame_lock:
+        frames_mod._global_latest_raw_frame = neutral_frame.copy()
+        frames_mod._global_latest_annotated_frame = neutral_frame.copy()
+
+    errors: list[Exception] = []
+
+    def reader_task() -> None:
+        try:
+            for _ in range(50):
+                raw = get_latest_raw_jpeg()
+                ann = get_latest_jpeg()
+                assert raw is not None
+                assert ann is not None
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=reader_task) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0
+
+
 def test_raw_frame_publish_time_and_wait_for_newer_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """get_raw_jpeg_after waits for a frame published after t_after and times out otherwise."""
-    import threading
     import time
 
     dummy = np.full((480, 640, 3), 90, dtype=np.uint8)

@@ -159,7 +159,7 @@ def test_get_ready_calibrator_sim_with_no_cached_file(
 
 
 def test_get_ready_calibrator_real_with_valid_npz(
-    real_homography_path: pytest.TempPathFactory, restore_settings: None
+    homography_path: pytest.TempPathFactory, restore_settings: None
 ) -> None:
     """Real mode with a valid .npz file loads it and returns mode=='real'."""
     from pathlib import Path
@@ -168,7 +168,7 @@ def test_get_ready_calibrator_real_with_valid_npz(
     from robot.settings import Settings, set_settings
     from vision.calibrator import get_ready_calibrator
 
-    real_npz = Path(str(real_homography_path))
+    real_npz = Path(str(homography_path))
     set_settings(Settings.from_env(calibration_save_path=real_npz))
     calib = ArucoWorkspaceCalibrator(mode="sim", save_path=real_npz)
 
@@ -225,3 +225,32 @@ def test_get_ready_calibrator_real_with_no_npz_clears_stale_sim_singleton_and_ra
 
     assert not calib.is_calibrated
     assert calib.mode == "real"
+
+
+def test_image_point_to_xyz_mode_routing() -> None:
+    """Validate active robot mode context routing and table offsets in image_point_to_xyz."""
+    from agent.tools import image_point_to_xyz
+    from robot.registry import set_active_robot
+    from robot.settings import get_settings
+
+    pt = [760.0, 484.0]
+    xyz_sim = image_point_to_xyz(pt, hover_z=0.03, mode="sim")
+    xyz_real = image_point_to_xyz(pt, hover_z=0.03, mode="real")
+    s = get_settings()
+    table_x = s.get_table_x_mm("real")
+    table_y = s.get_table_y_mm("real")
+    table_z = s.get_table_z_mm("real")
+    expected_real = xyz_sim + np.array([table_x / 1000.0, table_y / 1000.0, table_z / 1000.0])
+    assert 0.12 <= xyz_sim[1] <= 0.17
+    assert 0.12 + (table_y / 1000.0) <= xyz_real[1] <= 0.17 + (table_y / 1000.0)
+    np.testing.assert_allclose(xyz_real, expected_real, atol=2e-3)
+
+    # Dynamic resolution from active robot in simulation
+    sim_robot = _SimLikeRobot()
+    try:
+        set_active_robot(sim_robot)
+        xyz_auto = image_point_to_xyz(pt, hover_z=0.03)
+        assert 0.12 <= xyz_auto[1] <= 0.17
+        np.testing.assert_allclose(xyz_auto, xyz_sim, atol=1e-4)
+    finally:
+        set_active_robot(None)
