@@ -131,11 +131,8 @@ GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 | `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
 | `TABLE_Z_MM` | `0.0` | Robot-frame z of table surface in mm on real arm (sim is always 0.0). Measurement: hover at 3 cm, ruler to fingertips, `TABLE_Z_MM = FK z − measured height`. |
 | `ALIGNMENT_TOLERANCE_MM` | `4.0` | Jaw-to-target distance (robot mm, table plane) under which a hover counts as aligned (`is_aligned`) and a descent is allowed. |
-| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-14,27,63` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default is the simulated mount; measure it on the real arm. |
+| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-35.4,11.0,40.1` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default matches the real and simulated mount at the root of the fixed finger. |
 | `CAMERA_HFOV_DEG` | `70.0` | Nominal horizontal field of view of the workspace camera, used to recover the camera position from the table homography (a ±10 % error costs only a few mm). Check the logged `[Calibration] [CAMERA] centre_mm=[x, y, z]` against a tape measure. |
-| `BIAS_CORRECTION` | `1` | Learn a per-target correction from jaw-tag residuals at the hover (`1`) or never correct (`0`, for A/B runs). |
-| `GRIPPER_LOCATOR_ER2` | `0` | Ask ER2 to point at the fingertips (`1` or `0`). Report-only: the point appears as `perception.er2_gripper_point_1000` and never decides alignment. |
-| `ER2_LOCATOR_MODEL` | `gemini-robotics-er-2-preview` | Model for that pointing query (`generate_content`; the streaming Live model does not serve it). |
 | `VISION_SETTLE_S` | `0.3` | Camera stabilization settling delay in seconds before capturing post-action verification frames. |
 | `ROBOT_PORT` | Platform default (`/dev/ttyACM0` on Linux, `/dev/tty.usbmodem...` on macOS) | Serial device path for physical Feetech bus adapter. |
 | `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
@@ -163,13 +160,13 @@ Follow this procedure when deploying to a physical SO-101 robotic arm. Steps 1�
 The closed loop measures where the gripper really is with one ArUco tag on the gripper, compared with the target in robot millimetres (see `vision/gripper_locator.py`).
 
 - **Tag**: `DICT_4X4_50`, **ID 10**, **25 mm** square, matte, flat (`uv run python main.py --task generate_markers` prints it at 1:1; verify the 50 mm scale line on the printout).
-- **Where (simulation mount, a printable bracket on the real arm)**: on the flank of the gripper that faces the workspace camera, beside the round moving-jaw pivot horn and clear of both fingers: 27 mm out from the gripper centreline and 40 mm below the top of the servo block, i.e. about 63 mm above the fingertip level when the gripper points straight down. A tag on top of the housing was tried and is hidden behind the wrist servo for a camera at the side (0/12 detections); a tag next to the fingertips hides the cube (visible cube area 750 → 0–390 px²). The sim mount is detected in 12/12 poses at 640×480 and leaves ≥ 89 % of the cube visible at a 3 cm hover. A real mount depends on where *your* camera is: check the tag in `/api/stream` before trusting it.
+- **Where (real and simulation mount)**: flush on the camera-facing (`+y`) flat side face of the fixed-jaw housing at the root of the fixed finger, just below the gripper servo horn (in the gripper body frame: face at $y \approx 9.0\text{ mm}$, $x \in [-30.4, -12.4]\text{ mm}$, $z \in [-74.6, -51.2]\text{ mm}$, plus $1.5\text{ mm}$ printed tile thickness and $0.5\text{ mm}$ half-tag thickness $\rightarrow (-21.4, +11.0, -62.9)\text{ mm}$). Detected in 12/12 poses at 640×480 and leaves the cube visible at a 3 cm hover. Check the tag in `/api/stream` before trusting it.
 - **Gripper frame for `GRIPPER_TAG_LOCAL_OFFSET_MM`** (measure with the gripper pointing down, jaws open; the offset is *tag centre minus grasp site*):
   - **origin**: the grasp site: the midpoint between the inner faces of the two finger pads when closed on a 30 mm object, at the level of the pads' lower edge (the fingertip level);
   - **x**: the jaw closing direction, from the fixed finger towards the moving jaw;
   - **y**: along the jaw hinge axis, towards the side that carries the moving-jaw pivot horn;
   - **z**: along the wrist-roll axis from the fingertips towards the wrist (up when the gripper points down).
-- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-14,27,63` (the simulated mount, 1.5 mm accurate against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
+- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-35.4,11.0,40.1` (the real and simulated mount at the root of the fixed finger, 0.3 mm mean error against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
 - **Grasp site (TCP) note**: in `simulation/assets/so101.xml` the `gripperframe` site was moved from the URDF position (on the inner face of the *fixed finger*, x = −7.9 mm, z = −98.1 mm in the gripper frame) to the grasp site (x = +14 mm, z = −103 mm): with the URDF site an IK target at an object's centre puts the fixed finger inside the object. The IK solver reads the same file in real mode, so a real arm now reaches the object with the *middle of the jaws*, not the fixed finger. Centred on the TCP, a 30 mm cube clears the fixed finger mesh face (−7.9 mm) by 6.9 mm; the simulated collision pad `pad_fixed` now sits directly on the real finger face, and closing slides the cube against it.
 
 ## Running the Robot (`main.py`)
@@ -202,15 +199,12 @@ When interacting with the AI in the Web UI chat or via the agent controller, Gem
 
 | Tool Name | Description | Parameters |
 | :--- | :--- | :--- |
-| `send_message` | Speak, narrate observations, explain planned steps, or confirm completion. | `message` (string) |
 | `move_to_pose` | Smoothly interpolate arm to 6-DOF joint target in degrees. | `qpos` (array of 6 degs), `duration_sec` |
-| `set_joint_positions` | Instant snap joint position command in degrees. | `qpos` (array of 6 degs) |
 | `open_gripper` | Fully open the gripper end-effector. | None |
 | `close_gripper` | Close the gripper end-effector. | None |
 | `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`). | `pose_name` (string) |
 | `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
 | `get_joint_positions` | Read current joint angles in degrees. | None |
-| `get_end_effector_pose` | Read 3D Cartesian position and orientation matrix (sim). | None |
 
 ## Model-Driven Closed-Loop Orchestration & Workspace Calibration
 
