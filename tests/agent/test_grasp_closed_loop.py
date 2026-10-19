@@ -27,7 +27,8 @@ from agent.tools import (
 from agent.vla_controller import VLAController
 from robot.camera_model import PinholeCamera
 from robot.settings import Settings, set_settings
-from tests.conftest import MockRobot, fake_live_session
+from tests.conftest import MockRobot
+from tests.harness.live_session import fake_live_session
 from tests.harness.pick_helpers import patch_measurements
 from tests.harness.sim_pick import SimPickHarness
 

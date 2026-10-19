@@ -198,6 +198,14 @@ def empty_frames(clean_stream_state: None) -> Generator[None, None, None]:
         ) = saved
 
 
+@pytest.fixture
+def mock_robot() -> Any:
+    """Provide a fresh MockRobot instance for camera stream testing."""
+    from tests.conftest import MockRobot
+
+    return MockRobot()
+
+
 def test_robot_can_render_only_when_render_is_overridden(mock_robot: Any) -> None:
     """Physical arms inherit a raising ``render_rgb_frame``; ``hasattr`` alone cannot tell."""
     from robot.interface import RobotInterface

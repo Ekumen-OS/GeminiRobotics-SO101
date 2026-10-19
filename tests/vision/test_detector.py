@@ -1,4 +1,4 @@
-"""Characterization tests for tabletop object detector and workspace polygon extraction."""
+"""Unit and characterization tests for tabletop object detector and workspace polygon extraction."""
 
 from unittest.mock import MagicMock
 
@@ -27,9 +27,9 @@ def test_detect_objects_synthetic_red_block() -> None:
     assert abs(norm_x - 500.0) < 5.0
 
 
-def test_detect_objects_multi_color() -> None:
+def test_detect_objects_multi_color(neutral_frame: np.ndarray) -> None:
     """Verify detection of multiple colored blocks (red, blue, green, yellow)."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
+    frame = neutral_frame.copy()
     frame[100:130, 100:130] = [220, 20, 20]  # Red
     frame[100:130, 400:430] = [20, 50, 220]  # Blue
     frame[300:330, 100:130] = [20, 200, 30]  # Green
@@ -37,15 +37,12 @@ def test_detect_objects_multi_color() -> None:
 
     detected = detect_workspace_objects(frame, min_area=50)
     detected_colors = {d["color"] for d in detected}
-    assert "red" in detected_colors
-    assert "blue" in detected_colors
-    assert "green" in detected_colors
-    assert "yellow" in detected_colors
+    assert {"red", "blue", "green", "yellow"}.issubset(detected_colors)
 
 
-def test_workspace_polygon_filter() -> None:
+def test_workspace_polygon_filter(neutral_frame: np.ndarray) -> None:
     """Verify objects outside the workspace polygon are ignored."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
+    frame = neutral_frame.copy()
     # Inside polygon: red block at (250, 250)
     frame[240:270, 240:270] = [220, 20, 20]
     # Outside polygon: blue block at (50, 50)
@@ -57,10 +54,19 @@ def test_workspace_polygon_filter() -> None:
     assert detected[0]["color"] == "red"
 
 
-def test_refine_point_to_nearest_object() -> None:
+def test_detect_objects_empty_or_none_frame() -> None:
+    """Verify empty, None, and zero-sized frames return empty lists gracefully."""
+    assert detect_workspace_objects(None) == []  # type: ignore[arg-type]
+    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    assert detect_workspace_objects(black_frame) == []
+    zero_sized_frame = np.zeros((0, 0, 3), dtype=np.uint8)
+    assert detect_workspace_objects(zero_sized_frame) == []
+
+
+def test_refine_point_to_nearest_object(neutral_frame: np.ndarray) -> None:
     """Verify point snapping to nearest detected object contact center."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
-    frame[260:300, 300:340] = [220, 20, 20]
+    frame = neutral_frame.copy()
+    frame[260:300, 300:340] = [220, 20, 20]  # contact at y=300 (norm 625), x=320 (norm 500)
 
     candidate = [580.0, 470.0]
     refined, match = refine_point_to_nearest_object(candidate, frame, max_dist_1000=200.0)
@@ -71,9 +77,9 @@ def test_refine_point_to_nearest_object() -> None:
     assert abs(refined[1] - 500.0) < 5.0
 
 
-def test_refine_point_target_color_priority() -> None:
+def test_refine_point_target_color_priority(neutral_frame: np.ndarray) -> None:
     """Verify snapping prioritizes the specified target color."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
+    frame = neutral_frame.copy()
     # Red cube closer to candidate
     frame[200:240, 200:240] = [220, 20, 20]
     # Blue cube slightly further away
@@ -87,9 +93,9 @@ def test_refine_point_target_color_priority() -> None:
     assert match["color"] == "blue"
 
 
-def test_refine_point_no_match_far_away() -> None:
+def test_refine_point_no_match_fallback(neutral_frame: np.ndarray) -> None:
     """Verify original point is retained if object is beyond max distance."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
+    frame = neutral_frame.copy()
     frame[400:440, 500:540] = [220, 20, 20]
     frame[50:80, 50:80] = [20, 50, 220]
 
@@ -99,16 +105,9 @@ def test_refine_point_no_match_far_away() -> None:
     assert refined == candidate
 
 
-def test_detect_objects_empty_frame() -> None:
-    """Verify empty and black frames return empty lists without error."""
-    assert detect_workspace_objects(None) == []  # type: ignore[arg-type]
-    empty_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    assert detect_workspace_objects(empty_frame) == []
-
-
-def test_get_workspace_polygon_from_calibrator() -> None:
+def test_get_workspace_polygon_from_calibrator(neutral_frame: np.ndarray) -> None:
     """Verify extraction of 4-corner workspace polygon from calibrator markers."""
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
+    frame = neutral_frame.copy()
 
     mock_calib = MagicMock()
     mock_calib.config = {

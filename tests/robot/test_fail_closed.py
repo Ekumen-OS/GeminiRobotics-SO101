@@ -1,10 +1,10 @@
-"""Characterization tests pinning TODAY's fail-open behaviour before flipping to fail-closed.
+"""Tests verifying fail-closed error handling across hardware driver, calibration, and vision.
 
-These tests document the un-hardened failure paths that Phase 3c will close:
-1. Hardware driver write/read failures are swallowed and report success / commanded pose.
-2. Calibration loading partial commit leaves is_calibrated True on corrupt/singular file.
-3. Perception visual alignment refinement failure is silently swallowed.
-4. Real-mode get_latest_raw_jpeg serves a synthetic placeholder pattern when no frame exists.
+Covers:
+1. Hardware driver write/read failures raise HardwareError, halt motion, and preserve _last_qpos.
+2. Calibration loading fails closed on corrupt or singular files without partial state commits.
+3. Real-mode get_latest_raw_jpeg returns None when no frame is buffered (no synthetic placeholder).
+4. Idle vs mid-motion interrupt handling across real, simulated, and mock robot drivers.
 """
 
 import threading
@@ -35,8 +35,8 @@ def _make_mock_real_robot(fake_bus: MagicMock | None = None) -> RealSO101Robot:
     return robot
 
 
-def test_driver_write_failure_raises_and_stops_flipped() -> None:
-    """FLIPPED: bus sync_write failure raises HardwareError, stops sweep, preserves _last_qpos."""
+def test_driver_write_failure_raises_and_stops() -> None:
+    """Bus sync_write failure raises HardwareError, stops sweep, and preserves _last_qpos."""
     from robot.constants import JOINT_NAMES
     from robot.errors import HardwareError
 
@@ -47,7 +47,6 @@ def test_driver_write_failure_raises_and_stops_flipped() -> None:
     initial_qpos = robot._last_qpos.copy()
 
     target_qpos = np.ones(6, dtype=np.float32) * 0.1
-    # Flipped: move_to_pose raises HardwareError and stops interpolation on first failure
     with pytest.raises(HardwareError, match="Failed to write joint positions"):
         robot.move_to_pose(target_qpos, duration_sec=0.04, dt=0.02)
 
@@ -57,8 +56,8 @@ def test_driver_write_failure_raises_and_stops_flipped() -> None:
     assert np.allclose(robot._last_qpos, initial_qpos)
 
 
-def test_driver_read_failure_raises_hardware_error_flipped() -> None:
-    """FLIPPED: bus sync_read failure raises HardwareError instead of returning commanded pose."""
+def test_driver_read_failure_raises_hardware_error() -> None:
+    """Bus sync_read failure raises HardwareError instead of returning commanded pose."""
     from robot.errors import HardwareError
 
     fake_bus = MagicMock()
@@ -66,7 +65,6 @@ def test_driver_read_failure_raises_hardware_error_flipped() -> None:
     robot = _make_mock_real_robot(fake_bus)
     robot._last_qpos = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=np.float32)
 
-    # Flipped: get_joint_positions raises HardwareError and never returns cached commanded pose
     with pytest.raises(HardwareError, match="Failed to read present positions"):
         robot.get_joint_positions()
 
@@ -96,8 +94,8 @@ def test_driver_disconnect_sets_connected_false_in_finally() -> None:
     assert robot.connected is False
 
 
-def test_calibration_load_atomic_commit_fails_closed_flipped(tmp_path) -> None:
-    """FLIPPED: singular homography leaves is_calibrated=False and state untouched."""
+def test_calibration_load_atomic_commit_fails_closed(tmp_path) -> None:
+    """Singular homography leaves is_calibrated=False and state untouched."""
     from robot.errors import CalibrationUnavailable
 
     calib_file = tmp_path / "singular_calib.npz"
@@ -109,7 +107,6 @@ def test_calibration_load_atomic_commit_fails_closed_flipped(tmp_path) -> None:
     )
     assert not calib.is_calibrated
 
-    # Flipped: load_calibration returns False and leaves is_calibrated False
     success = calib.load_calibration(calib_file)
     assert not success
     assert calib.is_calibrated is False
@@ -161,8 +158,8 @@ def test_calibration_update_homography_atomic_leaves_previous_matrix() -> None:
     assert calib.reprojection_error == 0.5
 
 
-def test_real_mode_placeholder_frame_fails_closed_flipped() -> None:
-    """FLIPPED: get_latest_raw_jpeg returns None in real mode if buffer empty."""
+def test_real_mode_placeholder_frame_fails_closed() -> None:
+    """get_latest_raw_jpeg returns None in real mode if buffer is empty."""
     with _global_frame_lock:
         frames_mod._global_latest_raw_frame = None
         frames_mod._global_latest_annotated_frame = None

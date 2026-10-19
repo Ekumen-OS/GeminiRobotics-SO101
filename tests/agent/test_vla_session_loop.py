@@ -1,3 +1,5 @@
+"""Tests for the VLA Live API streaming session loop, tool batching, and frame delivery."""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -5,9 +7,8 @@ from google.genai import types
 
 from agent.vla_controller import VLAController
 from robot.settings import Settings, set_settings
-from tests.conftest import (
-    MockRobot,
-    _real_sleep,
+from tests.conftest import MockRobot, _real_sleep
+from tests.harness.live_session import (
     fake_live_session,
     text_message,
     tool_call_message,
@@ -67,6 +68,7 @@ def test_post_action_frame_is_last_send_frame() -> None:
     assert mock_session.send_frame.called
     last_call_args = mock_session.send_frame.call_args[0]
     assert last_call_args[0] == post_frame
+    mock_session.send_tool_response.assert_called_once()
 
 
 def test_send_message_yields_no_executing_status() -> None:
@@ -100,7 +102,7 @@ def test_tool_call_message_with_model_turn_text() -> None:
         ),
         tool_call=types.LiveServerToolCall(
             function_calls=[
-                types.FunctionCall(name="get_joint_positions", args={}, id="call_c"),
+                types.FunctionCall(name="move_to_preset", args={"pose_name": "HOME"}, id="call_c"),
             ]
         ),
     )
@@ -109,11 +111,18 @@ def test_tool_call_message_with_model_turn_text() -> None:
     mock_session = fake_live_session(messages)
     controller._session = mock_session
 
-    chunks = list(controller.process_instruction_stream("Think and inspect"))
-    full_text = chunks[-1] if chunks else ""
+    fake_jpeg = b"\xff\xd8\xff\xe0mock_jpeg"
+    chunks = list(
+        controller.process_instruction_stream(
+            "Think and inspect", get_latest_jpeg_fn=lambda: fake_jpeg
+        )
+    )
+    full_text = "".join(chunks)
 
     assert "Pondering before action." in full_text
-    assert "get_joint_positions" in full_text
+    assert "move_to_preset" in full_text
+    assert "completed" in full_text
+    assert mock_session.send_frame.called
     mock_session.send_tool_response.assert_called_once()
 
 

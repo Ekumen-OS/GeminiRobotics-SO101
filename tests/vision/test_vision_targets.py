@@ -1,4 +1,4 @@
-"""Characterization tests for stream overlay toggles, workspace overlay, and model targets."""
+"""Tests for stream overlay toggles, workspace overlay, and model target blackboard."""
 
 import hashlib
 import tempfile
@@ -64,7 +64,7 @@ def test_model_targets_set_and_get() -> None:
             "color": (255, 0, 0),
         },
         {
-            "box_2d": [100.0, 100.0, 300.0, 300.0],
+            "box_2d": [100.0, 200.0, 250.0, 350.0],
             "label": "box without explicit point",
         },
         [200.0, 300.0],
@@ -77,8 +77,9 @@ def test_model_targets_set_and_get() -> None:
     assert retrieved[0]["box_2d"] == [400.0, 500.0, 500.0, 600.0]
 
     # Target 1: derived point from center of box_2d
-    assert retrieved[1]["point"] == (200.0, 200.0)
+    assert retrieved[1]["point"] == (175.0, 275.0)
     assert retrieved[1]["label"] == "box without explicit point"
+    assert retrieved[1]["box_2d"] == [100.0, 200.0, 250.0, 350.0]
 
     # Target 2: point from coordinates list
     assert retrieved[2]["point"] == (200.0, 300.0)
@@ -95,7 +96,7 @@ def test_model_targets_clear() -> None:
 
 
 def test_draw_model_target_overlay() -> None:
-    """Verify drawing model target overlay on an image canvas."""
+    """Verify drawing single and multiple model target overlays on an image canvas."""
     frame = np.full((480, 640, 3), 128, dtype=np.uint8)
 
     # When target overlay is disabled, frame is untouched
@@ -104,10 +105,17 @@ def test_draw_model_target_overlay() -> None:
     res = draw_model_target_overlay(frame)
     assert np.array_equal(res, frame)
 
-    # When target overlay is enabled, overlay is rendered onto frame
+    # When target overlay is enabled, single and multi-target overlays are rendered onto frame
     set_target_overlay_enabled(True)
+    set_model_targets(
+        [
+            {"point": (300.0, 400.0), "label": "RED CUBE [300, 400]"},
+            {"point": (600.0, 700.0), "label": "BLUE CYLINDER [600, 700]"},
+            {"box_2d": [100.0, 200.0, 250.0, 350.0], "label": "GREEN BOWL"},
+        ]
+    )
     res2 = draw_model_target_overlay(frame.copy())
-    # Frame should be modified by drawing markers/labels
+    assert res2.shape == (480, 640, 3)
     assert not np.array_equal(res2, frame)
 
 

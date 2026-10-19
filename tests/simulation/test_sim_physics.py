@@ -281,3 +281,51 @@ def test_move_to_pose_converges_before_returning(scene: _Scene) -> None:
     err = np.degrees(np.abs(robot.get_joint_positions()[:5] - goal[:5]))
     assert float(err.max()) < 0.6
     assert float(np.abs(robot.get_joint_velocities()[:5]).max()) < 0.05
+
+
+def test_compute_sim_calibration() -> None:
+    """Test synthetic homography computation from MuJoCo camera projection."""
+    import tempfile
+    from pathlib import Path
+
+    from simulation.sim_calibration import compute_sim_calibration, init_sim_workspace_calibration
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        save_path = Path(tmp_dir) / "sim_homography.npz"
+        h_mat, inv_h, err = compute_sim_calibration(save_path=save_path)
+
+        assert h_mat.shape == (3, 3)
+        assert inv_h.shape == (3, 3)
+        assert err < 0.01  # Sub-millimeter error for exact geometric projection
+        assert save_path.exists()
+
+        calibrator = init_sim_workspace_calibration(save_path=save_path)
+        assert calibrator.is_calibrated is True
+
+        # Test center point projection roundtrip
+        px, py = calibrator.gemini_to_pixel([500.0, 500.0])
+        xyz = calibrator.pixel_to_robot_xyz(px, py, z_m=0.03)
+        assert 0.10 <= xyz[0] <= 0.45  # In front of robot base in workspace
+        assert -0.30 <= xyz[1] <= 0.30  # Within workspace lateral span
+        assert np.isclose(xyz[2], 0.03)
+
+
+def test_sim_robot_camera_rendering(scene: _Scene) -> None:
+    """Test SO101Robot rendering from workspace_cam in MuJoCo simulation."""
+    try:
+        frame = scene.robot.render_rgb_frame(width=640, height=480, camera="workspace_cam")
+    except (mujoco.FatalError, RuntimeError) as err:
+        pytest.skip(f"MuJoCo offscreen rendering requires hardware OpenGL/EGL context: {err}")
+    assert frame.shape == (480, 640, 3)
+    assert frame.dtype == np.uint8
+    assert np.mean(frame) > 10.0
+
+
+def test_sim_robot_randomize_target(scene: _Scene) -> None:
+    """Verify target manipulation object randomization bounds in simulation."""
+    new_pos = scene.robot.randomize_target(
+        x_range=(0.15, 0.22), y_range=(-0.10, 0.10), z_height=0.015
+    )
+    assert 0.15 <= new_pos[0] <= 0.22
+    assert -0.10 <= new_pos[1] <= 0.10
+    assert new_pos[2] == 0.015
