@@ -14,7 +14,7 @@ from agent.pick_loop import IMPLAUSIBLE_RESIDUAL_MM
 from robot.constants import JOINT_NAMES
 from robot.real_robot import CONVERGENCE_TOL_DEG, RealSO101Robot
 from tests.harness.pick_helpers import next_call_from, patch_measurements
-from tests.harness.sim_pick import SimPickHarness, settings_override
+from tests.harness.sim_pick import SimPickHarness
 from tests.harness.tools_sync import execute_tool_call_sync
 
 CUBE_XY = (0.24, 0.0)
@@ -22,8 +22,8 @@ CUBE_XY = (0.24, 0.0)
 
 @pytest.fixture(scope="module")
 def _shared_biased() -> Iterator[SimPickHarness]:
-    """One harness with a hidden 1.5 deg shoulder-pan encoder offset (FK cannot see it)."""
-    h = SimPickHarness(pan_offset_deg=1.5)
+    """One harness with a hidden 2.0 deg shoulder-pan encoder offset (FK cannot see it)."""
+    h = SimPickHarness(pan_offset_deg=2.0)
     yield h
     h.close()
 
@@ -51,7 +51,7 @@ def harness(_shared_unbiased: SimPickHarness) -> SimPickHarness:
 
 
 def _move(h: SimPickHarness, point: list[float], z: float) -> dict[str, Any]:
-    return h.call("move_to_spatial_point", point=point, z_height_cm=z, approach="top_down")
+    return h.call("move_to_spatial_point", point=point, z_height_cm=z)
 
 
 def _jaw_to_lock_mm(h: SimPickHarness) -> float:
@@ -131,16 +131,6 @@ def test_corrector_rejects_implausible_residual(harness: SimPickHarness) -> None
     assert nxt is not None and nxt[1] == 3.0
 
 
-def test_bias_correction_off_never_learns(harness: SimPickHarness) -> None:
-    """BIAS_CORRECTION=0 keeps c at zero (for A/B runs)."""
-    point = harness.image_point_for(*CUBE_XY)
-    with settings_override(bias_correction=False), patch_measurements([(6.0, 0.0)]):
-        _move(harness, point, 3.0)
-        second = _move(harness, point, 3.0)
-    assert harness.state.target.c_mm == (0.0, 0.0)
-    assert second["applied_correction_mm"] == [0.0, 0.0]
-
-
 def test_corrector_ignores_fk_measurements(harness: SimPickHarness) -> None:
     """Only the jaw tag feeds the corrector: FK agrees with the IK by construction."""
     point = harness.image_point_for(*CUBE_XY)
@@ -196,9 +186,7 @@ def test_measurement_waits_for_fresh_frame(harness: SimPickHarness) -> None:
     from tests.conftest import DummyToolCall
 
     res = execute_tool_call_sync(
-        DummyToolCall(
-            "move_to_spatial_point", {"point": point, "z_height_cm": 3.0, "approach": "top_down"}
-        ),
+        DummyToolCall("move_to_spatial_point", {"point": point, "z_height_cm": 3.0}),
         harness.robot,
         get_latest_jpeg_fn=harness.jpeg,
         get_fresh_jpeg_fn=spy,
@@ -219,9 +207,7 @@ def test_no_fresh_frame_means_unmeasured_not_failed(harness: SimPickHarness) -> 
     from tests.conftest import DummyToolCall
 
     res = execute_tool_call_sync(
-        DummyToolCall(
-            "move_to_spatial_point", {"point": point, "z_height_cm": 3.0, "approach": "top_down"}
-        ),
+        DummyToolCall("move_to_spatial_point", {"point": point, "z_height_cm": 3.0}),
         harness.robot,
         get_latest_jpeg_fn=harness.jpeg,
         get_fresh_jpeg_fn=lambda t_after, timeout_s: None,
@@ -233,9 +219,7 @@ def test_no_fresh_frame_means_unmeasured_not_failed(harness: SimPickHarness) -> 
     assert any("newer than the end of the motion" in w for w in res["warnings"])
     assert harness.state.last_hover is None
     harness.call("open_gripper")
-    refused = harness.call(
-        "move_to_spatial_point", point=point, z_height_cm=0.0, approach="top_down"
-    )
+    refused = harness.call("move_to_spatial_point", point=point, z_height_cm=0.0)
     assert refused["error_type"] == "perception"  # no measured hover to descend from
 
 

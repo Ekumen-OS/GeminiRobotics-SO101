@@ -26,7 +26,7 @@ def test_send_tool_response_single_call_batching() -> None:
         tool_call=types.LiveServerToolCall(
             function_calls=[
                 types.FunctionCall(name="get_joint_positions", args={}, id="call_1"),
-                types.FunctionCall(name="send_message", args={"message": "All set"}, id="call_2"),
+                types.FunctionCall(name="open_gripper", args={}, id="call_2"),
             ]
         )
     )
@@ -35,7 +35,7 @@ def test_send_tool_response_single_call_batching() -> None:
     mock_session = fake_live_session(messages)
     controller._session = mock_session
 
-    list(controller.process_instruction_stream("Check joints and speak"))
+    list(controller.process_instruction_stream("Check joints and open"))
 
     assert mock_session.send_tool_response.call_count == 1
     args, _ = mock_session.send_tool_response.call_args
@@ -44,7 +44,7 @@ def test_send_tool_response_single_call_batching() -> None:
     assert responses[0].id == "call_1"
     assert responses[0].name == "get_joint_positions"
     assert responses[1].id == "call_2"
-    assert responses[1].name == "send_message"
+    assert responses[1].name == "open_gripper"
 
 
 def test_post_action_frame_is_last_send_frame() -> None:
@@ -69,25 +69,6 @@ def test_post_action_frame_is_last_send_frame() -> None:
     last_call_args = mock_session.send_frame.call_args[0]
     assert last_call_args[0] == post_frame
     mock_session.send_tool_response.assert_called_once()
-
-
-def test_send_message_yields_no_executing_status() -> None:
-    """Verify send_message does not emit an 'Executing' status update."""
-    robot = MockRobot()
-    controller = VLAController(mode="sim", robot=robot)
-    controller._api_available = True
-
-    messages = [
-        tool_call_message("send_message", {"message": "Hello user"}, "call_msg"),
-        turn_complete_message(),
-    ]
-    controller._session = fake_live_session(messages)
-
-    chunks = list(controller.process_instruction_stream("Greet"))
-    full_text = chunks[-1] if chunks else ""
-
-    assert "Executing `send_message`" not in full_text
-    assert "Hello user" in full_text
 
 
 def test_tool_call_message_with_model_turn_text() -> None:

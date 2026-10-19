@@ -37,7 +37,6 @@ def plan_approach_segments(
     ik: CartesianIK,
     current_qpos_rad: np.ndarray,
     target_xyz_m: np.ndarray,
-    approach: str = "top_down",
     travel_duration_sec: float = 1.5,
     mode: str = "real",
 ) -> list[MotionSegment]:
@@ -53,7 +52,6 @@ def plan_approach_segments(
         ik: Cartesian IK solver (also used for the forward kinematics of the start pose).
         current_qpos_rad: Current joint angles (radians); the gripper joint is held.
         target_xyz_m: Target grasp-site position (metres).
-        approach: IK approach mode ('top_down' or 'horizontal').
         travel_duration_sec: Duration of the (single or travel) segment.
         mode: Operational mode ('real' or 'sim') for table height resolution.
 
@@ -85,7 +83,7 @@ def plan_approach_segments(
         solved = ik.solve_ik(
             target_pos=xyz,
             initial_qpos=seed,
-            approach=approach,
+            approach="top_down",
             null_weight=1e-3,
         )
         solved = np.asarray(solved, dtype=np.float64).copy()

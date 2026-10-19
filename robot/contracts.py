@@ -1,6 +1,6 @@
 """Typed contract definitions for robot perception outputs."""
 
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
 
 
 class GripperReading(TypedDict):
@@ -64,4 +64,3 @@ class AlignmentMeasurement(TypedDict):
     is_aligned: bool | None
     alignment_tolerance_mm: float
     gripper_source: str
-    er2_gripper_point_1000: NotRequired[list[float]]

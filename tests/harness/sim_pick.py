@@ -300,6 +300,7 @@ class SimPickHarness:
         scripted_gripper: bool = False,
         descend_after_hover_cap: bool = False,
         point_offset_1000: tuple[float, float] = (0.0, 0.0),
+        disable_corrector: bool = False,
     ) -> None:
         """Create the sim robot, calibration and frame provider.
 
@@ -311,9 +312,11 @@ class SimPickHarness:
                 gripper sensor.
             descend_after_hover_cap: After the hover cap, descend anyway instead of giving up.
             point_offset_1000: Constant [dy, dx] added to the model pointing point.
+            disable_corrector: Keep the per-lock correction c_mm at (0, 0) for A/B comparison.
         """
         self.descend_after_hover_cap = descend_after_hover_cap
         self.point_offset_1000 = point_offset_1000
+        self.disable_corrector = disable_corrector
         self.sim = SO101Robot()
         self.robot: RobotInterface = (
             PanOffsetRobot(self.sim, pan_offset_deg) if pan_offset_deg else self.sim
@@ -420,6 +423,8 @@ class SimPickHarness:
             mode=self.mode,
             guardrail_state=self.state,
         )
+        if self.disable_corrector and self.state.target is not None:
+            self.state.target.c_mm = (0.0, 0.0)
         self.log.append(f"{name}({args}) -> {_brief(result)}")
         return dict(result)
 
@@ -496,7 +501,7 @@ class SimPickHarness:
             # Hover until aligned (or told otherwise), then descend.
             while hovers < MAX_HOVERS_PER_ATTEMPT and not descended:
                 hovers += 1
-                resp = do("move_to_spatial_point", approach="top_down", **hover_args)
+                resp = do("move_to_spatial_point", **hover_args)
                 m.max_hovers_in_attempt = max(m.max_hovers_in_attempt, hovers)
                 if resp.get("error_type") == "retry_exhausted":
                     break
@@ -509,9 +514,7 @@ class SimPickHarness:
                 perception = resp.get("perception") or {}
                 if perception.get("is_aligned") is False:
                     continue
-                descent = do(
-                    "move_to_spatial_point", point=point, z_height_cm=0.0, approach="top_down"
-                )
+                descent = do("move_to_spatial_point", point=point, z_height_cm=0.0)
                 if "error" in descent:
                     nxt = _next_move_call(descent)
                     if descent.get("error_type") == "retry_exhausted":
@@ -524,9 +527,7 @@ class SimPickHarness:
             if not descended and self.descend_after_hover_cap and hovers >= MAX_HOVERS_PER_ATTEMPT:
                 # A model that ignores the "re-hover" hint after the cap and tries the descent
                 # anyway (what DESCENT_GATE=warn permits); used for the corrector-off A/B run.
-                descent = do(
-                    "move_to_spatial_point", point=point, z_height_cm=0.0, approach="top_down"
-                )
+                descent = do("move_to_spatial_point", point=point, z_height_cm=0.0)
                 descended = "error" not in descent
             if not descended:
                 break
@@ -541,7 +542,7 @@ class SimPickHarness:
                 do("open_gripper")
                 continue
 
-            lift = do("move_to_spatial_point", point=point, z_height_cm=5.0, approach="top_down")
+            lift = do("move_to_spatial_point", point=point, z_height_cm=5.0)
             held = self._cube_held()
             verdict = (lift.get("grasp_verification") or {}).get("verdict")
             if lift.get("error_type") in ("transport_gate", "descent_gate", "perception"):
@@ -559,11 +560,11 @@ class SimPickHarness:
                 continue
 
             # Transport, place, release, retract.
-            do("move_to_spatial_point", point=dest, z_height_cm=5.0, approach="top_down")
-            do("move_to_spatial_point", point=dest, z_height_cm=1.0, approach="top_down")
+            do("move_to_spatial_point", point=dest, z_height_cm=5.0)
+            do("move_to_spatial_point", point=dest, z_height_cm=1.0)
             do("open_gripper")
             m.locks_created = self.state._next_lock_id - 1
-            do("move_to_spatial_point", point=dest, z_height_cm=5.0, approach="top_down")
+            do("move_to_spatial_point", point=dest, z_height_cm=5.0)
             done = True
             break
 
@@ -626,6 +627,7 @@ def run_scenario(
     descend_after_hover_cap: bool = False,
     random_yaw: bool = False,
     point_offset_1000: tuple[float, float] = (0.0, 0.0),
+    disable_corrector: bool = False,
 ) -> ScenarioResult:
     """Run ``n_placements`` seeded placements and collect truth-based metrics.
 
@@ -636,11 +638,12 @@ def run_scenario(
         pan_offset_deg: Hidden shoulder-pan encoder offset in degrees.
         x_range: Cube x range (m).
         y_range: Cube y range (m).
-        settings_overrides: Settings fields to override for the run (e.g. bias_correction).
+        settings_overrides: Settings fields to override for the run (e.g. descent_gate).
         progress: Optional callback receiving one line per placement.
         descend_after_hover_cap: Descend anyway after the hover cap (corrector-off A/B runs).
         random_yaw: Whether to sample random yaw in [0, pi/2) for each placement.
         point_offset_1000: Constant [dy, dx] added to the model pointing point.
+        disable_corrector: Keep the per-lock correction c_mm at (0, 0) for A/B comparison.
 
     Returns:
         ScenarioResult with one PlacementMetrics per run.
@@ -653,6 +656,7 @@ def run_scenario(
             pan_offset_deg=pan_offset_deg,
             descend_after_hover_cap=descend_after_hover_cap,
             point_offset_1000=point_offset_1000,
+            disable_corrector=disable_corrector,
         )
         try:
             for i in range(n_placements):

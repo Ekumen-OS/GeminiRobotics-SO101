@@ -66,9 +66,6 @@ _FIELDS_SPEC = [
         "invalid,tuple",
     ),
     ("camera_hfov_deg", "CAMERA_HFOV_DEG", "65.0", 65.0, "not_a_float"),
-    ("bias_correction", "BIAS_CORRECTION", "0", False, "not_a_bool"),
-    ("gripper_locator_er2", "GRIPPER_LOCATOR_ER2", "1", True, "not_a_bool"),
-    ("er2_locator_model", "ER2_LOCATOR_MODEL", "custom-er2-model", "custom-er2-model", None),
     ("vision_settle_s", "VISION_SETTLE_S", "0.05", 0.05, "not_a_float"),
     ("table_x_mm", "TABLE_X_MM", "15.0", 15.0, "not_a_float"),
     ("table_y_mm", "TABLE_Y_MM", "-25.0", -25.0, "not_a_float"),
@@ -98,10 +95,6 @@ def test_settings_env_var_resolution(
         assert actual_default == _get_platform_serial_port()
     elif field_name == "descent_gate":
         assert actual_default is None
-    elif field_name == "bias_correction":
-        assert actual_default is True
-    elif field_name == "gripper_locator_er2":
-        assert actual_default is False
 
     # 2. Valid environment variable -> returns parsed value
     monkeypatch.setenv(env_var, valid_env_val)
