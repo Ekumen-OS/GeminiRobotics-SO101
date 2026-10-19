@@ -73,7 +73,7 @@ async def test_t3_cross_feature_move_to_spatial_point_execution() -> None:
     try:
         call = DummyToolCall(
             name="move_to_spatial_point",
-            args={"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
+            args={"point": [760.0, 484.0], "z_height_cm": 4.0},
         )
         result = await execute_tool_call(call=call, robot=robot)
 
@@ -130,7 +130,7 @@ async def test_t4_scenario_pick_hover_and_descend_workflow(
         # Step 1: Hover at 4.0 cm
         hover_call = DummyToolCall(
             name="move_to_spatial_point",
-            args={"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
+            args={"point": [760.0, 484.0], "z_height_cm": 4.0},
         )
         res1 = await execute_tool_call(call=hover_call, robot=robot)
         assert res1["status"] == "success"
@@ -139,7 +139,7 @@ async def test_t4_scenario_pick_hover_and_descend_workflow(
         # Step 2: Descend to 0.0 cm (table contact)
         descend_call = DummyToolCall(
             name="move_to_spatial_point",
-            args={"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"},
+            args={"point": [760.0, 484.0], "z_height_cm": 0.0},
         )
         res2 = await execute_tool_call(call=descend_call, robot=robot)
         assert res2["status"] == "success"
@@ -155,39 +155,11 @@ async def test_t4_scenario_pick_hover_and_descend_workflow(
         # Step 4: Lift to 5.0 cm
         lift_call = DummyToolCall(
             name="move_to_spatial_point",
-            args={"point": [760.0, 484.0], "z_height_cm": 5.0, "approach": "top_down"},
+            args={"point": [760.0, 484.0], "z_height_cm": 5.0},
         )
         res4 = await execute_tool_call(call=lift_call, robot=robot)
         assert res4["status"] == "success"
         assert np.isclose(res4["target_xyz_m"][2], 0.05)
-    finally:
-        robot.close()
-
-
-@pytest.mark.asyncio
-async def test_t4_scenario_horizontal_approach_traversal() -> None:
-    """Real-World Scenario 2: Approach target object horizontally across lateral span."""
-    calib = get_calibrator(mode="sim")
-    init_sim_workspace_calibration(calibrator=calib)
-
-    robot = SO101Robot()
-    robot.reset("HOME")
-
-    targets = [
-        [650.0, 350.0],  # Left
-        [650.0, 500.0],  # Center
-        [650.0, 650.0],  # Right
-    ]
-
-    try:
-        for pt in targets:
-            call = DummyToolCall(
-                name="move_to_spatial_point",
-                args={"point": pt, "z_height_cm": 3.0, "approach": "horizontal"},
-            )
-            result = await execute_tool_call(call=call, robot=robot)
-            assert result["status"] == "success"
-            assert result["approach"] == "horizontal"
     finally:
         robot.close()
 
@@ -212,7 +184,7 @@ async def test_t4_scenario_perimeter_survey_motion() -> None:
         for pt in survey_points:
             call = DummyToolCall(
                 name="move_to_spatial_point",
-                args={"point": pt, "z_height_cm": 5.0, "approach": "top_down"},
+                args={"point": pt, "z_height_cm": 5.0},
             )
             result = await execute_tool_call(call=call, robot=robot)
             assert result["status"] == "success"

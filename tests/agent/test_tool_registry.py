@@ -38,7 +38,6 @@ def test_blocking_tools_expected_set() -> None:
         "move_to_preset",
         "move_to_spatial_point",
         "open_gripper",
-        "set_joint_positions",
     }
 
 

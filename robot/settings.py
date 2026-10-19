@@ -43,26 +43,6 @@ def _lerobot_calibration_root() -> Path:
     return Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration"
 
 
-def _parse_bool(val: str) -> bool:
-    """Parse a boolean value from a string.
-
-    Args:
-        val: Input string representing a boolean.
-
-    Returns:
-        True if truthy, False if falsy.
-
-    Raises:
-        ValueError: If val is not a recognized boolean string.
-    """
-    v = val.lower()
-    if v in ("1", "true", "yes"):
-        return True
-    if v in ("0", "false", "no"):
-        return False
-    raise ValueError(f"Invalid boolean value: {val!r}")
-
-
 def _parse_xyz(val: str) -> tuple[float, float, float]:
     """Parse comma-separated X,Y,Z coordinates from a string.
 
@@ -128,11 +108,8 @@ class Settings:
     gripper_settle_s: float = 0.6
     grasp_load_min: float | None = None
     descent_gate: str | None = None
-    gripper_tag_local_offset_mm: tuple[float, float, float] = (-14.0, 27.0, 63.0)
+    gripper_tag_local_offset_mm: tuple[float, float, float] = (-35.4, 11.0, 40.1)
     camera_hfov_deg: float = 70.0
-    bias_correction: bool = True
-    gripper_locator_er2: bool = False
-    er2_locator_model: str = "gemini-robotics-er-2-preview"
     vision_settle_s: float = 0.3
     table_x_mm: float = 0.0
     table_y_mm: float = 0.0
@@ -251,8 +228,6 @@ class Settings:
                     resolved[name] = Path(val)
                 elif parser is _parse_xyz and not isinstance(val, tuple):
                     resolved[name] = tuple(float(x) for x in val)
-                elif parser is _parse_bool and not isinstance(val, bool):
-                    resolved[name] = bool(val)
                 else:
                     resolved[name] = val
             else:
@@ -300,9 +275,6 @@ _CONFIG_SPEC: tuple[tuple[str, str, Callable[[str], Any]], ...] = (
     ("descent_gate", "DESCENT_GATE", _parse_descent_gate),
     ("gripper_tag_local_offset_mm", "GRIPPER_TAG_LOCAL_OFFSET_MM", _parse_xyz),
     ("camera_hfov_deg", "CAMERA_HFOV_DEG", float),
-    ("bias_correction", "BIAS_CORRECTION", _parse_bool),
-    ("gripper_locator_er2", "GRIPPER_LOCATOR_ER2", _parse_bool),
-    ("er2_locator_model", "ER2_LOCATOR_MODEL", str),
     ("vision_settle_s", "VISION_SETTLE_S", float),
     ("table_x_mm", "TABLE_X_MM", float),
     ("table_y_mm", "TABLE_Y_MM", float),

@@ -324,33 +324,25 @@ def test_alignment_is_unobservable_for_fk_and_missing_jaw() -> None:
 
 
 def test_new_settings_defaults_and_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CAMERA_HFOV_DEG, ALIGNMENT_TOLERANCE_MM, GRIPPER_TAG_LOCAL_OFFSET_MM, BIAS_CORRECTION."""
+    """CAMERA_HFOV_DEG, ALIGNMENT_TOLERANCE_MM, GRIPPER_TAG_LOCAL_OFFSET_MM."""
     for name in (
         "CAMERA_HFOV_DEG",
         "ALIGNMENT_TOLERANCE_MM",
         "GRIPPER_TAG_LOCAL_OFFSET_MM",
-        "BIAS_CORRECTION",
-        "ER2_LOCATOR_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
     defaults = Settings.from_env()
     assert defaults.camera_hfov_deg == 70.0
     assert defaults.alignment_tolerance_mm == 4.0
-    assert defaults.gripper_tag_local_offset_mm == (-14.0, 27.0, 63.0)
-    assert defaults.bias_correction is True
-    assert defaults.er2_locator_model == "gemini-robotics-er-2-preview"
+    assert defaults.gripper_tag_local_offset_mm == (-35.4, 11.0, 40.1)
 
     monkeypatch.setenv("CAMERA_HFOV_DEG", "62.5")
     monkeypatch.setenv("ALIGNMENT_TOLERANCE_MM", "2.5")
     monkeypatch.setenv("GRIPPER_TAG_LOCAL_OFFSET_MM", "1, 2, 3")
-    monkeypatch.setenv("BIAS_CORRECTION", "0")
-    monkeypatch.setenv("ER2_LOCATOR_MODEL", "my-er2")
     custom = Settings.from_env()
     assert custom.camera_hfov_deg == 62.5
     assert custom.alignment_tolerance_mm == 2.5
     assert custom.gripper_tag_local_offset_mm == (1.0, 2.0, 3.0)
-    assert custom.bias_correction is False
-    assert custom.er2_locator_model == "my-er2"
     assert not hasattr(custom, "gripper_tag_offset_px")
 
 

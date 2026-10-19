@@ -81,7 +81,7 @@ async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     # Case 1: Hover height (z_height_cm = 4.0 >= 3.0)
     call_hover = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [760.0, 484.0], "z_height_cm": 4.0, "approach": "top_down"},
+        {"point": [760.0, 484.0], "z_height_cm": 4.0},
     )
     res_hover = await execute_tool_call(call=call_hover, robot=robot)
     assert res_hover["status"] == "success"
@@ -92,7 +92,7 @@ async def test_t1_f6_tool_visual_hint_hover_vs_contact() -> None:
     # Case 2: Contact height (z_height_cm = 0.0 < 3.0)
     call_contact = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [760.0, 484.0], "z_height_cm": 0.0, "approach": "top_down"},
+        {"point": [760.0, 484.0], "z_height_cm": 0.0},
     )
     res_contact = await execute_tool_call(call=call_contact, robot=robot)
     assert res_contact["status"] == "success"
@@ -159,7 +159,7 @@ async def test_t3_cross_feature_perception_enrichment_and_tool_dispatch() -> Non
     call = DummyToolCall(
         name="move_to_spatial_point",
         # Intentionally offset by a small distance from the cube bottom contact center
-        args={"point": [755.0, 480.0], "z_height_cm": 4.0, "approach": "top_down"},
+        args={"point": [755.0, 480.0], "z_height_cm": 4.0},
     )
 
     with patch("agent.tools.image_point_to_xyz", return_value=np.array([0.22, 0.05, 0.04])):
@@ -221,7 +221,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [725, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [725, 484], "z_height_cm": 5.0},
                         id="c1_hover_initial",
                     )
                 ]
@@ -243,7 +243,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 0.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 0.0},
                         id="c2_descend",
                     )
                 ]
@@ -259,7 +259,7 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 5.0},
                         id="c4_lift",
                     )
                 ]
@@ -328,7 +328,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 0.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 0.0},
                         id="r1_descend",
                     )
                 ]
@@ -344,7 +344,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 5.0},
                         id="r1_lift",
                     )
                 ]
@@ -371,7 +371,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 0.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 0.0},
                         id="retry1_descend",
                     )
                 ]
@@ -389,7 +389,7 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 5.0},
                         id="retry1_lift",
                     )
                 ]
@@ -477,28 +477,21 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
                 function_calls=[types.FunctionCall(name="close_gripper", args={}, id="a3")]
             ),
         ),
-        # Escalation message via send_message
+        # Escalation message in plain text
         types.LiveServerMessage(
             server_content=types.LiveServerContent(
                 model_turn=types.Content(
                     parts=[
                         types.Part(
-                            text="> 💭 *Max retries exhausted (3/3). Halting and alerting user.*"
-                        )
+                            text="> 💭 *Max retries exhausted (3/3). Halting and alerting user.*",
+                            thought=True,
+                        ),
+                        types.Part.from_text(
+                            text="Grasp failed after 3 attempts. Target may be obstructed. "
+                            "Please check object position."
+                        ),
                     ]
                 )
-            ),
-            tool_call=types.LiveServerToolCall(
-                function_calls=[
-                    types.FunctionCall(
-                        name="send_message",
-                        args={
-                            "message": "Grasp failed after 3 attempts. Target may be obstructed. "
-                            "Please check object position."
-                        },
-                        id="escalation",
-                    )
-                ]
             ),
         ),
     ]
@@ -522,7 +515,7 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     output = "".join(chunks)
     assert "Max retries exhausted (3/3)" in output
     assert "Grasp failed after 3 attempts" in output
-    assert mock_session.send_tool_response.call_count == 4
+    assert mock_session.send_tool_response.call_count == 3
 
 
 def test_t1_f8_anti_hallucination_transport_gate_blocks_motion_when_object_on_table() -> None:
@@ -542,7 +535,7 @@ async def test_t2_f6_missing_camera_frame_graceful_tool_execution() -> None:
     robot = MockRobot()
     call = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
+        {"point": [500.0, 500.0], "z_height_cm": 3.0},
     )
     with patch("agent.tools.image_point_to_xyz", return_value=np.array([0.20, 0.0, 0.03])):
         result = await execute_tool_call(call=call, robot=robot, get_latest_jpeg_fn=None)
@@ -589,7 +582,7 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 5.0},
                         id="p2_hover",
                     )
                 ]
@@ -600,7 +593,7 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 0.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 0.0},
                         id="p3_descend",
                     )
                 ]
@@ -616,7 +609,7 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
                 function_calls=[
                     types.FunctionCall(
                         name="move_to_spatial_point",
-                        args={"point": [760, 484], "z_height_cm": 5.0, "approach": "top_down"},
+                        args={"point": [760, 484], "z_height_cm": 5.0},
                         id="p5_lift",
                     )
                 ]
