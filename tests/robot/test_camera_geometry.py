@@ -126,6 +126,32 @@ def test_snapshot_without_camera_cannot_correct_parallax(tmp_path: Path) -> None
         no_camera.pixel_to_plane_mm(300.0, 200.0, 60.0)
 
 
+@pytest.fixture
+def old_format_real_npz(tmp_path: Path) -> Path:
+    """Build an old-format real-mode calibration file (no hfov_deg / image_size keys).
+
+    ``compute_sim_calibration`` now records the field of view it used, which is exactly what an
+    operator-saved real file from before the camera model does not have.
+
+    Args:
+        tmp_path: Temporary directory fixture provided by pytest.
+
+    Returns:
+        Path to an .npz holding only homography, inverse_homography and reprojection_error.
+    """
+    full = tmp_path / "full.npz"
+    compute_sim_calibration(save_path=full)
+    data = np.load(full)
+    old = tmp_path / "workspace_homography_old.npz"
+    np.savez(
+        old,
+        homography=data["homography"],
+        inverse_homography=data["inverse_homography"],
+        reprojection_error=data["reprojection_error"],
+    )
+    return old
+
+
 def test_old_npz_loads_and_derives_camera(old_format_real_npz: Path) -> None:
     """A calibration file without hfov/image keys loads unchanged and still gets a camera."""
     calib = ArucoWorkspaceCalibrator(mode="real")

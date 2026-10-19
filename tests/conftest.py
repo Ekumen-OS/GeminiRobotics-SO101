@@ -7,11 +7,9 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
-from google.genai import types
 
 from robot.contracts import GripperReading
 from robot.interface import RobotInterface
@@ -41,7 +39,9 @@ _isolated_settings = Settings.from_env(
 )
 set_settings(_isolated_settings)
 
-# Pre-populate isolated calibration matrices so calibrators initialize cleanly
+# Pre-populate isolated calibration matrices so calibrators initialize cleanly.
+# Note: the "real" homography written here is a sim matrix, used only so that
+# real-mode code paths find a calibrated file.
 compute_sim_calibration(save_path=_ISOLATED_SIM_PATH)
 compute_sim_calibration(save_path=_ISOLATED_REAL_PATH)
 
@@ -228,140 +228,17 @@ class DummyToolCall:
         self.id = call_id
 
 
-def text_message(text: str) -> types.LiveServerMessage:
-    """Build a LiveServerMessage containing regular text from the model.
-
-    Args:
-        text: Text string for model turn.
-
-    Returns:
-        LiveServerMessage wrapping the text part.
-    """
-    return types.LiveServerMessage(
-        server_content=types.LiveServerContent(
-            model_turn=types.Content(parts=[types.Part.from_text(text=text)])
-        )
-    )
-
-
-def thought_message(text: str) -> types.LiveServerMessage:
-    """Build a LiveServerMessage containing model thought/reasoning text.
-
-    Args:
-        text: Reasoning thought text string.
-
-    Returns:
-        LiveServerMessage wrapping the thought part.
-    """
-    return types.LiveServerMessage(
-        server_content=types.LiveServerContent(
-            model_turn=types.Content(parts=[types.Part(thought=True, text=text)])
-        )
-    )
-
-
-def tool_call_message(
-    name: str,
-    args: dict[str, Any] | None = None,
-    call_id: str = "call_1",
-) -> types.LiveServerMessage:
-    """Build a LiveServerMessage containing a function tool call.
-
-    Args:
-        name: Name of tool function called.
-        args: Optional arguments dictionary.
-        call_id: Unique call identifier.
-
-    Returns:
-        LiveServerMessage wrapping the tool call.
-    """
-    return types.LiveServerMessage(
-        tool_call=types.LiveServerToolCall(
-            function_calls=[
-                types.FunctionCall(
-                    name=name,
-                    args=args or {},
-                    id=call_id,
-                )
-            ]
-        )
-    )
-
-
-def turn_complete_message() -> types.LiveServerMessage:
-    """Build a LiveServerMessage indicating turn completion.
-
-    Returns:
-        LiveServerMessage with turn_complete=True.
-    """
-    return types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True))
-
-
-def fake_live_session(messages: list[Any] | None = None) -> MagicMock:
-    """Create a mock Live API session satisfying the session protocol.
-
-    Args:
-        messages: Optional list of LiveServerMessage objects or Exceptions to yield from receive().
-
-    Returns:
-        MagicMock configuring is_connected and AsyncMock methods.
-    """
-    mock_session = MagicMock()
-    mock_session.is_connected = True
-    mock_session.connect = AsyncMock()
-    mock_session.send_instruction = AsyncMock()
-    mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
-    mock_session.disconnect = AsyncMock()
-
-    msg_list = list(messages) if messages is not None else []
-
-    async def mock_receive():
-        for msg in msg_list:
-            if isinstance(msg, Exception):
-                raise msg
-            yield msg
-
-    mock_session.receive = mock_receive
-    return mock_session
-
-
 @pytest.fixture
-def mock_robot() -> MockRobot:
-    """Provide a fresh MockRobot instance for testing.
-
-    Returns:
-        MockRobot instance.
-    """
-    return MockRobot()
-
-
-@pytest.fixture
-def real_homography_path(tmp_path: Path) -> Path:
-    """Build synthetic real-mode homography in tmp_path from workspace corner geometry.
+def homography_path(tmp_path: Path) -> Path:
+    """Build synthetic homography in tmp_path from workspace corner geometry.
 
     Args:
         tmp_path: Temporary directory fixture provided by pytest.
 
     Returns:
-        Path to generated real-mode homography .npz file.
+        Path to generated homography .npz file.
     """
     save_path = tmp_path / "workspace_homography.npz"
-    compute_sim_calibration(save_path=save_path)
-    return save_path
-
-
-@pytest.fixture
-def sim_homography_path(tmp_path: Path) -> Path:
-    """Build synthetic sim-mode homography in tmp_path from workspace corner geometry.
-
-    Args:
-        tmp_path: Temporary directory fixture provided by pytest.
-
-    Returns:
-        Path to generated sim-mode homography .npz file.
-    """
-    save_path = tmp_path / "workspace_homography_sim.npz"
     compute_sim_calibration(save_path=save_path)
     return save_path
 
@@ -374,33 +251,6 @@ def neutral_frame() -> np.ndarray:
         RGB uint8 numpy array of shape (480, 640, 3).
     """
     return np.full((480, 640, 3), 180, dtype=np.uint8)
-
-
-@pytest.fixture
-def red_cube_frame() -> np.ndarray:
-    """Provide a neutral 480x640 RGB tabletop frame with a synthetic red block.
-
-    Returns:
-        RGB uint8 numpy array of shape (480, 640, 3) with red cube at [200:240, 300:340].
-    """
-    frame = np.full((480, 640, 3), 180, dtype=np.uint8)
-    frame[200:240, 300:340] = [220, 20, 20]
-    return frame
-
-
-@pytest.fixture
-def smooth_gradient_frame() -> np.ndarray:
-    """Provide a 480x640 RGB gradient canvas for deterministic image processing.
-
-    Returns:
-        Pristine RGB gradient array.
-    """
-    y, x = np.mgrid[0:480, 0:640]
-    canvas = np.zeros((480, 640, 3), dtype=np.uint8)
-    canvas[:, :, 0] = (x / 640.0 * 200).astype(np.uint8)
-    canvas[:, :, 1] = (y / 480.0 * 200).astype(np.uint8)
-    canvas[:, :, 2] = 100
-    return canvas
 
 
 @pytest.fixture
@@ -424,29 +274,3 @@ def clean_stream_state() -> Generator[None, None, None]:
     clear_model_targets()
     set_active_robot(orig_robot)
     stop_sim_runtime()
-
-
-@pytest.fixture
-def old_format_real_npz(tmp_path: Path) -> Path:
-    """Build an old-format real-mode calibration file (no hfov_deg / image_size keys).
-
-    ``compute_sim_calibration`` now records the field of view it used, which is exactly what an
-    operator-saved real file from before the camera model does not have.
-
-    Args:
-        tmp_path: Temporary directory fixture provided by pytest.
-
-    Returns:
-        Path to an .npz holding only homography, inverse_homography and reprojection_error.
-    """
-    full = tmp_path / "full.npz"
-    compute_sim_calibration(save_path=full)
-    data = np.load(full)
-    old = tmp_path / "workspace_homography_old.npz"
-    np.savez(
-        old,
-        homography=data["homography"],
-        inverse_homography=data["inverse_homography"],
-        reprojection_error=data["reprojection_error"],
-    )
-    return old
