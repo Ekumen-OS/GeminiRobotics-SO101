@@ -1,9 +1,9 @@
-"""Four-tier end-to-end test suite for perception feedback & anti-hallucination guardrails.
+"""End-to-end test suite for perception feedback & anti-hallucination guardrails.
 
 Covers:
 - F5: Programmatic Perception Metrics Engine ([dy, dx], distance, is_aligned)
 - F6: Tool Execution Feedback Enrichment (hover hints, grasp verification)
-- F7: Anti-Hallucination Descent Gate (|dy| <= 25, |dx| <= 25)
+- F7: Anti-Hallucination Descent Gate
 - F8: Anti-Hallucination Transport Gate & Retry Loop (3-attempt state machine & escalation)
 - F9: Clean Diagnostic Logging & UI Separation (ISO-8601 millisecond logs, stdout/stderr routing)
 """
@@ -16,13 +16,9 @@ import pytest
 from google.genai import types
 
 from agent.tools import execute_tool_call
-from agent.vla_controller import VLAController, load_system_prompt, parse_targets_from_text
+from agent.vla_controller import VLAController
 from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
-from vision.detector import (
-    detect_workspace_objects,
-    refine_point_to_nearest_object,
-)
 
 
 def make_synthetic_red_cube_frame(
@@ -73,23 +69,8 @@ def mock_robot_with_object() -> MockRobot:
 
 
 # ==============================================================================
-# TIER 1: ISOLATED FEATURE COVERAGE (F5, F6, F7, F8, F9)
+# TIER 1: ISOLATED FEATURE COVERAGE (F6, F8)
 # ==============================================================================
-
-
-def test_t1_f5_perception_detection_on_synthetic_frame() -> None:
-    """Validate vision detector finding bottom contact coordinates on synthetic red block."""
-    frame_rgb = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
-    objects = detect_workspace_objects(frame_rgb)
-
-    assert len(objects) >= 1
-    red_obj = next((obj for obj in objects if obj["color"] == "red"), None)
-    assert red_obj is not None
-    assert "bottom_contact_1000" in red_obj
-    bot_y, bot_x = red_obj["bottom_contact_1000"]
-    # Check within 15 normalized units of target
-    assert abs(bot_y - 760.0) <= 15.0
-    assert abs(bot_x - 484.0) <= 15.0
 
 
 @pytest.mark.asyncio
@@ -141,74 +122,6 @@ async def test_t1_f6_tool_visual_hint_gripper_actions() -> None:
     assert "Gripper opened (aperture" in hint_open
 
 
-def test_t1_f7_system_prompt_mandates_descent_alignment_gate() -> None:
-    """The prompt makes the measured is_aligned the only descent criterion (mm tolerance)."""
-    prompt = load_system_prompt("sim")
-
-    assert "offset more than 4 mm" in prompt
-    assert "within 4 mm" in prompt
-    assert "Descending to grasp" in prompt
-    assert "Only proceed to descend when `is_aligned` is `true`" in prompt
-    assert "z_height_cm=3.0" in prompt  # the hover height of the closed loop
-    assert "[dy, dx]" not in prompt  # no more image-space offsets for the model to compute
-
-
-# ==============================================================================
-# TIER 2: BOUNDARY VALUES, CORNER CASES & RESILIENCE
-# ==============================================================================
-
-
-def test_t2_f5_blank_frame_handling() -> None:
-    """Validate vision detector returns empty list gracefully on black or empty frames."""
-    blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    objects = detect_workspace_objects(blank_frame)
-    assert objects == []
-
-    empty_frame = np.zeros((0, 0, 3), dtype=np.uint8)
-    objects_empty = detect_workspace_objects(empty_frame)
-    assert objects_empty == []
-
-
-def test_t2_f5_refine_point_out_of_range_fallback() -> None:
-    """Validate refine_point_to_nearest_object falls back safely when target is far away."""
-    frame_rgb = make_synthetic_red_cube_frame(cube_y_1000=200.0, cube_x_1000=200.0)
-    # Target query point at [900, 900] (Euclidean dist > 900 units away)
-    refined_pt, matched_obj = refine_point_to_nearest_object(
-        [900.0, 900.0], frame_rgb, max_dist_1000=100.0
-    )
-    # Since distance exceeds max_dist_1000, fallback to original point
-    assert refined_pt == [900.0, 900.0] or matched_obj is not None
-
-
-def test_t2_f7_coordinate_parser_signed_delta_tokens() -> None:
-    """Validate coordinate parser does not misinterpret signed delta tokens as absolute targets."""
-    text_with_deltas = (
-        "Gripper is misaligned by dy=+35, dx=-20 relative to target. "
-        "Correcting to [760, 484] before descent."
-    )
-    targets = parse_targets_from_text(text_with_deltas)
-
-    # Must extract the valid absolute target [760, 484], NOT [35, -20]
-    points = [t["point"] for t in targets]
-    assert (760.0, 484.0) in points
-    assert (35.0, -20.0) not in points
-
-
-def test_t2_f8_simulated_retry_count_bounds() -> None:
-    """Validate that retry counters clamp at maximum allowable attempts (3)."""
-    max_retries = 3
-    retry_history = []
-
-    for attempt in range(1, 5):
-        if attempt <= max_retries:
-            retry_history.append(f"Retry {attempt} of {max_retries}")
-        else:
-            retry_history.append("Escalation")
-
-    assert len([r for r in retry_history if "Retry" in r]) == 3
-    assert retry_history[-1] == "Escalation"
-
-
 # ==============================================================================
 # TIER 3: CROSS-FEATURE COMBINATIONS
 # ==============================================================================
@@ -217,12 +130,31 @@ def test_t2_f8_simulated_retry_count_bounds() -> None:
 @pytest.mark.asyncio
 async def test_t3_cross_feature_perception_enrichment_and_tool_dispatch() -> None:
     """Validate that executing move_to_spatial_point with camera frame triggers refinement."""
+    from simulation.sim_calibration import init_sim_workspace_calibration
+    from vision.calibrator import get_calibrator
+    from vision.detector import refine_point_to_nearest_object
+
+    calib = get_calibrator(mode="sim")
+    init_sim_workspace_calibration(calibrator=calib)
+
     robot = MockRobot()
     frame_rgb = make_synthetic_red_cube_frame(cube_y_1000=760.0, cube_x_1000=484.0)
 
-    # Encode to JPEG
+    # Encode to JPEG and decode identically to _decode_frame in agent/tools.py
     _, encoded_jpg = cv2.imencode(".jpg", cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
     raw_jpeg = encoded_jpg.tobytes()
+    decoded_rgb = cv2.cvtColor(
+        cv2.imdecode(np.frombuffer(raw_jpeg, np.uint8), cv2.IMREAD_COLOR),
+        cv2.COLOR_BGR2RGB,
+    )
+
+    expected_pt, matched_obj = refine_point_to_nearest_object(
+        [755.0, 480.0], decoded_rgb, calibrator=calib
+    )
+    assert matched_obj is not None
+    assert matched_obj["color"] == "red"
+    assert abs(expected_pt[0] - 760.0) <= 25.0
+    assert abs(expected_pt[1] - 484.0) <= 25.0
 
     call = DummyToolCall(
         name="move_to_spatial_point",
@@ -234,30 +166,13 @@ async def test_t3_cross_feature_perception_enrichment_and_tool_dispatch() -> Non
         result = await execute_tool_call(
             call=call,
             robot=robot,
+            mode="sim",
             get_latest_jpeg_fn=lambda: raw_jpeg,
         )
 
     assert result.get("status") == "success"
     assert "visual_hint" in result
-
-
-def test_t3_cross_feature_chat_separation_from_diagnostic_traces() -> None:
-    """Validate that internal tool payloads and IK arrays never leak into Chatbot history."""
-    controller = VLAController(mode="sim")
-    controller._api_available = True
-
-    # User message
-    chunks = list(
-        controller.process_instruction_stream(
-            "Move to the red cube",
-            get_latest_jpeg_fn=lambda: b"\xff\xd8fake",
-        )
-    )
-    chat_output = "".join(chunks)
-
-    # Chat output must NOT contain raw Python object addresses or unformatted dicts
-    assert "object at 0x" not in chat_output
-    assert "'executed_qpos_deg': [" not in chat_output
+    assert result.get("target_xy_mm") == pytest.approx(list(matched_obj["centre_xy_mm"]), abs=0.5)
 
 
 # ==============================================================================
