@@ -33,7 +33,7 @@ async def test_move_to_spatial_point_passes_calibrator_to_refinement_and_snapsho
     init_sim_workspace_calibration(calibrator=calib)
     call = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [755.0, 480.0], "z_height_cm": 4.0, "approach": "top_down"},
+        {"point": [755.0, 480.0], "z_height_cm": 4.0},
     )
     from vision.detector import refine_point_to_nearest_object as real_refine
     from vision.gripper_locator import locate_jaw_xy_mm as real_locate

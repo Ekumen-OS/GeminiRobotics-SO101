@@ -66,7 +66,7 @@ def harness(_shared_harness: SimPickHarness) -> SimPickHarness:
 
 
 def _move(h: SimPickHarness, point: list[float], z: float, **extra: Any) -> dict[str, Any]:
-    return h.call("move_to_spatial_point", point=point, z_height_cm=z, approach="top_down", **extra)
+    return h.call("move_to_spatial_point", point=point, z_height_cm=z, **extra)
 
 
 def _pick_until_lift(h: SimPickHarness, point: list[float]) -> dict[str, Any]:
@@ -132,9 +132,7 @@ def test_merged_blobs_are_target_ambiguous(harness: SimPickHarness) -> None:
     ok, enc = cv2.imencode(".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     jpeg = enc.tobytes()
     res = execute_tool_call_sync(
-        DummyToolCall(
-            "move_to_spatial_point", {"point": point, "z_height_cm": 3.0, "approach": "top_down"}
-        ),
+        DummyToolCall("move_to_spatial_point", {"point": point, "z_height_cm": 3.0}),
         harness.robot,
         get_latest_jpeg_fn=lambda: jpeg,
         mode="sim",
@@ -331,14 +329,13 @@ def test_hover_cap_escalates(harness: SimPickHarness) -> None:
 
 
 def test_open_gripper_allowed_when_escalated(harness: SimPickHarness) -> None:
-    """open_gripper (and send_message) still work after escalation; motion does not."""
+    """open_gripper still works after escalation; motion does not."""
     harness.state.escalate("grasp_attempts")
     assert harness.call("move_to_preset", pose_name="HOME")["error_type"] == "retry_exhausted"
     assert harness.call("close_gripper")["error_type"] == "retry_exhausted"
     opened = harness.call("open_gripper")
     assert opened["status"] == "success"
     assert opened["gripper_state"] == "open"
-    assert harness.call("send_message", message="stuck")["status"] == "success"
 
 
 def test_three_missed_grasps_at_one_lock_escalate() -> None:
@@ -688,7 +685,6 @@ def test_hints_name_lock_centre_not_request_point() -> None:
         "is_aligned": True,
         "alignment_tolerance_mm": 4.0,
         "gripper_source": "aruco",
-        "er2_gripper_point_1000": None,
     }
     hint = _approach_hint(3.0, lock, aligned_perception, req_point)
     assert "Ready for descent: move_to_spatial_point(point=[532, 500], z_height_cm=0.0)" in hint

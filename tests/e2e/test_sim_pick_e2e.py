@@ -141,14 +141,15 @@ def test_harness_biased_with_correction_random_yaw_10_placements() -> None:
 
 @pytest.mark.slow
 def test_harness_biased_without_correction_shows_the_corrector_matters() -> None:
-    """Same bias, BIAS_CORRECTION=0: the median jaw-to-cube error stays at the bias (>= 5 mm)."""
+    """Same bias, corrector disabled: the median jaw-to-cube error stays at the bias (>= 5 mm)."""
     result = run_scenario(
         "biased_corr_off",
         n_placements=10,
         seed=1,
         pan_offset_deg=1.5,
-        settings_overrides={"bias_correction": False, "descent_gate": "warn"},
+        settings_overrides={"descent_gate": "warn"},
         descend_after_hover_cap=True,
+        disable_corrector=True,
         progress=print,
     )
     print(format_metrics_table([result]))
@@ -168,8 +169,9 @@ def test_harness_full_metrics_table() -> None:
             10,
             seed=1,
             pan_offset_deg=1.5,
-            settings_overrides={"bias_correction": False, "descent_gate": "warn"},
+            settings_overrides={"descent_gate": "warn"},
             descend_after_hover_cap=True,
+            disable_corrector=True,
         ),
     ]
     print("\n" + format_metrics_table(results))

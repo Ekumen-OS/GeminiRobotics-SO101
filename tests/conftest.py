@@ -181,16 +181,6 @@ class MockRobot(RobotInterface):
         finally:
             self._stop_requested = False
 
-    def get_end_effector_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return dummy end-effector Cartesian position and orientation.
-
-        Returns:
-            Tuple of position [X, Y, Z] in meters and 3x3 rotation matrix.
-        """
-        pos = np.array([0.18, 0.0, 0.05], dtype=np.float64)
-        rot = np.eye(3, dtype=np.float64)
-        return pos, rot
-
     def interrupt(self) -> None:
         """Flag that a stop was requested."""
         self.interrupt_epoch += 1

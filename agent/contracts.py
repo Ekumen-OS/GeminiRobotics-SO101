@@ -30,7 +30,6 @@ class MoveToSpatialPointResponse(TypedDict):
     status: str
     target_xyz_m: NotRequired[list[float]]
     executed_qpos_deg: NotRequired[list[float]]
-    approach: NotRequired[str]
     perception: NotRequired[AlignmentMeasurement | dict[str, Any]]
     visual_hint: NotRequired[str]
     warnings: NotRequired[list[str]]

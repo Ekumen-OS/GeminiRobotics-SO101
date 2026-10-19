@@ -67,7 +67,6 @@ PERCEPTION_ERRORS = (cv2.error, ValueError, IndexError, KeyError, TypeError, Run
 def build_move_spatial_response(
     target_xyz_m: list[float],
     executed_qpos_deg: list[float],
-    approach: str,
     visual_hint: str,
     perception: AlignmentMeasurement | dict[str, Any] | None = None,
     warnings: list[str] | None = None,
@@ -83,7 +82,6 @@ def build_move_spatial_response(
         "status": "success",
         "target_xyz_m": target_xyz_m,
         "executed_qpos_deg": executed_qpos_deg,
-        "approach": approach,
         "visual_hint": visual_hint,
     }
     if perception is not None:
@@ -238,7 +236,6 @@ class ToolContext:
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None
     mode: str | None = None
     guardrail_state: GuardrailState | None = None
-    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None
     # (t_after, timeout_s) -> JPEG of a frame captured after ``t_after`` (time.monotonic()), or
     # None if none arrived in time. Measurements wait for it so they never read a frame that was
     # taken before the arm arrived.
@@ -260,20 +257,6 @@ class ToolSpec:
     prompt_line: str
 
 
-def _handle_send_message(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """Execute send_message tool call.
-
-    Args:
-        ctx: Tool execution context.
-        args: Tool arguments containing 'message'.
-
-    Returns:
-        Success response dictionary containing the message.
-    """
-    message_text = args.get("message", "")
-    return {"status": "success", "message": message_text}
-
-
 def _retry_exhausted_response(state: GuardrailState | None) -> dict[str, Any]:
     """Build the refusal returned while the loop is escalated and waiting for the user."""
     message = state.escalation_message if state is not None else "Waiting for the user."
@@ -287,7 +270,7 @@ def _retry_exhausted_response(state: GuardrailState | None) -> dict[str, Any]:
 
 
 def _gate_motion(ctx: ToolContext, state: GuardrailState) -> dict[str, Any] | None:
-    """Gate a non-spatial motion tool (pose, preset, joints) against escalation and the phase.
+    """Gate a non-spatial motion tool (pose, preset) against escalation and the phase.
 
     Args:
         ctx: Tool execution context.
@@ -323,7 +306,7 @@ def _site_xyz(robot: RobotInterface) -> np.ndarray:
 def _after_other_motion(
     ctx: ToolContext, state: GuardrailState, epoch: int
 ) -> dict[str, Any] | None:
-    """Bookkeeping after a pose/preset/joint move; re-read the aperture while transporting.
+    """Bookkeeping after a pose/preset move; re-read the aperture while transporting.
 
     Args:
         ctx: Tool execution context.
@@ -403,41 +386,6 @@ def _handle_move_to_pose(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
     qpos_rad = np.radians(clamped_qpos)
     robot.move_to_pose(qpos_rad, duration_sec=duration_sec)
-    dropped = _after_other_motion(ctx, state, epoch)
-    response: dict[str, Any] = {"status": "success", "executed_qpos_deg": clamped_qpos}
-    if warnings:
-        response["warnings"] = warnings
-    if dropped is not None:
-        response["grasp_verification"] = dropped
-    return response
-
-
-def _handle_set_joint_positions(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """Execute set_joint_positions tool call.
-
-    Args:
-        ctx: Tool execution context.
-        args: Tool arguments containing 'qpos'.
-
-    Returns:
-        Execution status response or error dictionary.
-    """
-    state = ctx.guardrail_state or GuardrailState()
-    epoch = state.epoch
-    refused = _gate_motion(ctx, state)
-    if refused is not None:
-        return refused
-
-    robot = ctx.robot
-    assert robot is not None
-    qpos_deg = args.get("qpos", [])
-    if len(qpos_deg) != 6:
-        err_msg = f"set_joint_positions expects 6 joint angles, got {len(qpos_deg)}"
-        log_with_tag(logger, "ERROR", err_msg)
-        raise ToolArgumentError(err_msg, robot_moved=False)
-    clamped_qpos, warnings = validate_and_clamp_joints(qpos_deg)
-    qpos_rad = np.radians(clamped_qpos)
-    robot.set_joint_positions(qpos_rad)
     dropped = _after_other_motion(ctx, state, epoch)
     response: dict[str, Any] = {"status": "success", "executed_qpos_deg": clamped_qpos}
     if warnings:
@@ -634,29 +582,6 @@ def _handle_move_to_preset(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
     return response
 
 
-def _handle_get_end_effector_pose(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """Execute get_end_effector_pose tool call.
-
-    Args:
-        ctx: Tool execution context.
-        args: Tool arguments (unused).
-
-    Returns:
-        Dictionary with Cartesian position and rotation matrix.
-    """
-    robot = ctx.robot
-    assert robot is not None
-    if not hasattr(robot, "get_end_effector_pose"):
-        err_msg = "End effector pose is not available in real physical mode."
-        log_with_tag(logger, "ERROR", err_msg)
-        raise ToolArgumentError(err_msg, robot_moved=False)
-    pos, mat = robot.get_end_effector_pose()
-    return {
-        "position": pos.tolist(),
-        "rotation_matrix": mat.tolist(),
-    }
-
-
 def _decode_frame(raw_jpeg: bytes | None, purpose: str, robot_moved: bool) -> np.ndarray:
     """Decode a camera JPEG to an RGB array.
 
@@ -686,7 +611,6 @@ def _decode_frame(raw_jpeg: bytes | None, purpose: str, robot_moved: bool) -> np
 def _update_target_overlay(
     point: list[float],
     z_height_cm: float,
-    approach: str,
     user_label: Any,
     matched_obj: dict[str, Any] | None,
 ) -> None:
@@ -695,7 +619,6 @@ def _update_target_overlay(
     Args:
         point: 2D image coordinates [y, x].
         z_height_cm: Height offset above table.
-        approach: Approach direction string.
         user_label: Optional label provided in args.
         matched_obj: Optional matched object from visual refinement.
     """
@@ -707,9 +630,7 @@ def _update_target_overlay(
         else:
             badge_name = "TARGET"
 
-        active_label = (
-            f"[{badge_name}] [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm, {approach})"
-        )
+        active_label = f"[{badge_name}] [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)"
         active_target: dict[str, Any] = {
             "point": (float(point[0]), float(point[1])),
             "label": active_label,
@@ -746,40 +667,24 @@ class JawReading:
     Attributes:
         xy_mm: Grasp-site XY in robot mm, or None if it could not be located.
         source: 'aruco', 'kinematic' or 'none'.
-        er2_point: Report-only ER2 pointing result ([y, x] normalised), if queried.
     """
 
     xy_mm: list[float] | None
     source: str
-    er2_point: list[float] | None = None
 
 
-def _locate_jaw(
-    ctx: ToolContext, calib: Any, frame_rgb: np.ndarray, raw_jpeg: bytes, mode: str
-) -> JawReading:
+def _locate_jaw(ctx: ToolContext, calib: Any, frame_rgb: np.ndarray, mode: str) -> JawReading:
     """Locate the jaw in the frame: jaw tag (parallax removed) first, FK as the fallback.
 
-    ER2 pointing is report-only: it is attached to the payload but never decides alignment.
-
     Args:
-        ctx: Tool context (robot, ER2 query).
+        ctx: Tool context (robot).
         calib: Workspace calibrator.
         frame_rgb: Measurement frame.
-        raw_jpeg: The same frame as JPEG bytes (for the ER2 query).
         mode: 'real' or 'sim'.
 
     Returns:
         JawReading.
     """
-    er2_point: list[float] | None = None
-    if mode == "real" and get_settings().gripper_locator_er2 and ctx.query_er2_locator_fn:
-        try:
-            er2_dict = ctx.query_er2_locator_fn(raw_jpeg)
-            if er2_dict and "gripper_fingertips" in er2_dict:
-                er2_point = [float(v) for v in er2_dict["gripper_fingertips"]]
-        except (TimeoutError, OSError, ValueError, KeyError, TypeError) as e:
-            log_with_tag(logger, "WARN", f"ER2 pointing query failed: {e}")
-
     if ctx.robot is not None and calib is not None:
         snapshot = calib.geometry_snapshot()
         located = locate_jaw_xy_mm(
@@ -791,13 +696,11 @@ def _locate_jaw(
             mode=mode,
         )
         if located is not None:
-            return JawReading([located.xy_mm[0], located.xy_mm[1]], "aruco", er2_point)
+            return JawReading([located.xy_mm[0], located.xy_mm[1]], "aruco")
     if ctx.robot is not None:
         site = _site_xyz(ctx.robot)
-        return JawReading(
-            [float(site[0] * 1000.0), float(site[1] * 1000.0)], "kinematic", er2_point
-        )
-    return JawReading(None, "none", er2_point)
+        return JawReading([float(site[0] * 1000.0), float(site[1] * 1000.0)], "kinematic")
+    return JawReading(None, "none")
 
 
 # Longest wait (s) for a camera frame newer than the end of a motion.
@@ -854,15 +757,13 @@ def _measure_alignment(
         return None, None, None
     frame_rgb = _decode_frame(raw_jpeg, "visual verification", robot_moved=True)
     try:
-        jaw = _locate_jaw(ctx, calib, frame_rgb, raw_jpeg, mode)
+        jaw = _locate_jaw(ctx, calib, frame_rgb, mode)
         payload = compute_alignment_mm(lock.centre_xy_mm, jaw.xy_mm, jaw.source)
     except PerceptionUnavailable as e:
         e.robot_moved = True
         raise
     except PERCEPTION_ERRORS as e:
         raise PerceptionUnavailable(f"Perception computation failed: {e}", robot_moved=True) from e
-    if jaw.er2_point is not None:
-        payload["er2_gripper_point_1000"] = jaw.er2_point
     return payload, jaw, frame_rgb
 
 
@@ -1151,14 +1052,12 @@ def _check_descent(
 def _move_site(
     robot: RobotInterface,
     target_xyz: np.ndarray,
-    approach: str,
 ) -> tuple[list[float], list[str]]:
     """Move the grasp site to ``target_xyz`` through safe segments; return clamped joints.
 
     Args:
         robot: Robot controller.
         target_xyz: Target site position (m).
-        approach: IK approach mode.
 
     Returns:
         Tuple of (executed joint angles in degrees, clamp warnings).
@@ -1168,7 +1067,6 @@ def _move_site(
         _get_ik_solver(),
         robot.get_joint_positions(),
         target_xyz,
-        approach=approach,
         mode=mode,
     )
     warnings: list[str] = []
@@ -1197,7 +1095,7 @@ def _handle_move_to_spatial_point(
 
     Args:
         ctx: Tool execution context.
-        args: Tool arguments containing 'point', 'approach', etc.
+        args: Tool arguments containing 'point', 'z_height_cm', etc.
 
     Returns:
         MoveToSpatialPointResponse payload or error dictionary.
@@ -1208,12 +1106,6 @@ def _handle_move_to_spatial_point(
     point = args.get("point", [])
     if len(point) != 2:
         err_msg = f"move_to_spatial_point expects [y, x] (2 values), got {len(point)}"
-        log_with_tag(logger, "ERROR", err_msg)
-        raise ToolArgumentError(err_msg, robot_moved=False)
-
-    approach = str(args.get("approach", "")).strip().lower().replace("-", "_").replace(" ", "_")
-    if not approach or approach not in ("top_down", "horizontal"):
-        err_msg = "move_to_spatial_point requires 'approach' parameter ('top_down' or 'horizontal')"
         log_with_tag(logger, "ERROR", err_msg)
         raise ToolArgumentError(err_msg, robot_moved=False)
 
@@ -1232,12 +1124,12 @@ def _handle_move_to_spatial_point(
     if state.phase in (Phase.HELD_UNVERIFIED, Phase.CLOSED_EMPTY):
         if z_height_cm < 3.0:
             return _transport_gate_error(state)
-        return _lift(ctx, state, epoch, z_height_cm, approach, mode)
+        return _lift(ctx, state, epoch, z_height_cm, mode)
 
     if state.phase == Phase.TRANSPORT:
-        return _transport_move(ctx, state, epoch, point, z_height_cm, approach, mode, args)
+        return _transport_move(ctx, state, epoch, point, z_height_cm, mode, args)
 
-    return _approach_move(ctx, state, epoch, point, z_height_cm, approach, mode, args)
+    return _approach_move(ctx, state, epoch, point, z_height_cm, mode, args)
 
 
 # A learned correction beyond this (mm, per axis) means the measurement chain is wrong, not the arm.
@@ -1258,7 +1150,6 @@ def _approach_move(
     epoch: int,
     point: list[float],
     z_height_cm: float,
-    approach: str,
     mode: str,
     args: dict[str, Any],
 ) -> MoveToSpatialPointResponse | dict[str, Any]:
@@ -1306,12 +1197,12 @@ def _approach_move(
         logger,
         "EXEC",
         f"move_to_spatial_point: image [{point[0]:.0f}, {point[1]:.0f}] "
-        f"(z={z_height_cm:.1f}cm, approach={approach}) → XYZ "
+        f"(z={z_height_cm:.1f}cm) → XYZ "
         f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]",
     )
-    _update_target_overlay(overlay_point, z_height_cm, approach, args.get("label"), matched_obj)
+    _update_target_overlay(overlay_point, z_height_cm, args.get("label"), matched_obj)
 
-    clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
+    clamped_qpos, warnings = _move_site(robot, target_xyz)
     t_motion_end = time.monotonic()
 
     actual_site_m = _site_xyz(robot)
@@ -1369,7 +1260,7 @@ def _approach_move(
             if raw_jpeg is not None:
                 try:
                     frame_rgb = _decode_frame(raw_jpeg, "jaw verification", robot_moved=True)
-                    jaw = _locate_jaw(ctx, active_calib, frame_rgb, raw_jpeg, mode)
+                    jaw = _locate_jaw(ctx, active_calib, frame_rgb, mode)
                     if jaw is not None and jaw.source == "aruco" and jaw.xy_mm is not None:
                         jaw_table_xy = robot_to_table_xy_mm(jaw.xy_mm[0], jaw.xy_mm[1], mode=mode)
                         log_with_tag(
@@ -1406,7 +1297,6 @@ def _approach_move(
         and jaw is not None
         and jaw.source == "aruco"
         and residual is not None
-        and get_settings().bias_correction
     )
 
     def commit_motion(s: GuardrailState) -> None:
@@ -1455,7 +1345,6 @@ def _approach_move(
     return build_move_spatial_response(
         target_xyz_m=target_xyz.tolist(),
         executed_qpos_deg=clamped_qpos,
-        approach=approach,
         visual_hint=visual_hint,
         perception=perception,
         warnings=warnings if warnings else None,
@@ -1514,7 +1403,6 @@ def _lift(
     state: GuardrailState,
     epoch: int,
     z_height_cm: float,
-    approach: str,
     mode: str,
 ) -> MoveToSpatialPointResponse | dict[str, Any]:
     """Lift straight up from the grasp and verify it (phase HELD_UNVERIFIED / CLOSED_EMPTY).
@@ -1536,7 +1424,7 @@ def _lift(
         f"lift: straight up at [{site[0] * 1000:.0f}, {site[1] * 1000:.0f}] mm to "
         f"z={z_height_cm:.1f}cm",
     )
-    clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
+    clamped_qpos, warnings = _move_site(robot, target_xyz)
     t_motion_end = time.monotonic()
     lift_site = _site_xyz(robot)
     lift_site_table_mm = robot_z_to_table_height_mm(lift_site[2] * 1000.0, mode)
@@ -1610,7 +1498,6 @@ def _lift(
     return build_move_spatial_response(
         target_xyz_m=target_xyz.tolist(),
         executed_qpos_deg=clamped_qpos,
-        approach=approach,
         visual_hint=visual_hint,
         warnings=warnings if warnings else None,
         grasp_verification=verdict.to_dict(),
@@ -1633,7 +1520,6 @@ def _transport_move(
     epoch: int,
     point: list[float],
     z_height_cm: float,
-    approach: str,
     mode: str,
     args: dict[str, Any],
 ) -> MoveToSpatialPointResponse | dict[str, Any]:
@@ -1651,8 +1537,8 @@ def _transport_move(
         f"transport: image [{point[0]:.0f}, {point[1]:.0f}] (z={z_height_cm:.1f}cm) → XYZ "
         f"[{target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}]",
     )
-    _update_target_overlay(point, z_height_cm, approach, args.get("label") or "DESTINATION", None)
-    clamped_qpos, warnings = _move_site(robot, target_xyz, approach)
+    _update_target_overlay(point, z_height_cm, args.get("label") or "DESTINATION", None)
+    clamped_qpos, warnings = _move_site(robot, target_xyz)
 
     actual_site_m = _site_xyz(robot)
     actual_site_mm = actual_site_m * 1000.0
@@ -1698,7 +1584,6 @@ def _transport_move(
     return build_move_spatial_response(
         target_xyz_m=target_xyz.tolist(),
         executed_qpos_deg=clamped_qpos,
-        approach=approach,
         visual_hint=visual_hint,
         warnings=warnings if warnings else None,
         grasp_verification=dropped,
@@ -1706,30 +1591,6 @@ def _transport_move(
 
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {
-    "send_message": ToolSpec(
-        name="send_message",
-        description=(
-            "Speak, narrate, or deliver a conversational message to the user. "
-            "Use this to explain your thoughts, describe visual observations, "
-            "ask questions, or confirm task progress."
-        ),
-        parameters={
-            "type": "OBJECT",
-            "properties": {
-                "message": {
-                    "type": "STRING",
-                    "description": "The natural language message to narrate to the user.",
-                },
-            },
-            "required": ["message"],
-        },
-        blocking=False,
-        handler=_handle_send_message,
-        prompt_line=(
-            "`send_message(message='...')`: "
-            "Speak, narrate visual observations and relative error calculations."
-        ),
-    ),
     "move_to_pose": ToolSpec(
         name="move_to_pose",
         description="Smoothly interpolate motion to a 6-DOF joint target.",
@@ -1754,24 +1615,6 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             "`move_to_pose(qpos=[...], duration_sec=1.0)`: "
             "Move arm joints to explicit target angles (degrees)."
         ),
-    ),
-    "set_joint_positions": ToolSpec(
-        name="set_joint_positions",
-        description="Instant or snap joint position command to 6-DOF joint target.",
-        parameters={
-            "type": "OBJECT",
-            "properties": {
-                "qpos": {
-                    "type": "ARRAY",
-                    "description": "Target joint angles in degrees for all 6 joints.",
-                    "items": {"type": "NUMBER"},
-                },
-            },
-            "required": ["qpos"],
-        },
-        blocking=True,
-        handler=_handle_set_joint_positions,
-        prompt_line="",
     ),
     "get_joint_positions": ToolSpec(
         name="get_joint_positions",
@@ -1825,21 +1668,6 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             "`move_to_preset(pose_name='HOME')`: Move to named preset pose ('HOME', 'MIDDLE')."
         ),
     ),
-    "get_end_effector_pose": ToolSpec(
-        name="get_end_effector_pose",
-        description=(
-            "Read current end-effector XYZ position and rotation matrix. Available in sim mode."
-        ),
-        parameters={
-            "type": "OBJECT",
-            "properties": {},
-        },
-        blocking=False,
-        handler=_handle_get_end_effector_pose,
-        prompt_line=(
-            "`get_end_effector_pose()`: Read current 3D position and rotation matrix (sim mode)."
-        ),
-    ),
     "move_to_spatial_point": ToolSpec(
         name="move_to_spatial_point",
         description=(
@@ -1865,17 +1693,8 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
                         "Use 0 for grasping contact at table level, 3-5 for safe hover."
                     ),
                 },
-                "approach": {
-                    "type": "STRING",
-                    "description": (
-                        "Approach mode (REQUIRED): 'top_down' (vertical grasp perpendicular "
-                        "to table, MANDATORY for all tabletop pick-and-place, grasping, and "
-                        "table descends) or 'horizontal' (lateral approach)."
-                    ),
-                    "enum": ["top_down", "horizontal"],
-                },
             },
-            "required": ["point", "approach"],
+            "required": ["point"],
         },
         blocking=True,
         handler=_handle_move_to_spatial_point,
@@ -1889,14 +1708,12 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
 }
 
 _CANONICAL_PROMPT_ORDER = [
-    "send_message",
     "move_to_spatial_point",
     "open_gripper",
     "close_gripper",
     "move_to_pose",
     "move_to_preset",
     "get_joint_positions",
-    "get_end_effector_pose",
 ]
 
 
@@ -1948,7 +1765,6 @@ async def execute_tool_call(
     get_latest_jpeg_fn: Callable[[], bytes | None] | None = None,
     mode: str | None = None,
     guardrail_state: GuardrailState | None = None,
-    query_er2_locator_fn: Callable[[bytes], dict[str, list[float]] | None] | None = None,
     get_fresh_jpeg_fn: Callable[[float, float], bytes | None] | None = None,
 ) -> dict[str, Any] | GripperToolResponse | MoveToSpatialPointResponse:
     """Dispatch tool call to the RobotInterface asynchronously.
@@ -1960,7 +1776,6 @@ async def execute_tool_call(
         mode: Operational mode ('real' or 'sim') selecting the workspace calibration. When
             None it is taken from ``robot.mode``.
         guardrail_state: Optional GuardrailState for closed-loop safety gating.
-        query_er2_locator_fn: Optional callable for ER2 visual pointing queries.
         get_fresh_jpeg_fn: Optional callable ``(t_after, timeout_s) -> JPEG | None`` returning a
             frame captured after ``t_after`` (``time.monotonic()``); measurements use it so they
             never read a frame taken before the arm arrived.
@@ -1970,10 +1785,6 @@ async def execute_tool_call(
     """
     name = call.name
     args = call.args if hasattr(call, "args") else {}
-
-    if name == "send_message":
-        message_text = args.get("message", "")
-        return {"status": "success", "message": message_text}
 
     if robot is None:
         err_msg = "RobotInterface is not initialized or injected."
@@ -1994,7 +1805,6 @@ async def execute_tool_call(
         get_latest_jpeg_fn=get_latest_jpeg_fn,
         mode=mode,
         guardrail_state=guardrail_state,
-        query_er2_locator_fn=query_er2_locator_fn,
         get_fresh_jpeg_fn=get_fresh_jpeg_fn,
     )
 
@@ -2008,9 +1818,7 @@ async def execute_tool_call(
 
 
 # Motion tools whose refusals count toward the "three refusals in a row" escalation.
-_MOTION_TOOLS = frozenset(
-    {"move_to_spatial_point", "move_to_pose", "move_to_preset", "set_joint_positions"}
-)
+_MOTION_TOOLS = frozenset({"move_to_spatial_point", "move_to_pose", "move_to_preset"})
 _REFUSAL_ERROR_TYPES = frozenset({"descent_gate", "transport_gate", "perception"})
 
 

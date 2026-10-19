@@ -58,7 +58,7 @@ async def test_spatial_tools_with_table_z(restore_settings: None) -> None:
         # 1. Hover at 3 cm commands robot z = 0.006 m (0.03 + (-0.024))
         call_hover = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 3.0},
         )
         res_hover = await execute_tool_call(call_hover, robot=robot)
         assert res_hover.get("status") == "success"
@@ -67,7 +67,7 @@ async def test_spatial_tools_with_table_z(restore_settings: None) -> None:
         # 2. Contact at 0 cm commands robot z = -0.024 m (0.0 + (-0.024))
         call_contact = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 0.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 0.0},
         )
         res_contact = await execute_tool_call(call_contact, robot=robot)
         assert res_contact.get("status") == "success"
@@ -78,7 +78,7 @@ async def test_spatial_tools_with_table_z(restore_settings: None) -> None:
         state.phase = Phase.HELD_UNVERIFIED
         call_lift = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 5.0},
         )
         res_lift = await execute_tool_call(call_lift, robot=robot, guardrail_state=state)
         assert res_lift.get("status") == "success"
@@ -117,7 +117,7 @@ def test_locate_jaw_xy_mm_parallax_height(restore_settings: None) -> None:
     mock_snapshot.table_mm_to_pixel.return_value = (320.0, 240.0)
 
     site_m, rot = ik.gripper_frame_pose(q)
-    tag_z_robot = site_m[2] * 1000.0 + (rot @ np.array([-14.0, 27.0, 63.0]))[2]
+    tag_z_robot = site_m[2] * 1000.0 + (rot @ np.array([-35.4, 11.0, 40.1]))[2]
 
     fake_corners = np.array([[10, 10], [20, 10], [20, 20], [10, 20]])
     with patch("vision.gripper_locator.detect_jaw_tag", return_value=fake_corners):
@@ -188,7 +188,7 @@ async def test_spatial_tools_with_table_xy(restore_settings: None) -> None:
     with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 3.0},
         )
         # In real mode: table_x (220mm) + 10mm = 230mm (0.23m)
         # table_y (0mm) - 20mm = -20mm (-0.02m)
@@ -230,7 +230,7 @@ async def test_actual_position_logged_on_move(restore_settings: None) -> None:
     ):
         call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 3.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 3.0},
         )
         res = await execute_tool_call(call, robot=robot, mode="real")
         assert res.get("status") == "success"

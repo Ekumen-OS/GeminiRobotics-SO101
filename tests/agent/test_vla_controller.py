@@ -98,28 +98,31 @@ def test_vla_controller_interrupt() -> None:
     mock_task.cancel.assert_called_once()
 
 
-def test_vla_controller_send_message_tool() -> None:
-    """Test send_message tool call translates directly into conversational text."""
+def test_vla_controller_text_part_updates_model_targets() -> None:
+    """Test non-thought text parts parse targets into the overlay while thought parts do not."""
+    from vision.targets import clear_model_targets, get_model_targets
+
+    clear_model_targets()
     controller = VLAController(mode="sim")
     controller._api_available = True
 
     messages = [
-        tool_call_message(
-            "send_message",
-            {"message": "I see the red cube and will pick it up."},
-            "call_msg",
-        ),
+        thought_message("Observing cube at [100, 200]."),
+        text_message("I see the red cube at [650, 420]."),
         turn_complete_message(),
     ]
     mock_session = fake_live_session(messages)
     controller._session = mock_session
 
-    chunks = list(controller.process_instruction_stream("Pick up cube"))
+    chunks = list(controller.process_instruction_stream("Find the red cube"))
     full_output = "".join(chunks)
 
-    assert "I see the red cube and will pick it up." in full_output
-    assert "Executing `send_message`" not in full_output
-    mock_session.send_tool_response.assert_called_once()
+    assert "I see the red cube" in full_output
+    targets = get_model_targets()
+    assert len(targets) == 1
+    assert list(targets[0]["point"]) == [650.0, 420.0]
+    assert targets[0]["label"] == "I SEE THE RED CUBE AT"
+    clear_model_targets()
 
 
 def test_vla_controller_thought_and_narration_streaming() -> None:

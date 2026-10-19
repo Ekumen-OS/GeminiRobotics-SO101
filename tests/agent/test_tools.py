@@ -20,7 +20,6 @@ from robot.constants import (
     PRESET_POSES,
 )
 from robot.errors import CalibrationUnavailable
-from robot.interface import RobotInterface
 from robot.settings import Settings, set_settings
 from tests.conftest import DummyToolCall, MockRobot
 from tests.harness.tools_sync import execute_tool_call_sync
@@ -30,18 +29,15 @@ def test_tool_declarations_structure() -> None:
     """Verify all tool declarations follow the schema and omit deleted tools."""
     tool_names = [d["name"] for d in ROBOT_TOOL_DECLARATIONS]
 
-    # Required primitives present
     expected_tools = {
         "move_to_pose",
-        "set_joint_positions",
         "get_joint_positions",
         "open_gripper",
         "close_gripper",
         "move_to_preset",
-        "get_end_effector_pose",
         "move_to_spatial_point",
     }
-    assert expected_tools.issubset(set(tool_names))
+    assert set(tool_names) == expected_tools
 
     # SPAV tool removed
     assert "execute_spav_pick_and_place" not in tool_names
@@ -62,14 +58,14 @@ def test_tool_declarations_structure() -> None:
 
 
 def test_move_to_spatial_point_schema() -> None:
-    """Verify move_to_spatial_point declaration includes z_height_cm parameter."""
+    """Verify move_to_spatial_point declaration omits approach and requires only point."""
     matching = [d for d in ROBOT_TOOL_DECLARATIONS if d["name"] == "move_to_spatial_point"]
     assert len(matching) == 1
     props = matching[0]["parameters"]["properties"]
     assert "point" in props
     assert "z_height_cm" in props
-    assert "approach" in props
-    assert "approach" in matching[0]["parameters"]["required"]
+    assert "approach" not in props
+    assert matching[0]["parameters"]["required"] == ["point"]
 
 
 def test_validate_and_clamp_joints() -> None:
@@ -114,19 +110,6 @@ async def test_execute_tool_move_to_pose() -> None:
     bad_call = DummyToolCall("move_to_pose", {"qpos": [10.0, 20.0]})
     bad_res = await execute_tool_call(bad_call, robot=robot)
     assert "error" in bad_res
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_set_joint_positions() -> None:
-    """Test set_joint_positions snaps to target."""
-    robot = MockRobot()
-    q_deg = [-10.0, 15.0, -25.0, 35.0, -45.0, 55.0]
-    call = DummyToolCall("set_joint_positions", {"qpos": q_deg})
-
-    res = await execute_tool_call(call, robot=robot)
-    assert res.get("status") == "success"
-    assert robot.set_joint_positions_called
-    np.testing.assert_allclose(robot.get_joint_positions(), np.radians(q_deg), atol=1e-4)
 
 
 @pytest.mark.asyncio
@@ -181,24 +164,6 @@ async def test_execute_tool_move_to_preset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_get_end_effector_pose() -> None:
-    """Test get_end_effector_pose when robot supports it."""
-    robot = MockRobot()
-    call = DummyToolCall("get_end_effector_pose")
-    res = await execute_tool_call(call, robot=robot)
-    assert "position" in res
-    assert "rotation_matrix" in res
-
-    # Base RobotInterface without method
-    plain_robot = MagicMock(spec=RobotInterface)
-    del plain_robot.get_end_effector_pose
-    res_err = await execute_tool_call(call, robot=plain_robot)
-    assert "error" in res_err
-    assert res_err.get("error_type") == "argument"
-    plain_robot.interrupt.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_execute_tool_move_to_spatial_point() -> None:
     """Test move_to_spatial_point with z_height_cm parameter and IK resolution."""
     robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
@@ -211,11 +176,11 @@ async def test_execute_tool_move_to_spatial_point() -> None:
     with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 5.0},
         )
         res = await execute_tool_call(call, robot=robot)
         assert res.get("status") == "success"
-        assert res.get("approach") == "top_down"
+        assert "approach" not in res
         assert robot.move_to_pose_called
         assert "visual_hint" in res
         assert "Visual Verification Loop" in res["visual_hint"]
@@ -223,16 +188,17 @@ async def test_execute_tool_move_to_spatial_point() -> None:
             [500.0, 500.0], img_shape=(480, 640), z_m=0.05
         )
 
-    # Missing approach returns error
-    missing_approach_call = DummyToolCall(
-        "move_to_spatial_point", {"point": [500.0, 500.0], "z_height_cm": 5.0}
-    )
-    missing_res = await execute_tool_call(missing_approach_call, robot=robot)
-    assert "error" in missing_res
-    assert "requires 'approach' parameter" in missing_res["error"]
+        # Extra approach key is ignored rather than rejected
+        extra_approach_call = DummyToolCall(
+            "move_to_spatial_point",
+            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "horizontal"},
+        )
+        extra_res = await execute_tool_call(extra_approach_call, robot=robot)
+        assert extra_res.get("status") == "success"
+        assert "approach" not in extra_res
 
     # Bad point format
-    bad_call = DummyToolCall("move_to_spatial_point", {"point": [500.0], "approach": "top_down"})
+    bad_call = DummyToolCall("move_to_spatial_point", {"point": [500.0]})
     bad_res = await execute_tool_call(bad_call, robot=robot)
     assert "error" in bad_res
 
@@ -284,15 +250,6 @@ def test_execute_tool_call_sync() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_send_message() -> None:
-    """Test send_message tool execution."""
-    call = DummyToolCall("send_message", {"message": "Hello from robot!"})
-    res = await execute_tool_call(call, robot=None)
-    assert res["status"] == "success"
-    assert res["message"] == "Hello from robot!"
-
-
-@pytest.mark.asyncio
 async def test_tools_visual_hints_enrichment(restore_settings: None) -> None:
     """Test all tool returns contain the expected enriched visual_hint strings."""
     set_settings(Settings.from_env(descent_gate="off"))
@@ -306,7 +263,7 @@ async def test_tools_visual_hints_enrichment(restore_settings: None) -> None:
         # Hover height >= 3.0
         hover_call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 5.0},
         )
         hover_res = await execute_tool_call(hover_call, robot=robot)
         assert "visual_hint" in hover_res
@@ -318,7 +275,7 @@ async def test_tools_visual_hints_enrichment(restore_settings: None) -> None:
         # Contact height < 3.0
         contact_call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 0.0, "approach": "top_down"},
+            {"point": [500.0, 500.0], "z_height_cm": 0.0},
         )
         contact_res = await execute_tool_call(contact_call, robot=robot)
         assert "visual_hint" in contact_res
@@ -356,7 +313,7 @@ async def test_tools_logging_and_stderr(capsys: pytest.CaptureFixture) -> None:
     with patch("vision.calibrator.get_calibrator", return_value=mock_calibrator):
         call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [600.0, 400.0], "z_height_cm": 3.0, "approach": "top_down"},
+            {"point": [600.0, 400.0], "z_height_cm": 3.0},
         )
         await execute_tool_call(call, robot=robot)
 
@@ -401,7 +358,6 @@ async def test_move_to_spatial_point_custom_label() -> None:
             {
                 "point": [762, 483],
                 "z_height_cm": 5.0,
-                "approach": "top_down",
                 "label": "Red Cube Pick",
             },
         )
@@ -413,7 +369,7 @@ async def test_move_to_spatial_point_custom_label() -> None:
         assert len(targets) >= 1
         active = targets[-1]
         assert "[RED CUBE PICK]" in active["label"]
-        assert "(z=5.0cm, top_down)" in active["label"]
+        assert "(z=5.0cm)" in active["label"]
         assert "🎯" not in active["label"]
         clear_model_targets()
 
@@ -478,7 +434,7 @@ async def test_execute_tool_taxonomic_error_responses() -> None:
     with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
         spatial_call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "approach": "top_down"},
+            {"point": [500.0, 500.0]},
         )
         calib_res = await execute_tool_call(spatial_call, robot=robot)
         assert calib_res.get("error_type") == "calibration"
@@ -491,7 +447,7 @@ async def test_execute_tool_taxonomic_error_responses() -> None:
     with patch("vision.calibrator.get_calibrator", return_value=valid_calib):
         spatial_call = DummyToolCall(
             "move_to_spatial_point",
-            {"point": [500.0, 500.0], "approach": "top_down"},
+            {"point": [500.0, 500.0]},
         )
         percep_res = await execute_tool_call(
             spatial_call, robot=robot, get_latest_jpeg_fn=lambda: None
