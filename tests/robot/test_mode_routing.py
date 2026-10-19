@@ -62,7 +62,7 @@ async def test_physical_robot_spatial_move_loads_real_homography() -> None:
     calib = _calibrator_mock()
     call = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+        {"point": [500.0, 500.0], "z_height_cm": 5.0},
     )
     with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=robot)
@@ -83,7 +83,7 @@ async def test_sim_robot_spatial_move_loads_sim_homography() -> None:
     calib = _calibrator_mock()
     call = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+        {"point": [500.0, 500.0], "z_height_cm": 5.0},
     )
     with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=_SimLikeRobot())
@@ -102,7 +102,7 @@ async def test_controller_mode_argument_overrides_robot_mode() -> None:
     calib = _calibrator_mock()
     call = DummyToolCall(
         "move_to_spatial_point",
-        {"point": [500.0, 500.0], "z_height_cm": 5.0, "approach": "top_down"},
+        {"point": [500.0, 500.0], "z_height_cm": 5.0},
     )
     with patch("vision.calibrator.get_calibrator", return_value=calib):
         res = await execute_tool_call(call, robot=MockRobot(), mode="sim")

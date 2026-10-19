@@ -1,8 +1,6 @@
 """Controller for managing Vision-Language-Action (VLA) agent interactions."""
 
 import asyncio
-import concurrent.futures
-import json
 import logging
 import re
 import threading
@@ -11,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from google.genai import errors as genai_errors
 from google.genai import types
 
 from agent.guardrails import GuardrailState
@@ -32,17 +29,6 @@ from vision.calibrator import get_ready_calibrator
 from vision.targets import set_model_targets
 
 logger = logging.getLogger(__name__)
-
-
-# Failures an ER2 pointing query may raise; anything else is a bug and must surface.
-ER2_QUERY_ERRORS = (
-    genai_errors.APIError,
-    asyncio.TimeoutError,
-    json.JSONDecodeError,
-    ValueError,
-    KeyError,
-    OSError,
-)
 
 
 def load_system_prompt(mode: str, tolerance: int | float | None = None) -> str:
@@ -146,44 +132,6 @@ def parse_targets_from_text(text: str) -> list[dict]:
     return targets
 
 
-def parse_er2_pointing_reply(text: str) -> dict[str, list[float]] | None:
-    """Parse JSON or text reply for gripper_fingertips and target coordinates.
-
-    Args:
-        text: Response string from pointing query.
-
-    Returns:
-        Dictionary mapping coordinate names to [y, x] lists, or None.
-    """
-    if not text:
-        return None
-    try:
-        match = re.search(r"\{.*?\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-            gripper = data.get("gripper_fingertips")
-            target = data.get("target")
-            res: dict[str, list[float]] = {}
-            if isinstance(gripper, (list, tuple)) and len(gripper) == 2:
-                res["gripper_fingertips"] = [float(gripper[0]), float(gripper[1])]
-            if isinstance(target, (list, tuple)) and len(target) == 2:
-                res["target"] = [float(target[0]), float(target[1])]
-            if "gripper_fingertips" in res:
-                return res
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-
-    targets = parse_targets_from_text(text)
-    if targets:
-        return {
-            "gripper_fingertips": [
-                float(targets[0]["point"][0]),
-                float(targets[0]["point"][1]),
-            ]
-        }
-    return None
-
-
 @dataclass
 class _TurnContext:
     """Context holding queues and callbacks for an instruction processing turn."""
@@ -233,49 +181,6 @@ class VLAController:
         except ConnectionError as e:
             log_with_tag(logger, "WARN", f"⚠️ {e}")
             self._api_available = False
-
-    async def _query_er2_locator_async(self, frame_jpeg: bytes) -> dict[str, list[float]] | None:
-        """Ask Gemini model for structured gripper & target coordinates via pointing query.
-
-        Args:
-            frame_jpeg: Raw camera frame JPEG bytes.
-
-        Returns:
-            Dictionary with parsed coordinates or None.
-        """
-        client = getattr(self._session, "client", None)
-        if client is None:
-            try:
-                from agent.live_session import create_genai_client
-
-                client = create_genai_client()
-            except ConnectionError as e:
-                log_with_tag(logger, "WARN", f"Cannot obtain genai client for ER2 locator: {e}")
-                return None
-
-        prompt_text = (
-            'Return JSON {"gripper_fingertips": [y, x], "target": [y, x]} '
-            "in 0–1000 image coordinates, nothing else"
-        )
-        try:
-            image_part = types.Part.from_bytes(data=frame_jpeg, mime_type="image/jpeg")
-            resp = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=get_settings().er2_locator_model,
-                    contents=[image_part, prompt_text],
-                ),
-                timeout=5.0,
-            )
-            if hasattr(resp, "text") and isinstance(resp.text, str):
-                reply_text = resp.text
-            elif isinstance(resp, str):
-                reply_text = resp
-            else:
-                reply_text = str(getattr(resp, "text", resp))
-            return parse_er2_pointing_reply(reply_text)
-        except ER2_QUERY_ERRORS as e:
-            log_with_tag(logger, "WARN", f"Failed to query ER2 pointing locator: {e}")
-            return None
 
     def _begin_guardrail_instruction(self) -> None:
         """Reset per-instruction guardrail state, deriving the phase from the real gripper.
@@ -364,6 +269,12 @@ class VLAController:
             elif part.text:
                 log_with_tag(logger, "DECISION", f"📝 Model text: {part.text}")
                 await ctx.response_queue.put({"type": "text", "content": part.text})
+                parsed_targets = parse_targets_from_text(part.text)
+                if parsed_targets:
+                    try:
+                        set_model_targets(parsed_targets)
+                    except (TypeError, KeyError, ValueError) as e:
+                        log_with_tag(logger, "WARN", f"Failed to set model targets: {e}")
 
     async def _execute_tool(self, call: Any, ctx: _TurnContext) -> types.FunctionResponse:
         """Execute a single function call, emit UI updates, and return response payload.
@@ -381,30 +292,6 @@ class VLAController:
             f"🔧 Dispatching '{call.name}' [ID: {call.id}] | Payload: {call.args}",
         )
 
-        if call.name == "send_message":
-            msg_text = call.args.get("message", "") if hasattr(call, "args") else ""
-            log_with_tag(logger, "DECISION", f"💬 Model speech: {msg_text}")
-            await ctx.response_queue.put({"type": "text", "content": msg_text})
-
-            parsed_targets = parse_targets_from_text(msg_text)
-            if parsed_targets:
-                try:
-                    set_model_targets(parsed_targets)
-                except (TypeError, KeyError, ValueError) as e:
-                    log_with_tag(logger, "WARN", f"Failed to set model targets: {e}")
-
-            log_with_tag(
-                logger,
-                "TOOL_RESULT",
-                f"✅ Tool 'send_message' completed [ID: {call.id}] | "
-                "Result: {'status': 'success'}",
-            )
-            return types.FunctionResponse(
-                name=call.name,
-                id=call.id,
-                response={"status": "success"},
-            )
-
         await ctx.response_queue.put({"type": "status", "content": f"⚙️ Executing `{call.name}`..."})
 
         spec = TOOL_REGISTRY.get(call.name)
@@ -419,23 +306,12 @@ class VLAController:
                 )
             )
 
-        def query_er2(jpeg: bytes) -> dict[str, list[float]] | None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._query_er2_locator_async(jpeg), self._loop
-                )
-                return fut.result(timeout=6.0)
-            except (concurrent.futures.TimeoutError, RuntimeError) as e:
-                log_with_tag(logger, "WARN", f"ER2 locator query failed: {e}")
-                return None
-
         result_dict = await execute_tool_call(
             call=call,
             robot=self.robot,
             get_latest_jpeg_fn=ctx.get_latest_jpeg_fn,
             mode=self.mode,
             guardrail_state=self.guardrail_state,
-            query_er2_locator_fn=query_er2,
             get_fresh_jpeg_fn=ctx.get_fresh_jpeg_fn,
         )
 
