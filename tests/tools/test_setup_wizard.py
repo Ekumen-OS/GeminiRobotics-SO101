@@ -4,7 +4,14 @@ import json
 import tempfile
 from pathlib import Path
 
-from tools.setup_wizard import setup_workspace_interactive
+import pytest
+
+from tools.setup_wizard import (
+    base_to_pan_xy_mm,
+    get_pan_origin_offset_x_mm,
+    pan_to_base_xy_mm,
+    setup_workspace_interactive,
+)
 
 
 def test_setup_workspace_interactive() -> None:
@@ -99,3 +106,58 @@ def test_setup_wizard_non_interactive_reuse_preserves_existing_corners() -> None
             y_min=-250,
         )
     assert updated["workspace_corners_mm"]["top_left"] == {"x": 400, "y": 300}
+
+
+def test_pan_origin_offset_and_coordinate_conversions() -> None:
+    """Verify offset is extracted dynamically from the model and coordinate conversions work."""
+    offset = get_pan_origin_offset_x_mm()
+    # MuJoCo model shoulder body pos x = 0.0388353 m (~38.8 mm)
+    assert offset == pytest.approx(38.8353, abs=0.01)
+
+    # Forward: Pan-axis tape measurements -> Robot base frame (+38.8 mm in X)
+    assert pan_to_base_xy_mm(414.0, -240.0) == (452.8, -240.0)
+    assert pan_to_base_xy_mm(97.0, -240.0) == (135.8, -240.0)
+    assert pan_to_base_xy_mm(97.0, 102.0) == (135.8, 102.0)
+    assert pan_to_base_xy_mm(414.0, 102.0) == (452.8, 102.0)
+
+    # Reverse: Robot base frame -> Pan-axis tape measurements (-38.8 mm in X)
+    assert base_to_pan_xy_mm(452.8, -240.0) == (414.0, -240.0)
+    assert base_to_pan_xy_mm(135.8, -240.0) == (97.0, -240.0)
+    assert base_to_pan_xy_mm(135.8, 102.0) == (97.0, 102.0)
+    assert base_to_pan_xy_mm(452.8, 102.0) == (414.0, 102.0)
+
+
+def test_setup_wizard_interactive_prompts_convert_pan_to_base(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify interactive wizard converts pan tape measurements to base-frame corners."""
+    import sys
+
+    # Simulate interactive TTY
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    inputs = iter(
+        [
+            "414, -240",  # top_left (from pan axis)
+            "97, -240",  # top_right (from pan axis)
+            "97, 102",  # bottom_right (from pan axis)
+            "414, 102",  # bottom_left (from pan axis)
+            "40",  # marker_size
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    cfg_path = tmp_path / "ws_interactive.json"
+    out_dir = tmp_path / "markers"
+
+    updated = setup_workspace_interactive(
+        config_path=cfg_path,
+        output_dir=out_dir,
+        interactive=True,
+    )
+
+    corners = updated["workspace_corners_mm"]
+    assert corners["top_left"] == {"x": 452.8, "y": -240.0}
+    assert corners["top_right"] == {"x": 135.8, "y": -240.0}
+    assert corners["bottom_right"] == {"x": 135.8, "y": 102.0}
+    assert corners["bottom_left"] == {"x": 452.8, "y": 102.0}

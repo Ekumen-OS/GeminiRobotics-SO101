@@ -15,6 +15,7 @@ __pycache__/
 
 # Calibration artifacts and local data
 *.npz
+config/*.bak
 
 # Generated simulation meshes
 simulation/assets/centered_meshes/

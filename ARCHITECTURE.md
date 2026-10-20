@@ -104,7 +104,7 @@ Gemini interacts with the robot via 6 primitives defined in `agent/tools.py`:
 The system coordinates motions across four distinct reference frames:
 - **Normalized Model Frame** $[y, x] \in [0, 1000]$: Normalized vision coordinates emitted by Gemini ($y$ down, $x$ right).
 - **Pixel Frame** $(u, v)$: Raw camera sensor pixels ($u = x \cdot W / 1000, v = y \cdot H / 1000$).
-- **Robot Base & Table Plane Frame** $(X_{\text{base}}, Y_{\text{base}}, Z_{\text{base}})$: Metric Cartesian space in mm centered at the robot base rotation axis, where $+X$ points forward along HOME toward the workspace, $+Y$ points to the robot's left, and $+Z$ points upward. The 4 ArUco corner marker centres in `config/workspace_calibration.json` (`workspace_corners_mm`) are measured directly in this robot base XY frame. Heights above the tabletop $Z_{\text{table}}$ relate to robot base height via:
+- **Robot Base & Table Plane Frame** $(X_{\text{base}}, Y_{\text{base}}, Z_{\text{base}})$: Metric Cartesian space in mm. The robot base frame origin is located 38.8 mm behind the shoulder pan rotation axis (matching the `shoulder` body pos in `simulation/assets/so101.xml`), where $+X$ points forward along HOME toward the workspace, $+Y$ points to the robot's left, and $+Z$ points upward. The 4 ArUco corner marker centres in `config/workspace_calibration.json` (`workspace_corners_mm`) are defined in this robot base XY frame (tape measurements taken from the pan rotation axis have $+38.8\text{ mm}$ added to $X$). Heights above the tabletop $Z_{\text{table}}$ relate to robot base height via:
   $$Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$$
 - **Gripper Tool Frame**: Attached to the end-effector grasp center, offset from the fixed-jaw tag by $\mathbf{d}_{\text{tag}}$ (`GRIPPER_TAG_LOCAL_OFFSET_MM` in `robot/settings.py`).
 
@@ -113,7 +113,7 @@ Physical workspace grounding maps normalized image coordinates $[y, x] \in [0, 1
 
 $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
 
-- **Real Mode**: $H$ is computed from the 4 physical ArUco corner markers (`DICT_4X4_50`, canonical IDs: Top-Left 1, Top-Right 2, Bottom-Right 3, Bottom-Left 0) whose centres in `config/workspace_calibration.json` are measured from the robot base rotation axis, and saved to `config/workspace_homography.npz`.
+- **Real Mode**: $H$ is computed from the 4 physical ArUco corner markers (`DICT_4X4_50`, canonical IDs: Top-Left 1, Top-Right 2, Bottom-Right 3, Bottom-Left 0) whose centres in `config/workspace_calibration.json` are specified in the robot base frame (origin 38.8 mm behind the pan axis), and saved to `config/workspace_homography.npz`.
 - **Simulation Mode**: Uses the same `workspace_corners_mm` from `config/workspace_calibration.json`, computed analytically from the virtual camera (`workspace_cam`, $fovy=45^\circ$, $hfov \approx 57.8^\circ$) via `simulation/sim_calibration.py` and saved to `config/workspace_homography_sim.npz`.
 
 ### Camera Model & Parallax-Free Jaw Locator (`robot/camera_model.py`, `vision/gripper_locator.py`)
