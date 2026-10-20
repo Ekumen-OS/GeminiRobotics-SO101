@@ -53,22 +53,14 @@ addopts = "-m 'not slow'"
 [tool.mypy]
 python_version = "3.13"
 # Single source of truth for the type-checked scope (hook and docs both use bare `mypy`).
-# Start permissive: add modules here as they get annotated.
 files = [
-  "robot/contracts.py",
-  "robot/errors.py",
-  "robot/grasp.py",
-  "robot/real_robot.py",
-  "robot/registry.py",
-  "agent/contracts.py",
-  "robot/perception.py",
-  "agent/tools.py",
-  "agent/response_assembler.py",
+  "robot",
+  "simulation",
   "vision",
-  "agent/guardrails.py",
-  "agent/pick_loop.py",
-  "agent/motion.py",
-  "robot/camera_model.py",
+  "agent",
+  "ui",
+  "tools",
+  "main.py",
 ]
 follow_imports = "silent"
 ignore_missing_imports = true

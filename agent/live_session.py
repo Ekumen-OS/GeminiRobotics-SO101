@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from google import genai
 from google.genai import types
@@ -69,10 +69,10 @@ class GeminiLiveSession:
         self.system_instruction = system_instruction
 
         self.client = create_genai_client()
-        self.config = build_live_config(self.tools, self.system_instruction)
+        self.config: Any = build_live_config(self.tools, self.system_instruction)
 
-        self._session = None
-        self._session_cm = None
+        self._session: Any = None
+        self._session_cm: Any = None
         self._lock = asyncio.Lock()
         self._ws_lock = asyncio.Lock()
 

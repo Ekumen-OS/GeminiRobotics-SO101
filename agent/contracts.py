@@ -42,6 +42,7 @@ class MoveToSpatialPointResponse(TypedDict):
     grasp_verification: NotRequired[dict[str, Any] | None]
     guardrail_warning: NotRequired[str | None]
     lift_note: NotRequired[str]
+    post_action_frame: NotRequired[str]
 
 
 class GripperToolResponse(TypedDict):
@@ -57,3 +58,4 @@ class GripperToolResponse(TypedDict):
     error: NotRequired[str]
     error_type: NotRequired[ErrorType]
     robot_moved: NotRequired[bool]
+    post_action_frame: NotRequired[str]

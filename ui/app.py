@@ -65,13 +65,6 @@ CUSTOM_CSS = """
     flex-direction: column !important;
     justify-content: center !important;
 }
-#vision-feed .image-container {
-    height: 100% !important;
-    max-height: 600px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
 #vision-feed img {
     max-height: 570px !important;
     width: 100% !important;
@@ -113,10 +106,6 @@ CUSTOM_CSS = """
     align-items: stretch !important;
     gap: 8px !important;
 }
-.chat-action-row > div {
-    flex: 1 1 0% !important;
-    display: flex !important;
-}
 .chat-action-row button,
 .chat-action-btn {
     height: 46px !important;
@@ -152,7 +141,9 @@ def get_cached_or_hub_theme(theme_id: str = "YTheme/TehnoX") -> gr.Theme:
     if cache_file.exists():
         try:
             logger.info(f"Loading cached Gradio theme from {cache_file}...")
-            return gr.Theme.load(str(cache_file))
+            from typing import cast
+
+            return cast(gr.Theme, gr.Theme.load(str(cache_file)))
         except (AttributeError, ValueError, OSError, RuntimeError) as e:
             logger.warning(f"Failed loading cached theme ({e}). Downloading from Hub...")
 
