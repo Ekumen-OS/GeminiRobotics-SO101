@@ -22,7 +22,6 @@ from robot.registry import get_active_robot
 from robot.settings import (
     get_settings,
     robot_z_to_table_height_mm,
-    table_to_robot_xy_mm,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +76,9 @@ def detect_jaw_tag(frame_rgb: np.ndarray | None, tag_id: int = JAW_TAG_ID) -> np
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     params = cv2.aruco.DetectorParameters()
     params.minMarkerPerimeterRate = 0.01
+    params.adaptiveThreshWinSizeStep = 2
+    params.perspectiveRemovePixelPerCell = 8
+    params.minCornerDistanceRate = 0.01
     params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 
     if hasattr(cv2.aruco, "ArucoDetector"):
@@ -150,9 +152,8 @@ def locate_jaw_xy_mm(
         site_px = snapshot.table_mm_to_pixel(xy[0], xy[1])
     except (ZeroDivisionError, FloatingPointError):
         site_px = None
-    robot_xy = table_to_robot_xy_mm(xy[0], xy[1], mode=mode)
     return JawLocation(
-        xy_mm=robot_xy,
+        xy_mm=xy,
         tag_pixel=(float(centre_px[0]), float(centre_px[1])),
         tag_height_mm=tag_height_mm,
         site_pixel=site_px,

@@ -8,8 +8,11 @@ to its true table-plane XY.
 The intrinsics are *nominal*: principal point at the image centre, square pixels, and a focal
 length from the horizontal field of view. Estimating the focal length from a single-plane
 homography is exact on a noise-free matrix but ill-conditioned (at 0.5 px noise the camera centre
-is off by up to a metre), so it is deliberately not done; a +-10 % field-of-view error costs only
-a few millimetres of parallax correction at tag height.
+is off by up to a metre), so it is deliberately not done. However, the nominal field of view must
+match the true sensor width: for this low, oblique camera (~345 mm above the table), assuming 70°
+instead of the true 62.2° (Arducam IMX219 3.04 mm lens) shifts the recovered camera height from
+356 mm to 297 mm and introduces 35–120 mm of jaw-locator parallax error at the tag's hover height
+(~110 mm above the table).
 """
 
 import math

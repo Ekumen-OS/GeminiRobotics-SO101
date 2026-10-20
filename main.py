@@ -40,12 +40,14 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[
             "check_environment",
             "generate_markers",
+            "reach_check",
         ],
         default=None,
         help=(
             "Optional verification or setup task: 'check_environment' (System & hardware "
-            "diagnostics), or 'generate_markers' (Interactive workspace calibration & sheet "
-            "generator). If omitted, defaults to launching the Gradio VLA Web UI."
+            "diagnostics), 'generate_markers' (Interactive workspace calibration & sheet "
+            "generator), or 'reach_check' (Operator 5-point workspace hover reach check). "
+            "If omitted, defaults to launching the Gradio VLA Web UI."
         ),
     )
     parser.add_argument(
@@ -103,6 +105,13 @@ def _run_once(args: argparse.Namespace) -> None:
             interactive=not args.non_interactive,
             reuse=reuse_flag,
         )
+        return
+
+    elif args.task == "reach_check":
+        from tools.reach_check import run_reach_check
+
+        interactive_flag = False if args.non_interactive else None
+        run_reach_check(mode=args.mode, interactive=interactive_flag)
         return
 
     # 2. Initialize Robot based on mode for Web UI operation without native window popups

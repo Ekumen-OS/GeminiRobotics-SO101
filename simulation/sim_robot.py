@@ -99,17 +99,26 @@ class SO101Robot(RobotInterface):
         try:
             cfg = json.loads(cfg_file.read_text())
             corners = cfg.get("workspace_corners_mm", {})
-            tl = corners.get("top_left", {"x": 380.0, "y": 130.0})
-            tr = corners.get("top_right", {"x": 380.0, "y": -250.0})
-            br = corners.get("bottom_right", {"x": 35.0, "y": -250.0})
-            bl = corners.get("bottom_left", {"x": 35.0, "y": 130.0})
+            tl = corners.get("top_left", {"x": 414.0, "y": -240.0})
+            tr = corners.get("top_right", {"x": 97.0, "y": -240.0})
+            br = corners.get("bottom_right", {"x": 97.0, "y": 102.0})
+            bl = corners.get("bottom_left", {"x": 414.0, "y": 102.0})
 
             x_tl, y_tl = tl["x"] / 1000.0, tl["y"] / 1000.0
             x_tr, y_tr = tr["x"] / 1000.0, tr["y"] / 1000.0
             x_br, y_br = br["x"] / 1000.0, br["y"] / 1000.0
             x_bl, y_bl = bl["x"] / 1000.0, bl["y"] / 1000.0
 
-            marker_half = cfg.get("marker_size_mm", 30.0) / 2000.0
+            x_max = max(x_tl, x_tr, x_br, x_bl)
+            x_min = min(x_tl, x_tr, x_br, x_bl)
+            y_max = max(y_tl, y_tr, y_br, y_bl)
+            y_min = min(y_tl, y_tr, y_br, y_bl)
+            cx = (x_max + x_min) / 2.0
+            cy = (y_max + y_min) / 2.0
+            half_x = max(0.0015, (x_max - x_min) / 2.0)
+            half_y = max(0.0015, (y_max - y_min) / 2.0)
+
+            marker_half = cfg.get("marker_size_mm", 40.0) / 2000.0
 
             with self._sim_lock:
                 marker_geom_map = {
@@ -126,31 +135,23 @@ class SO101Robot(RobotInterface):
 
                 top_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_top")
                 if top_gid >= 0:
-                    top_cy = (y_tl + y_tr) / 2.0
-                    top_len_y = abs(y_tl - y_tr) / 2.0
-                    self.model.geom_pos[top_gid] = [x_tl, top_cy, 0.0005]
-                    self.model.geom_size[top_gid] = [0.0015, top_len_y, 0.0005]
+                    self.model.geom_pos[top_gid] = [x_max, cy, 0.0005]
+                    self.model.geom_size[top_gid] = [0.0015, half_y, 0.0005]
 
                 bottom_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_bottom")
                 if bottom_gid >= 0:
-                    bot_cy = (y_bl + y_br) / 2.0
-                    bot_len_y = abs(y_bl - y_br) / 2.0
-                    self.model.geom_pos[bottom_gid] = [x_bl, bot_cy, 0.0005]
-                    self.model.geom_size[bottom_gid] = [0.0015, bot_len_y, 0.0005]
+                    self.model.geom_pos[bottom_gid] = [x_min, cy, 0.0005]
+                    self.model.geom_size[bottom_gid] = [0.0015, half_y, 0.0005]
 
                 left_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_left")
                 if left_gid >= 0:
-                    left_cx = (x_tl + x_bl) / 2.0
-                    left_len_x = abs(x_tl - x_bl) / 2.0
-                    self.model.geom_pos[left_gid] = [left_cx, y_tl, 0.0005]
-                    self.model.geom_size[left_gid] = [left_len_x, 0.0015, 0.0005]
+                    self.model.geom_pos[left_gid] = [cx, y_max, 0.0005]
+                    self.model.geom_size[left_gid] = [half_x, 0.0015, 0.0005]
 
                 right_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "bound_right")
                 if right_gid >= 0:
-                    right_cx = (x_tr + x_br) / 2.0
-                    right_len_x = abs(x_tr - x_br) / 2.0
-                    self.model.geom_pos[right_gid] = [right_cx, y_tr, 0.0005]
-                    self.model.geom_size[right_gid] = [right_len_x, 0.0015, 0.0005]
+                    self.model.geom_pos[right_gid] = [cx, y_min, 0.0005]
+                    self.model.geom_size[right_gid] = [half_x, 0.0015, 0.0005]
 
                 mujoco.mj_forward(self.model, self.data)
         except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as e:

@@ -112,3 +112,17 @@ def test_main_task_check_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert exc_info.value.code == 0
     mock_check.assert_called_once_with(mode="sim")
+
+
+def test_main_task_reach_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Running --task reach_check should dispatch to tools.reach_check.run_reach_check."""
+    mock_reach = MagicMock(return_value=[])
+    monkeypatch.setattr("tools.reach_check.run_reach_check", mock_reach)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--task", "reach_check", "--mode", "sim", "--non-interactive"],
+    )
+
+    main.main()
+
+    mock_reach.assert_called_once_with(mode="sim", interactive=False)

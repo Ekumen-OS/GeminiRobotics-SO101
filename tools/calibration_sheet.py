@@ -42,19 +42,35 @@ def generate_aruco_markers(
     created_files: list[Path] = []
     for mid in marker_ids:
         marker_img = cv2.aruco.generateImageMarker(aruco_dict, mid, marker_size_px)
-        # Add white border for printing
-        bordered = cv2.copyMakeBorder(marker_img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
-        # Annotate marker ID text
-        cv2.putText(
-            bordered,
-            f"ID {mid} (DICT_4X4_50)",
-            (35, 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            0,
-            1,
-            cv2.LINE_AA,
-        )
+        if mid == 10:
+            # Jaw tag (ID 10): 25 mm outer tile with 25:32 (78.125%) active black pattern
+            # (19.53 mm black pattern + 2.73 mm border per side -> 56 px border on 400 px).
+            border_px = int(round(marker_size_px * (3.5 / 25.0)))
+            bordered = cv2.copyMakeBorder(
+                marker_img,
+                border_px,
+                border_px,
+                border_px,
+                border_px,
+                cv2.BORDER_CONSTANT,
+                value=255,
+            )
+        else:
+            # Add white border for printing
+            bordered = cv2.copyMakeBorder(
+                marker_img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255
+            )
+            # Annotate marker ID text
+            cv2.putText(
+                bordered,
+                f"ID {mid} (DICT_4X4_50)",
+                (35, 25),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                0,
+                1,
+                cv2.LINE_AA,
+            )
 
         file_path = out_path / f"marker_{mid}.png"
         cv2.imwrite(str(file_path), bordered)

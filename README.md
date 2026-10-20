@@ -40,17 +40,18 @@ Copy `.env.example` to `.env`. Only `GOOGLE_API_KEY` (or Vertex AI credentials) 
 cp .env.example .env
 ```
 
-All runtime settings (serial port, table offsets, camera selection, stream quality, and grasp margins) are documented directly in [`.env.example`](.env.example).
+All runtime settings (serial port, table surface height, camera selection, stream quality, and grasp margins) are documented directly in [`.env.example`](.env.example).
 
 ## Workspace Calibration
 
-Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ into physical robot coordinates (mm) using perspective homography:
+Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physical robot base coordinates (mm) using perspective homography:
 
-1. **Print calibration sheets**:
+1. **Measure marker centres & lens height**:
+   Measure the 4 ArUco corner marker centres (`top_left` ID 1, `top_right` ID 2, `bottom_right` ID 3, `bottom_left` ID 0) in the robot base frame (origin $(0, 0)$ at the base rotation axis, $+X$ forward along `HOME`, $+Y$ to the robot's left) and record them in `config/workspace_calibration.json` (or interactively via `--task generate_markers`):
    ```bash
    uv run python main.py --task generate_markers
    ```
-   Generates `assets/aruco_markers/workspace_calibration_sheet.png` (4 corner markers + base alignment guide) and `marker_{0..3}.png`. Use `--reuse` to update dimensions without regenerating images, or `--regenerate` to force overwrite.
+   Generates `assets/aruco_markers/workspace_calibration_sheet.png` and `marker_{0..3}.png`. Use `--reuse` to update the measured marker centres in JSON without regenerating images, or `--regenerate` to force overwrite. Also tape-measure the camera lens height above the tabletop as a cross-check: on startup and calibration save/load, `[Calibration] [CAMERA]` logs `centre_mm=[x, y, z] height_mm=z hfov=...` so you can verify `height_mm` against your tape measurement.
 2. **3D-printed tags with `tools/aruco_stl.py`**:
    Generates watertight binary STL meshes for single-color grooved printing or Bambu Studio / AMS dual-color (`_white.stl` + `_black.stl`) tiles:
    ```bash
@@ -58,19 +59,27 @@ Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ into physical robot c
    ```
    Key CLI options:
    - `--marker-id`: Marker ID (default: 10 for jaw tag).
-   - `--marker-size`: Active marker square side in mm (default: 25.0).
-   - `--margin`: Quiet-zone border per side in mm (default: 3.5 -> 32.0 mm total).
-   - `--thickness`: Total tile thickness in mm (default: 2.0).
+   - `--marker-size`: Active marker square side in mm (default: 19.5312 for a 25.0 mm outer tile).
+   - `--margin`: Quiet-zone border per side in mm (default: 2.73438 -> 25.0 mm total outer tile).
+   - `--thickness`: Total tile thickness in mm (default: 1.5).
    - `--groove-depth`: Recess depth in mm (default: 0.6 = 3 layers at 0.2 mm).
    - `--dictionary`: OpenCV dictionary (default: `DICT_4X4_50`).
    - `--all-workspace-markers`: Also generates 40 mm table corner tags (IDs 0, 1, 2, 3).
-3. **Mount the jaw tag**:
-   Mount the 25 mm ID 10 tag flush on the camera-facing flat side of the fixed-jaw housing, just below the servo horn. Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-35.4,11.0,40.1` (tag centre minus grasp site in gripper coordinates).
-4. **Real-arm grasp calibration**:
+3. **Jaw tag**:
+   Mount the 25 × 25 × 1.5 mm ID 10 tile (white border included) flush on the camera-facing flat face of the fixed-jaw housing (`80 mm` from the fixed fingertip line along the jaw toward the wrist, `9.5 mm` from the fixed fingertip across the jaw toward the moving jaw). Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-13.4,25.5,78.6` (tag centre minus grasp site in gripper coordinates).
+4. **Save calibration**:
+   In the Web UI, open the **ArUco Workspace Calibration** accordion and click **💾 Save Calibration** once all 4 corner markers are detected.
+5. **Operator 5-point reach check (`--task reach_check`)**:
+   Before running VLA instructions in real mode, verify physical reach and jaw-locator alignment across the 4 marker centres and the mat centre (no model in the loop):
+   ```bash
+   uv run python main.py --task reach_check --mode real
+   # Or in simulation:
+   uv run python main.py --task reach_check --mode sim
+   ```
+   The arm moves to `HOME`, waits for `Enter` before hovering 50 mm above each marker centre and the mat centre, prints commanded XY, FK grasp-site XY, jaw-tag locator XY, and `loc-fk` residual, and returns `HOME` (or on `Ctrl-C`). At each hover, measure the physical miss from the fingertip midpoint to the marker centre with a ruler.
+6. **Real-arm grasp calibration**:
    - Run `close_gripper` on air: note logged aperture $A_{\text{empty}}$ (e.g. $-74.5^\circ$) and set `GRIPPER_EMPTY_APERTURE_DEG`.
    - Run `close_gripper` on a 30 mm cube: note stalled aperture $A_{\text{object}}$ and set `GRASP_EMPTY_MARGIN_DEG` to $\approx 0.40 \times (A_{\text{object}} - A_{\text{empty}})$.
-5. **Save calibration**:
-   In the Web UI, open the **ArUco Workspace Calibration** accordion and click **💾 Save Calibration** once 4 corner markers are detected.
 
 ## Preflight Diagnostics
 
