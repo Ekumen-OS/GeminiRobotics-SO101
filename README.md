@@ -1,11 +1,11 @@
-# ![GeminiRobotics-SO101 Banner](banner.jpg)
+# ![GeminiRobotics-SO101 Banner](assets/docs/banner.jpg)
 
 ## GeminiRobotics-SO101 🤖
 
 GeminiRobotics-SO101 connects Google's Gemini Robotics multimodal models (`gemini-robotics-er-2-streaming-preview`) to the low-cost 6-DOF SO-101 robotic arm via a unified web interface built with FastAPI, Gradio 6.0, OpenCV, and Three.js. The operator enters natural language instructions, and Gemini orchestrates pick-and-place tasks through continuous video streaming and real-time tool calling in both physical hardware and MuJoCo simulation.
 
 <p align="center">
-  <img src="ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
+  <img src="assets/docs/ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
 </p>
 
 ## Hardware

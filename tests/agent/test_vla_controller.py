@@ -100,7 +100,7 @@ def test_vla_controller_interrupt() -> None:
 
 def test_vla_controller_text_part_updates_model_targets() -> None:
     """Test non-thought text parts parse targets into the overlay while thought parts do not."""
-    from vision.targets import clear_model_targets, get_model_targets
+    from vision.targets import clear_model_targets, get_model_targets, set_model_targets
 
     clear_model_targets()
     controller = VLAController(mode="sim")
@@ -114,15 +114,18 @@ def test_vla_controller_text_part_updates_model_targets() -> None:
     mock_session = fake_live_session(messages)
     controller._session = mock_session
 
-    chunks = list(controller.process_instruction_stream("Find the red cube"))
-    full_output = "".join(chunks)
+    with patch("agent.vla_controller.set_model_targets", wraps=set_model_targets) as spy_set:
+        chunks = list(controller.process_instruction_stream("Find the red cube"))
+        full_output = "".join(chunks)
 
-    assert "I see the red cube" in full_output
-    targets = get_model_targets()
-    assert len(targets) == 1
-    assert list(targets[0]["point"]) == [650.0, 420.0]
-    assert targets[0]["label"] == "I SEE THE RED CUBE AT"
-    clear_model_targets()
+        assert "I see the red cube" in full_output
+        spy_set.assert_called_once()
+        targets = spy_set.call_args[0][0]
+        assert len(targets) == 1
+        assert list(targets[0]["point"]) == [650.0, 420.0]
+        assert targets[0]["label"] == "I SEE THE RED CUBE AT"
+        # When the instruction finishes, targets are cleared on completion
+        assert get_model_targets() == []
 
 
 def test_vla_controller_thought_and_narration_streaming() -> None:
@@ -316,3 +319,62 @@ def test_vla_controller_visual_hint_in_tool_response() -> None:
     resp_dict = called_responses[0].response
     assert "visual_hint" in resp_dict
     assert "Gripper opened (aperture" in resp_dict["visual_hint"]
+
+
+def test_vla_controller_clears_targets_on_instruction_completion() -> None:
+    """Verify target overlay is cleared when an instruction successfully completes."""
+    from vision.targets import clear_model_targets, get_model_targets
+
+    clear_model_targets()
+    controller = VLAController(mode="sim")
+    controller._api_available = True
+    messages = [
+        text_message("Target cube at [500, 500]."),
+        turn_complete_message(),
+    ]
+    controller._session = fake_live_session(messages)
+    list(controller.process_instruction_stream("Look at target"))
+    assert get_model_targets() == []
+
+
+def test_vla_controller_clears_targets_on_instruction_exception() -> None:
+    """Verify target overlay is cleared when an instruction encounters an error."""
+    from vision.targets import clear_model_targets, get_model_targets
+
+    clear_model_targets()
+    controller = VLAController(mode="sim")
+    controller._api_available = True
+    messages = [
+        text_message("Target at [300, 400]."),
+        RuntimeError("Session connection dropped abruptly"),
+    ]
+    controller._session = fake_live_session(messages)
+
+    list(controller.process_instruction_stream("Fail early task"))
+    assert get_model_targets() == []
+
+
+def test_vla_controller_clears_targets_on_interrupt() -> None:
+    """Verify interrupt() clears the target overlay blackboard."""
+    from vision.targets import clear_model_targets, get_model_targets, set_model_targets
+
+    clear_model_targets()
+    controller = VLAController(mode="sim")
+    set_model_targets([{"point": (300.0, 400.0), "label": "active target"}])
+    assert len(get_model_targets()) == 1
+
+    controller.interrupt()
+    assert get_model_targets() == []
+
+
+def test_vla_controller_clears_targets_on_clear_history() -> None:
+    """Verify clear_history() resets active model targets."""
+    from vision.targets import clear_model_targets, get_model_targets, set_model_targets
+
+    clear_model_targets()
+    controller = VLAController(mode="sim")
+    set_model_targets([{"point": (300.0, 400.0), "label": "target to reset"}])
+    assert len(get_model_targets()) == 1
+
+    controller.clear_history()
+    assert get_model_targets() == []
