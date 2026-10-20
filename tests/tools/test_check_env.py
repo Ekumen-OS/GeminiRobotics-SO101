@@ -217,13 +217,15 @@ def test_check_real_camera(monkeypatch: pytest.MonkeyPatch) -> None:
     """Camera check should report OK when capture succeeds, FAIL on open or read failure."""
     mock_cap = MagicMock()
     mock_cap.isOpened.return_value = True
+    mock_cap.get.return_value = 0.0
     mock_cap.read.return_value = (True, np.zeros((480, 640, 3), dtype=np.uint8))
-    monkeypatch.setattr("cv2.VideoCapture", lambda idx: mock_cap)
+    monkeypatch.setattr("vision.camera._open_capture", lambda idx, attempts=1: mock_cap)
     monkeypatch.setattr("vision.camera.get_default_camera_index", lambda: 0)
 
     status, msg = check_real_camera()
     assert status == "OK"
     assert "640x480" in msg
+    assert "autofocus=" in msg
     mock_cap.release.assert_called_once()
 
     # Open failure

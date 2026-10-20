@@ -114,11 +114,17 @@ def test_corrector_accumulates_residuals_per_lock(harness: SimPickHarness) -> No
     assert harness.state.target.c_mm == pytest.approx((5.7, 1.0))
 
 
-def test_corrector_rejects_implausible_residual(harness: SimPickHarness) -> None:
+def test_corrector_rejects_implausible_residual(
+    harness: SimPickHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A residual over 30 mm is a mis-detection: perception refusal, no update, no hover record."""
     point = harness.image_point_for(*CUBE_XY)
     with patch_measurements([(IMPLAUSIBLE_RESIDUAL_MM + 5.0, 0.0)]):
         res = _move(harness, point, 3.0)
+    err = capsys.readouterr().err
+    assert "Rejected implausible jaw residual (source=aruco)" in err
+    assert "dx=+35.0 mm, dy=+0.0 mm" in err
+    assert f"threshold={IMPLAUSIBLE_RESIDUAL_MM:.1f} mm" in err
     assert res["error_type"] == "perception"
     assert res["robot_moved"] is True  # the arm did move to the hover position
     assert "Implausible" in res["error"]
@@ -129,6 +135,23 @@ def test_corrector_rejects_implausible_residual(harness: SimPickHarness) -> None
     assert refused["error_type"] == "perception"
     nxt = next_call_from(refused)
     assert nxt is not None and nxt[1] == 3.0
+
+
+def test_corrector_clamps_and_logs_to_stderr(
+    harness: SimPickHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Accumulating a correction beyond MAX_CORRECTION_MM clamps it and logs to stderr."""
+    from agent.tools import MAX_CORRECTION_MM
+
+    point = harness.image_point_for(*CUBE_XY)
+    with patch_measurements([(25.0, 0.0), (25.0, 0.0)]):
+        _move(harness, point, 3.0)
+        _move(harness, point, 3.0)
+    err = capsys.readouterr().err
+    assert "Clamped bias correction (source=aruco)" in err
+    assert "from [dx=+50.0, dy=+0.0] mm to [dx=+40.0, dy=+0.0] mm" in err
+    assert f"threshold={MAX_CORRECTION_MM:.1f} mm" in err
+    assert harness.state.target.c_mm == (MAX_CORRECTION_MM, 0.0)
 
 
 def test_corrector_ignores_fk_measurements(harness: SimPickHarness) -> None:

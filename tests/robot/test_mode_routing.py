@@ -228,7 +228,7 @@ def test_get_ready_calibrator_real_with_no_npz_clears_stale_sim_singleton_and_ra
 
 
 def test_image_point_to_xyz_mode_routing() -> None:
-    """Validate active robot mode context routing and table offsets in image_point_to_xyz."""
+    """Validate active robot mode context routing and table Z height in image_point_to_xyz."""
     from agent.tools import image_point_to_xyz
     from robot.registry import set_active_robot
     from robot.settings import get_settings
@@ -237,12 +237,10 @@ def test_image_point_to_xyz_mode_routing() -> None:
     xyz_sim = image_point_to_xyz(pt, hover_z=0.03, mode="sim")
     xyz_real = image_point_to_xyz(pt, hover_z=0.03, mode="real")
     s = get_settings()
-    table_x = s.get_table_x_mm("real")
-    table_y = s.get_table_y_mm("real")
     table_z = s.get_table_z_mm("real")
-    expected_real = xyz_sim + np.array([table_x / 1000.0, table_y / 1000.0, table_z / 1000.0])
+    expected_real = xyz_sim + np.array([0.0, 0.0, table_z / 1000.0])
     assert 0.12 <= xyz_sim[1] <= 0.17
-    assert 0.12 + (table_y / 1000.0) <= xyz_real[1] <= 0.17 + (table_y / 1000.0)
+    assert 0.12 <= xyz_real[1] <= 0.17
     np.testing.assert_allclose(xyz_real, expected_real, atol=2e-3)
 
     # Dynamic resolution from active robot in simulation

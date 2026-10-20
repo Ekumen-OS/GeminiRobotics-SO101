@@ -196,6 +196,7 @@ class ArucoWorkspaceCalibrator:
         dict_attr = getattr(cv2.aruco, dict_name, cv2.aruco.DICT_4X4_50)
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_attr)
         self.detector_params = cv2.aruco.DetectorParameters()
+        self.detector_params.perspectiveRemovePixelPerCell = 8
 
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_params)
 
@@ -350,6 +351,7 @@ class ArucoWorkspaceCalibrator:
             logger,
             "CAMERA",
             f"centre_mm=[{centre[0]:.0f}, {centre[1]:.0f}, {centre[2]:.0f}] "
+            f"height_mm={centre[2]:.0f} "
             f"hfov={snapshot.hfov_deg:.1f}",
             module="Calibration",
         )
@@ -624,7 +626,9 @@ class ArucoWorkspaceCalibrator:
             # and pixel frame the homography was recorded with. Old files load unchanged.
             settings = get_settings()
             hfov_deg = (
-                float(data["hfov_deg"]) if "hfov_deg" in data else float(settings.camera_hfov_deg)
+                float(data["hfov_deg"])
+                if ("hfov_deg" in data and self.mode == "sim")
+                else float(settings.camera_hfov_deg)
             )
             image_size = (
                 (int(data["image_size"][0]), int(data["image_size"][1]))

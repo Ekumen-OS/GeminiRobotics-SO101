@@ -48,6 +48,26 @@ def test_generate_jaw_tag_stls(tmp_path: Path) -> None:
         tri_count = _verify_binary_stl(path)
         assert tri_count > 0
 
+    # Verify outer tile is 25.0 x 25.0 x 1.5 mm and black inlay is 19.53125 x 19.53125 mm
+    white_bytes = expected_files["white"].read_bytes()
+    (n_white,) = struct.unpack("<I", white_bytes[80:84])
+    white_xs: list[float] = []
+    white_zs: list[float] = []
+    for i in range(n_white):
+        tri = struct.unpack("<12fH", white_bytes[84 + i * 50 : 84 + (i + 1) * 50])
+        white_xs.extend((tri[3], tri[6], tri[9]))
+        white_zs.extend((tri[5], tri[8], tri[11]))
+    assert max(white_xs) - min(white_xs) == 25.0
+    assert abs((max(white_zs) - min(white_zs)) - 1.5) < 1e-5
+
+    black_bytes = expected_files["black"].read_bytes()
+    (n_black,) = struct.unpack("<I", black_bytes[80:84])
+    black_xs: list[float] = []
+    for i in range(n_black):
+        tri = struct.unpack("<12fH", black_bytes[84 + i * 50 : 84 + (i + 1) * 50])
+        black_xs.extend((tri[3], tri[6], tri[9]))
+    assert abs((max(black_xs) - min(black_xs)) - 19.53125) < 1e-5
+
 
 def test_generate_aruco_stl_cli(tmp_path: Path) -> None:
     """Verify CLI entrypoint parses arguments and generates binary STL files."""

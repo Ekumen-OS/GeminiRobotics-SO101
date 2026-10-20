@@ -39,6 +39,30 @@ def _preferred_capture_backend() -> int:
     return cv2.CAP_ANY
 
 
+def _lock_camera_focus(cap: cv2.VideoCapture, index: int) -> None:
+    """Disable autofocus and lock manual focus to ``settings.camera_focus``.
+
+    Args:
+        cap: Opened OpenCV VideoCapture instance.
+        index: Integer camera index for startup telemetry logging.
+    """
+    target_focus = get_settings().camera_focus
+    af_set = bool(cap.set(cv2.CAP_PROP_AUTOFOCUS, 0))
+    focus_set = bool(cap.set(cv2.CAP_PROP_FOCUS, target_focus))
+    af_read = cap.get(cv2.CAP_PROP_AUTOFOCUS)
+    focus_read = cap.get(cv2.CAP_PROP_FOCUS)
+    took = (
+        af_set
+        and focus_set
+        and abs(af_read - 0.0) < 1e-3
+        and abs(focus_read - float(target_focus)) < 1.0
+    )
+    logger.info(
+        f"Camera index {index} focus lock: took={took} "
+        f"(autofocus={af_read:.0f}, focus={focus_read:.0f}, target={target_focus})."
+    )
+
+
 def _open_capture(index: int, attempts: int = _CAPTURE_OPEN_ATTEMPTS) -> cv2.VideoCapture:
     """Open a hardware capture device, retrying briefly while the node is still busy.
 
@@ -57,8 +81,10 @@ def _open_capture(index: int, attempts: int = _CAPTURE_OPEN_ATTEMPTS) -> cv2.Vid
         time.sleep(_CAPTURE_OPEN_RETRY_DELAY_S)
         cap = cv2.VideoCapture(index, backend)
         attempt += 1
-    if cap.isOpened() and attempt > 1:
-        logger.info(f"Camera index {index} opened after {attempt} attempts (device was busy).")
+    if cap.isOpened():
+        if attempt > 1:
+            logger.info(f"Camera index {index} opened after {attempt} attempts (device was busy).")
+        _lock_camera_focus(cap, index)
     return cap
 
 
