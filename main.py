@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from robot.constants import PRESET_POSES
 from robot.errors import HardwareError
+from robot.interface import RobotInterface
 from robot.logger import setup_logging
 from robot.real_robot import RealSO101Robot
 from robot.settings import Settings, get_settings, set_settings
@@ -88,10 +89,9 @@ def _run_once(args: argparse.Namespace) -> None:
 
     # 1. Check for standalone diagnostic / verification tasks first
     if args.task == "check_environment":
-        from simulation.check_env import check_environment
+        from tools.check_env import check_environment
 
-        check_environment()
-        return
+        sys.exit(check_environment(mode=args.mode))
 
     elif args.task == "generate_markers":
         from tools.setup_wizard import setup_workspace_interactive
@@ -109,6 +109,7 @@ def _run_once(args: argparse.Namespace) -> None:
     settings = get_settings()
     port = settings.serial_port
 
+    robot: RobotInterface
     if args.mode == "sim":
         print("Initializing MuJoCo simulation robot arm in headless UI mode...")
         robot = SO101Robot()

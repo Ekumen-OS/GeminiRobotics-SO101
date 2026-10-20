@@ -102,11 +102,13 @@ def test_main_task_generate_markers(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_main_task_check_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Running --task check_environment should dispatch to simulation check_environment."""
-    mock_check = MagicMock()
-    monkeypatch.setattr("simulation.check_env.check_environment", mock_check)
-    monkeypatch.setattr("sys.argv", ["main.py", "--task", "check_environment"])
+    """Running --task check_environment should dispatch to tools check_environment."""
+    mock_check = MagicMock(return_value=0)
+    monkeypatch.setattr("tools.check_env.check_environment", mock_check)
+    monkeypatch.setattr("sys.argv", ["main.py", "--task", "check_environment", "--mode", "sim"])
 
-    main.main()
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
 
-    mock_check.assert_called_once()
+    assert exc_info.value.code == 0
+    mock_check.assert_called_once_with(mode="sim")
