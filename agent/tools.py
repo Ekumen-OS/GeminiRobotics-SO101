@@ -614,39 +614,44 @@ def _update_target_overlay(
 
     Args:
         point: 2D image coordinates [y, x].
-        z_height_cm: Height offset above table.
-        user_label: Optional label provided in args.
+        z_height_cm: Height offset above table (retained for signature compatibility).
+        user_label: Optional label provided in tool arguments.
         matched_obj: Optional matched object from visual refinement.
     """
     try:
         if user_label and str(user_label).strip():
-            badge_name = str(user_label).strip().upper()
+            plain_label = str(user_label).strip().lower()
         elif matched_obj and "color" in matched_obj:
-            badge_name = f"{matched_obj['color'].upper()} CUBE"
+            plain_label = f"{matched_obj['color'].lower()} cube"
         else:
-            badge_name = "TARGET"
+            plain_label = "target"
 
-        active_label = f"[{badge_name}] [{int(point[0])}, {int(point[1])}] (z={z_height_cm:.1f}cm)"
         active_target: dict[str, Any] = {
             "point": (float(point[0]), float(point[1])),
-            "label": active_label,
-            "color": (0, 225, 255),
+            "label": plain_label,
+            "active": True,
         }
         existing = get_model_targets()
         if existing:
-            updated: list[dict[str, Any] | tuple[float, float] | list[float]] = []
+            updated: list[dict[str, Any]] = []
             matched = False
             for tgt in existing:
                 if isinstance(tgt, dict) and "point" in tgt:
                     dy = abs(tgt["point"][0] - point[0])
                     dx = abs(tgt["point"][1] - point[1])
                     if dy < 35 and dx < 35 and not matched:
-                        updated.append(active_target)
+                        tgt_copy = dict(tgt)
+                        tgt_copy["point"] = active_target["point"]
+                        tgt_copy["label"] = active_target["label"]
+                        tgt_copy["active"] = True
+                        updated.append(tgt_copy)
                         matched = True
                     else:
-                        updated.append(tgt)
+                        tgt_copy = dict(tgt)
+                        tgt_copy["active"] = False
+                        updated.append(tgt_copy)
                 else:
-                    updated.append(tgt)
+                    updated.append(dict(tgt) if isinstance(tgt, dict) else tgt)
             if not matched:
                 updated.insert(0, active_target)
             set_model_targets(updated)

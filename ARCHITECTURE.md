@@ -38,7 +38,7 @@ GeminiRobotics-SO101 integrates a 6-DOF robotic arm with Google Gemini Robotics 
 ### Vision Pipeline Decoupling
 To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements a **dual-buffer stream engine**:
 1. **Model Vision Channel (`get_latest_raw_jpeg`)**: Supplies pristine, untouched RGB camera frames directly to the Gemini Live session and OpenCV detectors. It is guaranteed to be free of bounding boxes, text overlays, crosshairs, or UI annotations.
-2. **Operator Display Channel (`/api/stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and model target focus badges for operator inspection. Served as a single long-lived `multipart/x-mixed-replace` MJPEG stream rendered by an `<img>` tag. Browser quality and frame rate are configured via `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
+2. **Operator Display Channel (`/api/stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and minimal model target pointers for operator inspection. Served as a single long-lived `multipart/x-mixed-replace` MJPEG stream rendered by an `<img>` tag. Browser quality and frame rate are configured via `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
 3. **Capture Lifecycle**: In real mode, a single background capture thread (`vision/capture.py:ensure_camera_capture`) produces frames for all consumers. In sim mode, a dedicated worker thread (`vision/sim_runtime.py:ensure_sim_runtime_started`) renders offscreen frames from MuJoCo.
 
 ---
