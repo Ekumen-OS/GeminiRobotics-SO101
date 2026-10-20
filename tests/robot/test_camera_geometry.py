@@ -366,7 +366,7 @@ def test_new_settings_defaults_and_env_parsing(monkeypatch: pytest.MonkeyPatch) 
     assert defaults.camera_hfov_deg == 62.2
     assert defaults.camera_focus == 144
     assert defaults.alignment_tolerance_mm == 4.0
-    assert defaults.gripper_tag_local_offset_mm == (-13.4, 25.5, 78.6)
+    assert defaults.gripper_tag_local_offset_mm == (-25.4, 25.5, 78.6)
 
     monkeypatch.setenv("CAMERA_HFOV_DEG", "62.5")
     monkeypatch.setenv("CAMERA_FOCUS", "120")
@@ -444,5 +444,5 @@ def test_tag_offset_default_matches_model() -> None:
     diff = np.abs(default_offset - derived_offset)
     print(f"Derived tag offset: {derived_offset}, default: {default_offset}, diff: {diff}")
     assert np.all(diff <= 0.5)
-    assert tag_pos_mm == pytest.approx([0.6, 25.5, -24.4], abs=0.1)
+    assert tag_pos_mm == pytest.approx([-11.4, 25.5, -24.4], abs=0.1)
     assert tag_size_mm == pytest.approx([12.5, 12.5, 0.75], abs=0.05)

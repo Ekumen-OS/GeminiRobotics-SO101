@@ -8,14 +8,22 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
+import dotenv
 import numpy as np
 import pytest
 
 from robot.contracts import GripperReading
 from robot.interface import RobotInterface
 from robot.logger import setup_logging
-from robot.settings import Settings, get_settings, set_settings
+from robot.settings import _CONFIG_SPEC, Settings, get_settings, set_settings
 from simulation.sim_calibration import compute_sim_calibration
+
+# Prevent developer's .env from polluting test execution
+dotenv.load_dotenv = lambda *args, **kwargs: False
+
+_CONFIG_ENV_VARS = tuple(env_var for _, env_var, _ in _CONFIG_SPEC)
+for _var in _CONFIG_ENV_VARS:
+    os.environ.pop(_var, None)
 
 setup_logging()
 
@@ -44,6 +52,21 @@ set_settings(_isolated_settings)
 # real-mode code paths find a calibrated file.
 compute_sim_calibration(save_path=_ISOLATED_SIM_PATH)
 compute_sim_calibration(save_path=_ISOLATED_REAL_PATH)
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_environment(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Isolate test session from developer's .env and environment for every _CONFIG_SPEC key."""
+    for env_var in _CONFIG_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+    if "main" in sys.modules:
+        monkeypatch.setattr("main.load_dotenv", lambda *args, **kwargs: False, raising=False)
+    set_settings(_isolated_settings)
+    try:
+        yield
+    finally:
+        set_settings(_isolated_settings)
 
 
 @pytest.fixture

@@ -47,7 +47,7 @@ All runtime settings (serial port, table surface height, camera selection, strea
 Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physical robot base coordinates (mm) using perspective homography:
 
 1. **Measure marker centres & lens height**:
-   Measure the 4 ArUco corner marker centres (`top_left` ID 1, `top_right` ID 2, `bottom_right` ID 3, `bottom_left` ID 0) in the robot base frame (origin $(0, 0)$ at the base rotation axis, $+X$ forward along `HOME`, $+Y$ to the robot's left) and record them in `config/workspace_calibration.json` (or interactively via `--task generate_markers`):
+   Measure the 4 ArUco corner marker centres (`top_left` ID 1, `top_right` ID 2, `bottom_right` ID 3, `bottom_left` ID 0). Corners in `config/workspace_calibration.json` are defined in the robot base frame (origin 38.8 mm behind the shoulder pan rotation axis, $+X$ forward along `HOME`, $+Y$ to the robot's left). The interactive wizard (`--task generate_markers`) asks for tape values measured **from the pan axis** and automatically adds the model-derived +38.8 mm offset to save them in the robot base frame:
    ```bash
    uv run python main.py --task generate_markers
    ```
@@ -66,7 +66,7 @@ Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physica
    - `--dictionary`: OpenCV dictionary (default: `DICT_4X4_50`).
    - `--all-workspace-markers`: Also generates 40 mm table corner tags (IDs 0, 1, 2, 3).
 3. **Jaw tag**:
-   Mount the 25 × 25 × 1.5 mm ID 10 tile (white border included) flush on the camera-facing flat face of the fixed-jaw housing (`80 mm` from the fixed fingertip line along the jaw toward the wrist, `9.5 mm` from the fixed fingertip across the jaw toward the moving jaw). Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-13.4,25.5,78.6` (tag centre minus grasp site in gripper coordinates).
+   Mount the 25 × 25 × 1.5 mm ID 10 tile (white border included) flush on the camera-facing flat face of the fixed-jaw housing (`80 mm` from the fixed fingertip line along the jaw toward the wrist, `9.5 mm` from the fixed fingertip across the jaw toward the moving jaw). Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-25.4,25.5,78.6` (tag centre minus grasp site in gripper coordinates). This value was tuned on the real gripper: the caliper estimate was 12 mm off along the jaw axis.
 4. **Save calibration**:
    In the Web UI, open the **ArUco Workspace Calibration** accordion and click **💾 Save Calibration** once all 4 corner markers are detected.
 5. **Operator 5-point reach check (`--task reach_check`)**:
