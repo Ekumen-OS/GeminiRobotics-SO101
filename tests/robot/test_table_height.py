@@ -12,11 +12,9 @@ from robot.cartesian_ik import CartesianIK
 from robot.constants import PRESET_POSES
 from robot.settings import (
     Settings,
-    robot_to_table_xy_mm,
     robot_z_to_table_height_mm,
     set_settings,
     table_height_to_robot_z_m,
-    table_to_robot_xy_mm,
 )
 from tests.conftest import DummyToolCall, MockRobot
 from vision.gripper_locator import locate_jaw_xy_mm
@@ -117,7 +115,7 @@ def test_locate_jaw_xy_mm_parallax_height(restore_settings: None) -> None:
     mock_snapshot.table_mm_to_pixel.return_value = (320.0, 240.0)
 
     site_m, rot = ik.gripper_frame_pose(q)
-    tag_z_robot = site_m[2] * 1000.0 + (rot @ np.array([-35.4, 11.0, 40.1]))[2]
+    tag_z_robot = site_m[2] * 1000.0 + (rot @ np.array(Settings().gripper_tag_local_offset_mm))[2]
 
     fake_corners = np.array([[10, 10], [20, 10], [20, 20], [10, 20]])
     with patch("vision.gripper_locator.detect_jaw_tag", return_value=fake_corners):
@@ -136,75 +134,6 @@ def test_locate_jaw_xy_mm_parallax_height(restore_settings: None) -> None:
         call_args_sim = mock_snapshot.pixel_to_plane_mm.call_args[0]
         height_passed_sim = call_args_sim[2]
         assert height_passed_sim == pytest.approx(tag_z_robot, abs=1e-4)
-
-
-def test_get_table_xy_mm() -> None:
-    """Verify get_table_x_mm and get_table_y_mm return 0 in sim, and settings values in real."""
-    custom = Settings(table_x_mm=5.0, table_y_mm=-10.0)
-    assert custom.get_table_x_mm("sim") == 0.0
-    assert custom.get_table_y_mm("sim") == 0.0
-    assert custom.get_table_x_mm("real") == 5.0
-    assert custom.get_table_y_mm("real") == -10.0
-
-
-def test_table_xy_helpers_round_trip(restore_settings: None) -> None:
-    """Verify table_to_robot_xy_mm and robot_to_table_xy_mm round trip."""
-    set_settings(Settings.from_env(table_x_mm=15.0, table_y_mm=-25.0, table_z_mm=-30.0))
-
-    for mode in ("real", "sim"):
-        x_table, y_table, z_table = 240.0, 10.0, 30.0
-        rx, ry = table_to_robot_xy_mm(x_table, y_table, mode=mode)
-        recovered_x, recovered_y = robot_to_table_xy_mm(rx, ry, mode=mode)
-        assert recovered_x == pytest.approx(x_table, abs=1e-5)
-        assert recovered_y == pytest.approx(y_table, abs=1e-5)
-
-        rz_m = table_height_to_robot_z_m(z_table / 1000.0, mode=mode)
-        rec_z = robot_z_to_table_height_mm(rz_m * 1000.0, mode=mode)
-        assert rec_z == pytest.approx(z_table, abs=1e-5)
-
-
-@pytest.mark.asyncio
-async def test_spatial_tools_with_table_xy(restore_settings: None) -> None:
-    """Verify spatial tools apply TABLE_X_MM and TABLE_Y_MM in real mode and not in sim."""
-    set_settings(
-        Settings.from_env(
-            table_x_mm=10.0,
-            table_y_mm=-20.0,
-            table_z_mm=-24.0,
-            descent_gate="off",
-        )
-    )
-
-    robot = MockRobot(qpos=PRESET_POSES["HOME"].copy())
-
-    mock_calib = MagicMock()
-    mock_calib.is_calibrated = True
-
-    def dummy_gemini(point, img_shape=(480, 640), z_m=0.03):
-        return np.array([0.22, 0.0, z_m])
-
-    mock_calib.gemini_to_robot_xyz.side_effect = dummy_gemini
-
-    with patch("vision.calibrator.get_calibrator", return_value=mock_calib):
-        call = DummyToolCall(
-            "move_to_spatial_point",
-            {"point": [500.0, 500.0], "z_height_cm": 3.0},
-        )
-        # In real mode: table_x (220mm) + 10mm = 230mm (0.23m)
-        # table_y (0mm) - 20mm = -20mm (-0.02m)
-        # table_z (30mm) - 24mm = 6mm (0.006m)
-        res_real = await execute_tool_call(call, robot=robot, mode="real")
-        assert res_real.get("status") == "success"
-        assert res_real["target_xyz_m"][0] == pytest.approx(0.23, abs=1e-4)
-        assert res_real["target_xyz_m"][1] == pytest.approx(-0.02, abs=1e-4)
-        assert res_real["target_xyz_m"][2] == pytest.approx(0.006, abs=1e-4)
-
-        # In sim mode: offsets are 0.0
-        res_sim = await execute_tool_call(call, robot=robot, mode="sim")
-        assert res_sim.get("status") == "success"
-        assert res_sim["target_xyz_m"][0] == pytest.approx(0.22, abs=1e-4)
-        assert res_sim["target_xyz_m"][1] == pytest.approx(0.00, abs=1e-4)
-        assert res_sim["target_xyz_m"][2] == pytest.approx(0.03, abs=1e-4)
 
 
 @pytest.mark.asyncio

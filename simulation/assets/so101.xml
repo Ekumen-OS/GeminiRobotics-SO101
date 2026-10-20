@@ -111,14 +111,16 @@
                      at x=-7.9 mm, matching the real fixed finger mesh face. -->
                 <geom name="pad_fixed" class="collision" type="box" pos="-0.0094 0 -0.089" size="0.0015 0.007 0.014" friction="1.5 0.05 0.005" solref="0.005 1" solimp="0.95 0.99 0.001" contype="2" conaffinity="0" rgba="0.2 0.8 0.2 0.3" />
                 
-                <!-- ArUco Jaw Tag (ID 10), 25 mm square, mounted flush on the camera-facing (+y) flat side face of the
-                     fixed-jaw housing at the root of the fixed finger (matching the real mount): face at y ≈ 9.0 mm
-                     (range [7.7, 10.1] mm), x in [-30.4, -12.4] mm (width 18.0 mm, 3.5 mm overhang per side),
-                     z in [-74.6, -51.2] mm (height 23.5 mm, 0.8 mm overhang per side), plus 1.5 mm printed tile
-                     thickness and 0.5 mm half-tag thickness → pos=(-21.4, +11.0, -62.9) mm. Detected in 12/12 poses at
-                     640x480 and leaves the cube visible at a 3 cm hover. Tag centre minus grasp site, in the gripper
-                     frame (x = jaw closing direction, y = hinge axis, z = towards the wrist): (-35.4, +11.0, +40.1) mm. -->
-                <geom name="aruco_jaw_tag" type="box" pos="-0.0214 0.011 -0.0629" quat="0.7071068 -0.7071068 0 0" size="0.0125 0.0125 0.0005" material="mat_marker_10" contype="0" conaffinity="0" />
+                <!-- ArUco Jaw Tag (ID 10), 25 mm outer tile (19.53 mm black pattern + 2.73 mm border), mounted flush on
+                     the camera-facing (+y) flat face of the fixed-jaw housing (matching the real mount): fixed fingertip
+                     lowest point at (x=-8.9, z=-104.4) mm + caliper offsets (+9.5 mm across jaw toward moving jaw, +80.0 mm
+                     along jaw toward wrist) → centre at (x=+0.6, z=-24.4) mm; housing face at y = 24.0 mm (x in [-10.7, +13.2] mm,
+                     z in [-28.3, -8.0] mm; tile spans x in [-11.9, +13.1] mm with 1.2 mm -x overhang, z in [-36.9, -11.9] mm with
+                     8.6 mm -z overhang into the finger arch) plus 1.5 mm tile thickness → pos=(+0.6, +25.5, -24.4) mm.
+                     Detected in 12/12 poses at 640x480 and leaves the cube visible at a 3 cm hover. Tag centre minus grasp site
+                     (14.0, 0.0, -103.0) mm in the gripper frame (x = jaw closing direction, y = hinge axis, z = towards the wrist):
+                     (-13.4, +25.5, +78.6) mm. -->
+                <geom name="aruco_jaw_tag" type="box" pos="0.0006 0.0255 -0.0244" quat="0.7071068 -0.7071068 0 0" size="0.0125 0.0125 0.00075" material="mat_marker_10" contype="0" conaffinity="0" />
                 
                 <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.679118 0.679118 -0.196975 0.196975">
                   <joint axis="0 0 1" name="gripper" type="hinge" range="-1.309 1.309" class="sts3215" />

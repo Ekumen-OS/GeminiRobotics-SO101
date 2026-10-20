@@ -245,10 +245,10 @@ def check_real_camera() -> tuple[str, str]:
     """
     import cv2
 
-    from vision.camera import get_default_camera_index
+    from vision.camera import _open_capture, get_default_camera_index
 
     cam_idx = get_default_camera_index()
-    cap = cv2.VideoCapture(cam_idx)
+    cap = _open_capture(cam_idx, attempts=1)
     if not cap.isOpened():
         cap.release()
         return (
@@ -257,6 +257,15 @@ def check_real_camera() -> tuple[str, str]:
             "Fix: Ensure USB camera is connected and accessible.",
         )
     try:
+        from robot.settings import get_settings
+
+        settings = get_settings()
+        cap.set(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc("M", "J", "P", "G"),  # type: ignore[attr-defined]
+        )
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.stream_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.stream_height)
         ret, frame = cap.read()
         if not ret or frame is None:
             return (
@@ -265,7 +274,41 @@ def check_real_camera() -> tuple[str, str]:
                 "Fix: Check device or camera permissions.",
             )
         h, w = frame.shape[:2]
-        return "OK", f"Camera index {cam_idx} opened and returned {w}x{h} frame."
+        from robot.calibration import ArucoWorkspaceCalibrator
+        from vision.gripper_locator import JAW_TAG_ID, detect_jaw_tag
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        corners = detect_jaw_tag(rgb, tag_id=JAW_TAG_ID)
+        offset = settings.gripper_tag_local_offset_mm
+        if corners is not None:
+            cx, cy = corners.mean(axis=0)
+            tag_info = f"jaw tag ID {JAW_TAG_ID} detected at ({cx:.1f}, {cy:.1f}) px"
+        else:
+            tag_info = f"jaw tag ID {JAW_TAG_ID} not in view"
+
+        af_val = cap.get(cv2.CAP_PROP_AUTOFOCUS)
+        focus_val = cap.get(cv2.CAP_PROP_FOCUS)
+        focus_info = f"autofocus={af_val:.0f}, focus={focus_val:.0f}"
+
+        calib = ArucoWorkspaceCalibrator(mode="real")
+        markers = calib.detect_markers(rgb)
+        if len(markers) >= 4:
+            calib.update_homography(markers)
+        snap = calib.geometry_snapshot()
+        if snap is not None and snap.camera is not None:
+            c = snap.camera.centre_mm
+            cam_pose_info = (
+                f"centre_mm=[{c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}] "
+                f"height_mm={c[2]:.0f} hfov={snap.hfov_deg:.1f}"
+            )
+        else:
+            cam_pose_info = f"camera centre unavailable (hfov={settings.camera_hfov_deg:.1f})"
+
+        return (
+            "OK",
+            f"Camera index {cam_idx} opened and returned {w}x{h} frame "
+            f"({focus_info}; {cam_pose_info}; {tag_info}; offset={offset} mm).",
+        )
     finally:
         cap.release()
 

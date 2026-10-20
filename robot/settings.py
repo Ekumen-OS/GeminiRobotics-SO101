@@ -108,38 +108,15 @@ class Settings:
     gripper_settle_s: float = 0.6
     grasp_load_min: float | None = None
     descent_gate: str | None = None
-    gripper_tag_local_offset_mm: tuple[float, float, float] = (-35.4, 11.0, 40.1)
-    camera_hfov_deg: float = 70.0
+    gripper_tag_local_offset_mm: tuple[float, float, float] = (-13.4, 25.5, 78.6)
+    # 62.2° horizontal FOV: Arducam IMX219 3.04 mm lens datasheet spec (Amazon listing states 60°).
+    # Sensor-mode check confirmed 640x480 uses the full sensor width (vertical crop vs 1280x720,
+    # marker horizontal spacing ratio 1.000). With the measured corners, 62.2° recovers camera
+    # height z = 358 mm vs 376 mm at 60.0°, landing closer to the 345 mm tape cross-check.
+    camera_hfov_deg: float = 62.2
+    camera_focus: int = 144
     vision_settle_s: float = 0.3
-    table_x_mm: float = 0.0
-    table_y_mm: float = 0.0
     table_z_mm: float = 0.0
-
-    def get_table_x_mm(self, mode: str = "real") -> float:
-        """Resolve table x coordinate in robot frame (mm).
-
-        Always 0.0 in sim; returns calibrated table_x_mm in real mode.
-
-        Args:
-            mode: Operational mode ('real' or 'sim').
-
-        Returns:
-            Table x coordinate in mm in robot frame.
-        """
-        return 0.0 if mode == "sim" else self.table_x_mm
-
-    def get_table_y_mm(self, mode: str = "real") -> float:
-        """Resolve table y coordinate in robot frame (mm).
-
-        Always 0.0 in sim; returns calibrated table_y_mm in real mode.
-
-        Args:
-            mode: Operational mode ('real' or 'sim').
-
-        Returns:
-            Table y coordinate in mm in robot frame.
-        """
-        return 0.0 if mode == "sim" else self.table_y_mm
 
     def get_table_z_mm(self, mode: str = "real") -> float:
         """Resolve table surface height in robot frame (mm).
@@ -275,9 +252,8 @@ _CONFIG_SPEC: tuple[tuple[str, str, Callable[[str], Any]], ...] = (
     ("descent_gate", "DESCENT_GATE", _parse_descent_gate),
     ("gripper_tag_local_offset_mm", "GRIPPER_TAG_LOCAL_OFFSET_MM", _parse_xyz),
     ("camera_hfov_deg", "CAMERA_HFOV_DEG", float),
+    ("camera_focus", "CAMERA_FOCUS", int),
     ("vision_settle_s", "VISION_SETTLE_S", float),
-    ("table_x_mm", "TABLE_X_MM", float),
-    ("table_y_mm", "TABLE_Y_MM", float),
     ("table_z_mm", "TABLE_Z_MM", float),
 )
 
@@ -305,46 +281,6 @@ def set_settings(settings: Settings) -> None:
     """
     global _current_settings
     _current_settings = settings
-
-
-def table_to_robot_xy_mm(
-    x_table_mm: float, y_table_mm: float, mode: str = "real"
-) -> tuple[float, float]:
-    """Convert table-mat-relative (X, Y) in millimetres to robot-frame (X, Y) in millimetres.
-
-    Args:
-        x_table_mm: Forward coordinate on the table mat in millimetres.
-        y_table_mm: Lateral coordinate on the table mat in millimetres.
-        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
-
-    Returns:
-        Tuple of (x_robot_mm, y_robot_mm) in robot base frame.
-    """
-    settings = get_settings()
-    return (
-        x_table_mm + settings.get_table_x_mm(mode),
-        y_table_mm + settings.get_table_y_mm(mode),
-    )
-
-
-def robot_to_table_xy_mm(
-    x_robot_mm: float, y_robot_mm: float, mode: str = "real"
-) -> tuple[float, float]:
-    """Convert robot-frame (X, Y) in millimetres to table-mat-relative (X, Y) in millimetres.
-
-    Args:
-        x_robot_mm: Forward coordinate in robot base frame in millimetres.
-        y_robot_mm: Lateral coordinate in robot base frame in millimetres.
-        mode: Operational mode ('real' or 'sim'). In sim, offsets are always 0.0.
-
-    Returns:
-        Tuple of (x_table_mm, y_table_mm) in table mat coordinates.
-    """
-    settings = get_settings()
-    return (
-        x_robot_mm - settings.get_table_x_mm(mode),
-        y_robot_mm - settings.get_table_y_mm(mode),
-    )
 
 
 def table_height_to_robot_z_m(height_m: float, mode: str = "real") -> float:

@@ -165,9 +165,9 @@ def test_draw_workspace_overlay_byte_identical_regression() -> None:
 
         assert (
             hashlib.sha256(out_markers.tobytes()).hexdigest()
-            == "305d579ecc3f0eefdb7c9d044205598712eeac5f71d09b58bef38ac8ed7f9455"
+            == "6a0e4e3a283b26ce03331a82ac34e5ee0df04b2f4985209ecc6e857d824304dd"
         )
         assert (
             hashlib.sha256(out_no_markers.tobytes()).hexdigest()
-            == "a551d23998adb99e1fe60e088a36e844e792e8816c9e9f070844e21ffb146507"
+            == "5c2194e948a3fc3d4f1f56ec2b4f78d46904af491bb5425f6a02fe8edaf983d1"
         )

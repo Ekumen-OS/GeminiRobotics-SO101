@@ -1,0 +1,28 @@
+{
+  "aruco_dictionary": "DICT_4X4_50",
+  "marker_ids": {
+    "top_left": 1,
+    "top_right": 2,
+    "bottom_right": 3,
+    "bottom_left": 0
+  },
+  "marker_size_mm": 40.0,
+  "workspace_corners_mm": {
+    "top_left": {
+      "x": 414.0,
+      "y": -240.0
+    },
+    "top_right": {
+      "x": 97.0,
+      "y": -240.0
+    },
+    "bottom_right": {
+      "x": 97.0,
+      "y": 102.0
+    },
+    "bottom_left": {
+      "x": 414.0,
+      "y": 102.0
+    }
+  }
+}
