@@ -2,14 +2,14 @@
 
 ## 1. Context Sources
 
-- **System Architecture & Testing Specification**: All agents working on this codebase MUST consult [ARCHITECTURE.md](ARCHITECTURE.md) as the authoritative single source of truth for system dataflows, subsystem interface contracts (calibration, perception metrics, tool response payloads), feature catalog (F1–F14), and the 4-tier E2E testing methodology.
+- **System Architecture & Testing Specification**: All agents working on this codebase MUST consult [ARCHITECTURE.md](ARCHITECTURE.md) as the authoritative single source of truth for system architecture, dataflows, mathematical foundations (kinematics, camera model, homography), tool execution contracts, and testing methodology.
 - **Layered Dependency Architecture**: The codebase strictly enforces bottom-to-top layered dependency: `robot < simulation < vision < agent < ui`, with operator tooling in `tools/` importing layers below it. No layer may import from a layer above it, and cycle-dodging local imports are strictly prohibited. Enforced locally via `uv run lint-imports` and `pre-commit`.
-- **Package Layout** (see [ARCHITECTURE.md §6](ARCHITECTURE.md#6-repository-layout--file-responsibilities) for file-level detail):
+- **Package Layout**:
   - `robot/`: Hardware driver, Cartesian IK, calibration, camera model, and contracts.
   - `simulation/`: MuJoCo simulation wrappers, synthetic calibration, and physics tests.
   - `vision/`: Camera capture, pristine/annotated frame buffers, target blackboard, and jaw-tag locator.
   - `agent/`: Gemini Live API session, tool execution, pick loop, and VLA controller.
-  - `tools/`: Operator utilities including printable calibration sheets and interactive setup wizard.
+  - `tools/`: Operator utilities including printable calibration sheets, STL generator, and preflight check.
   - `ui/`: Unified FastAPI and Gradio 6.0 web application with 3D Three.js simulation viewer.
   - `tests/`: Automated unit, characterization, and end-to-end verification suites organized by subject.
 
@@ -46,7 +46,7 @@
     - `robot/logger.py`: `emit()` standard logging boundary.
     - `simulation/sim_robot.py`: `__del__` resource cleanup.
     - `vision/sim_runtime.py` and `vision/capture.py`: long-lived worker thread loops (logging with `logger.exception`).
-    - `simulation/check_env.py`: diagnostic environment checks.
+    - `tools/check_env.py`: diagnostic environment checks.
     - `ui/components/chat.py`: stream consumer (must call `controller.interrupt()` before appending error).
   - All other sites must catch specific exception tuples (e.g., `(json.JSONDecodeError, OSError)`, `(KeyError, ValueError)`). Never swallow failures silently with `pass` without honest telemetry.
 
