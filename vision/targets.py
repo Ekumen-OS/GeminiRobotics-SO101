@@ -1,7 +1,7 @@
 """Model-target blackboard and visual overlay renderer."""
 
 import threading
-from typing import Any
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
@@ -22,7 +22,7 @@ _model_target_lock = threading.Lock()
 
 
 def set_model_targets(
-    targets: list[dict[str, Any] | tuple[float, float] | list[float]] | None,
+    targets: Sequence[dict[str, Any] | tuple[float, float] | list[float]] | None,
 ) -> None:
     """Set the active list of 2D/3D model targets/objects from the VLA model.
 
