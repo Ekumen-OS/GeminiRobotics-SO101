@@ -1,22 +1,52 @@
 """Unit and simulation tests for the operator reach_check tool."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from robot.errors import HardwareError
+from robot.settings import get_settings
 from tests.conftest import MockRobot
 from tools.reach_check import build_reach_check_points, run_reach_check
 
 
-def test_build_reach_check_points() -> None:
+def test_build_reach_check_points(tmp_path: Path) -> None:
     """Verify the 5-point list has the 4 marker centres and the mat centre in order."""
-    points = build_reach_check_points()
+    fixture_cfg = {
+        "marker_ids": {"top_left": 1, "top_right": 2, "bottom_right": 3, "bottom_left": 0},
+        "workspace_corners_mm": {
+            "top_left": {"x": 500.0, "y": -200.0},
+            "top_right": {"x": 100.0, "y": -200.0},
+            "bottom_right": {"x": 100.0, "y": 150.0},
+            "bottom_left": {"x": 500.0, "y": 150.0},
+        },
+    }
+    cfg_file = tmp_path / "custom_calibration.json"
+    cfg_file.write_text(json.dumps(fixture_cfg), encoding="utf-8")
+
+    points = build_reach_check_points(config_path=cfg_file)
     assert len(points) == 5
-    assert points[0] == ("top_left (ID 1)", 414.0, -240.0)
-    assert points[1] == ("top_right (ID 2)", 97.0, -240.0)
-    assert points[2] == ("bottom_right (ID 3)", 97.0, 102.0)
-    assert points[3] == ("bottom_left (ID 0)", 414.0, 102.0)
-    assert points[4] == ("mat_centre", 255.5, -69.0)
+    assert points[0] == ("top_left (ID 1)", 500.0, -200.0)
+    assert points[1] == ("top_right (ID 2)", 100.0, -200.0)
+    assert points[2] == ("bottom_right (ID 3)", 100.0, 150.0)
+    assert points[3] == ("bottom_left (ID 0)", 500.0, 150.0)
+    assert points[4] == ("mat_centre", 300.0, -25.0)
+
+    # Calling without arguments reads the active settings config dynamically without literals
+    active_points = build_reach_check_points()
+    assert len(active_points) == 5
+    active_cfg = json.loads(get_settings().calibration_config_path.read_text(encoding="utf-8"))
+    active_corners = active_cfg["workspace_corners_mm"]
+    assert active_points[0][1] == active_corners["top_left"]["x"]
+    assert active_points[0][2] == active_corners["top_left"]["y"]
+    assert active_points[1][1] == active_corners["top_right"]["x"]
+    assert active_points[1][2] == active_corners["top_right"]["y"]
+    assert active_points[2][1] == active_corners["bottom_right"]["x"]
+    assert active_points[2][2] == active_corners["bottom_right"]["y"]
+    assert active_points[3][1] == active_corners["bottom_left"]["x"]
+    assert active_points[3][2] == active_corners["bottom_left"]["y"]
 
 
 def test_run_reach_check_sim_end_to_end(capsys: pytest.CaptureFixture[str]) -> None:
