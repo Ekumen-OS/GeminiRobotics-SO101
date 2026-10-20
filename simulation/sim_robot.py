@@ -465,12 +465,14 @@ class SO101Robot(RobotInterface):
                     self._renderer = mujoco.Renderer(self.model, height=height, width=width)
                     self._renderer_size = target_size
 
+                assert self._renderer is not None
                 if cam_to_use is not None:
                     self._renderer.update_scene(self.data, camera=cam_to_use)
                 else:
                     self._renderer.update_scene(self.data)
 
             try:
+                assert self._renderer is not None
                 frame = self._renderer.render()
             except Exception as err:
                 raise RuntimeError(f"MuJoCo offscreen render failed: {err}") from err
