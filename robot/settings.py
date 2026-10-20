@@ -108,7 +108,7 @@ class Settings:
     gripper_settle_s: float = 0.6
     grasp_load_min: float | None = None
     descent_gate: str | None = None
-    gripper_tag_local_offset_mm: tuple[float, float, float] = (-13.4, 25.5, 78.6)
+    gripper_tag_local_offset_mm: tuple[float, float, float] = (-25.4, 25.5, 78.6)
     # 62.2° horizontal FOV: Arducam IMX219 3.04 mm lens datasheet spec (Amazon listing states 60°).
     # Sensor-mode check confirmed 640x480 uses the full sensor width (vertical crop vs 1280x720,
     # marker horizontal spacing ratio 1.000). With the measured corners, 62.2° recovers camera
