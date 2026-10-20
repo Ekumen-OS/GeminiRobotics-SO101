@@ -66,9 +66,8 @@ _FIELDS_SPEC = [
         "invalid,tuple",
     ),
     ("camera_hfov_deg", "CAMERA_HFOV_DEG", "65.0", 65.0, "not_a_float"),
+    ("camera_focus", "CAMERA_FOCUS", "160", 160, "not_an_int"),
     ("vision_settle_s", "VISION_SETTLE_S", "0.05", 0.05, "not_a_float"),
-    ("table_x_mm", "TABLE_X_MM", "15.0", 15.0, "not_a_float"),
-    ("table_y_mm", "TABLE_Y_MM", "-25.0", -25.0, "not_a_float"),
     ("table_z_mm", "TABLE_Z_MM", "-30.0", -30.0, "not_a_float"),
 ]
 
@@ -117,22 +116,17 @@ def test_settings_env_var_resolution(
 def test_settings_override_beats_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify explicit overrides win over environment variables."""
     monkeypatch.setenv("SERVER_PORT", "9999")
-    monkeypatch.setenv("TABLE_X_MM", "50.0")
+    monkeypatch.setenv("TABLE_Z_MM", "-50.0")
 
-    s = Settings.from_env(server_port=8888, table_x_mm=10.0)
+    s = Settings.from_env(server_port=8888, table_z_mm=-10.0)
     assert s.server_port == 8888
-    assert s.table_x_mm == 10.0
+    assert s.table_z_mm == -10.0
 
 
-def test_settings_sim_mode_zeros_table_offsets() -> None:
-    """Verify getters return 0.0 in sim mode and the configured values in real mode."""
-    s = Settings(table_x_mm=12.0, table_y_mm=-34.0, table_z_mm=-24.0)
-    assert s.get_table_x_mm("sim") == 0.0
-    assert s.get_table_y_mm("sim") == 0.0
+def test_settings_sim_mode_zeros_table_z_offset() -> None:
+    """Verify get_table_z_mm returns 0.0 in sim mode and the configured value in real mode."""
+    s = Settings(table_z_mm=-24.0)
     assert s.get_table_z_mm("sim") == 0.0
-
-    assert s.get_table_x_mm("real") == 12.0
-    assert s.get_table_y_mm("real") == -34.0
     assert s.get_table_z_mm("real") == -24.0
 
 

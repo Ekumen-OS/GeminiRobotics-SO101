@@ -47,10 +47,10 @@ def setup_workspace_interactive(
     out_path = Path(output_dir)
 
     corners = cfg.get("workspace_corners_mm", {})
-    cur_x_max = float(corners.get("top_left", {}).get("x", 380))
-    cur_x_min = float(corners.get("bottom_left", {}).get("x", 120))
-    cur_y_max = float(corners.get("top_left", {}).get("y", 280))
-    cur_y_min = float(corners.get("top_right", {}).get("y", -200))
+    cur_tl = corners.get("top_left", {"x": 414.0, "y": -240.0})
+    cur_tr = corners.get("top_right", {"x": 97.0, "y": -240.0})
+    cur_br = corners.get("bottom_right", {"x": 97.0, "y": 102.0})
+    cur_bl = corners.get("bottom_left", {"x": 414.0, "y": 102.0})
     cur_marker_size = float(cfg.get("marker_size_mm", 40))
 
     # Check for existing markers in output directory
@@ -118,29 +118,76 @@ def setup_workspace_interactive(
     else:
         print("\n📦 NEW MARKER GENERATION — Configuring dimensions and generating files...\n")
 
-    # 2. Forward range (X)
-    print("1. Forward Depth Range (Robot X axis — distance from base in mm):")
-    x_max = kwargs.get("x_max", _prompt("Far edge distance (X Max mm)", cur_x_max))
-    x_min = kwargs.get("x_min", _prompt("Near edge distance (X Min mm)", cur_x_min))
+    print(
+        "Measure the 4 marker centres in the robot base frame (mm): "
+        "origin (0, 0) at the base rotation axis, +X forward along HOME, +Y to the robot's left."
+    )
+    print(
+        "  Axis diagram:  [Base (0,0)] ───► +X (Forward along HOME)   |   "
+        "▲ +Y (Robot Left) / ▼ -Y (Robot Right)\n"
+    )
 
-    # 3. Lateral range (Y)
-    print("\n2. Lateral Width Range (Robot Y axis — left is positive, right is negative in mm):")
-    y_max = kwargs.get("y_max", _prompt("Left edge distance (Y Max mm)", cur_y_max))
-    y_min = kwargs.get("y_min", _prompt("Right edge distance (Y Min mm)", cur_y_min))
+    def _parse_xy_pair(raw: str, default_xy: tuple[float, float]) -> tuple[float, float]:
+        parts = [float(p.strip()) for p in raw.split(",") if p.strip()]
+        if len(parts) != 2:
+            raise ValueError("Expected 'x, y'")
+        return (parts[0], parts[1])
 
-    # 4. Marker dimensions
-    print("\n3. ArUco Marker Parameters:")
+    def _prompt_xy(label: str, default_xy: tuple[float, float]) -> tuple[float, float]:
+        if not interactive or not sys.stdin.isatty():
+            return default_xy
+        default_str = f"{default_xy[0]:g}, {default_xy[1]:g}"
+        try:
+            val = input(f"  ➜ {label} (x, y mm from base axis) [default: {default_str}]: ").strip()
+            if not val:
+                return default_xy
+            return _parse_xy_pair(val, default_xy)
+        except (EOFError, KeyboardInterrupt, ValueError):
+            return default_xy
+
+    tl_default = (float(cur_tl.get("x", 414.0)), float(cur_tl.get("y", -240.0)))
+    tr_default = (float(cur_tr.get("x", 97.0)), float(cur_tr.get("y", -240.0)))
+    br_default = (float(cur_br.get("x", 97.0)), float(cur_br.get("y", 102.0)))
+    bl_default = (float(cur_bl.get("x", 414.0)), float(cur_bl.get("y", 102.0)))
+
+    print("1. Marker Centres from Robot Base Axis (x, y in mm):")
+    tl_xy = _prompt_xy("top_left (ID 1)", tl_default)
+    tr_xy = _prompt_xy("top_right (ID 2)", tr_default)
+    br_xy = _prompt_xy("bottom_right (ID 3)", br_default)
+    bl_xy = _prompt_xy("bottom_left (ID 0)", bl_default)
+
+    # 2. Marker dimensions
+    print("\n2. ArUco Marker Parameters:")
     marker_size = kwargs.get("marker_size", _prompt("Marker size (mm)", cur_marker_size))
 
-    has_corner_overrides = any(k in kwargs for k in ("x_max", "x_min", "y_max", "y_min")) or (
-        interactive and sys.stdin.isatty()
+    has_bbox_overrides = any(k in kwargs for k in ("x_max", "x_min", "y_max", "y_min"))
+    has_direct_corner_overrides = any(
+        k in kwargs for k in ("top_left", "top_right", "bottom_right", "bottom_left")
     )
-    if has_corner_overrides or not corners:
+    if has_direct_corner_overrides:
+        workspace_corners = {
+            "top_left": kwargs.get("top_left", {"x": tl_xy[0], "y": tl_xy[1]}),
+            "top_right": kwargs.get("top_right", {"x": tr_xy[0], "y": tr_xy[1]}),
+            "bottom_right": kwargs.get("bottom_right", {"x": br_xy[0], "y": br_xy[1]}),
+            "bottom_left": kwargs.get("bottom_left", {"x": bl_xy[0], "y": bl_xy[1]}),
+        }
+    elif has_bbox_overrides:
+        x_max = kwargs.get("x_max", max(tl_xy[0], bl_xy[0]))
+        x_min = kwargs.get("x_min", min(tr_xy[0], br_xy[0]))
+        y_max = kwargs.get("y_max", max(tl_xy[1], bl_xy[1]))
+        y_min = kwargs.get("y_min", min(tr_xy[1], br_xy[1]))
         workspace_corners = {
             "top_left": {"x": x_max, "y": y_max},
             "top_right": {"x": x_max, "y": y_min},
             "bottom_right": {"x": x_min, "y": y_min},
             "bottom_left": {"x": x_min, "y": y_max},
+        }
+    elif (interactive and sys.stdin.isatty()) or not corners:
+        workspace_corners = {
+            "top_left": {"x": tl_xy[0], "y": tl_xy[1]},
+            "top_right": {"x": tr_xy[0], "y": tr_xy[1]},
+            "bottom_right": {"x": br_xy[0], "y": br_xy[1]},
+            "bottom_left": {"x": bl_xy[0], "y": bl_xy[1]},
         }
     else:
         workspace_corners = corners

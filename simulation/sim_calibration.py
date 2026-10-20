@@ -208,7 +208,9 @@ def init_sim_workspace_calibration(
     )
 
     if calibrator is None:
-        calibrator = ArucoWorkspaceCalibrator(config_path=config_path)
+        calibrator = ArucoWorkspaceCalibrator(
+            config_path=config_path, save_path=target_save_path, mode="sim"
+        )
 
     loaded = np.load(target_save_path)
     calibrator.set_geometry(

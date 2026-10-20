@@ -309,11 +309,17 @@ def write_binary_stl(
     return out_path
 
 
+JAW_TAG_TOTAL_SIDE_MM: float = 25.0
+JAW_TAG_MARKER_SIZE_MM: float = 19.53125  # 25.0 * (25.0 / 32.0) -> 78.125% active black square
+JAW_TAG_MARGIN_MM: float = 2.734375  # 25.0 * (3.5 / 32.0) -> 25.0 mm outer tile with border
+JAW_TAG_THICKNESS_MM: float = 1.5
+
+
 def generate_aruco_stl(
     marker_id: int = 10,
-    marker_size_mm: float = 25.0,
-    margin_mm: float = 3.5,
-    thickness_mm: float = 2.0,
+    marker_size_mm: float = JAW_TAG_MARKER_SIZE_MM,
+    margin_mm: float = JAW_TAG_MARGIN_MM,
+    thickness_mm: float = JAW_TAG_THICKNESS_MM,
     groove_depth_mm: float = 0.6,
     dictionary_name: str = "DICT_4X4_50",
     output_dir: str | Path = "assets/aruco_markers",
@@ -332,14 +338,16 @@ def generate_aruco_stl(
 
     Args:
         marker_id: ArUco marker ID (default 10 for the SO-101 gripper jaw tag).
-        marker_size_mm: Side length of the black ArUco square in mm (excluding quiet-zone margin).
-        margin_mm: Width of the surrounding white quiet-zone border on each side in mm.
-        thickness_mm: Total Z thickness of the marker tile in mm.
+        marker_size_mm: Side length of the black ArUco square in mm (excluding quiet-zone margin;
+            default 19.53125 mm for a 25.0 mm outer jaw tile).
+        margin_mm: Width of the surrounding white quiet-zone border on each side in mm
+            (default 2.734375 mm -> 25.0 mm total outer tile side).
+        thickness_mm: Total Z thickness of the marker tile in mm (default 1.5 mm).
         groove_depth_mm: Depth of the black groove / multicolor inlay in mm.
         dictionary_name: OpenCV ArUco dictionary name (default `DICT_4X4_50`).
         output_dir: Directory where generated STL files are written.
-        name_prefix: Optional filename prefix (defaults to `aruco_jaw_id_10` for ID 10 at 25mm,
-            or `aruco_id_<marker_id>`).
+        name_prefix: Optional filename prefix (defaults to `aruco_jaw_id_10_25mm` for ID 10 at
+            25 mm outer tile, or `aruco_id_<marker_id>_<size>mm`).
         include_multicolor_parts: Whether to also export `_white.stl` and `_black.stl` AMS parts.
 
     Returns:
@@ -365,6 +373,7 @@ def generate_aruco_stl(
     cell_mm = marker_size_mm / float(n_cells)
     half_marker = marker_size_mm / 2.0
     half_total = half_marker + margin_mm
+    total_side_mm = marker_size_mm + 2.0 * margin_mm
 
     # Build rectilinear grid coordinates centered at (0, 0) in XY, Z in [0, thickness_mm].
     inner_coords = [-half_marker + i * cell_mm for i in range(n_cells + 1)]
@@ -389,8 +398,11 @@ def generate_aruco_stl(
     tris_grooved = _heightmap_to_triangles(coords, coords, z_top_grooved, z_bottom=0.0)
 
     if name_prefix is None:
-        if marker_id == 10 and abs(marker_size_mm - 25.0) < 1e-3:
-            name_prefix = f"aruco_jaw_id_{marker_id}_{marker_size_mm:g}mm"
+        if marker_id == 10 and (
+            abs(total_side_mm - JAW_TAG_TOTAL_SIDE_MM) < 1e-2
+            or abs(marker_size_mm - JAW_TAG_TOTAL_SIDE_MM) < 1e-2
+        ):
+            name_prefix = f"aruco_jaw_id_{marker_id}_25mm"
         else:
             name_prefix = f"aruco_id_{marker_id}_{marker_size_mm:g}mm"
 
@@ -399,7 +411,8 @@ def generate_aruco_stl(
 
     header = (
         f"ArUco {dictionary_name} ID {marker_id} "
-        f"({marker_size_mm:g}mm + {margin_mm:g}mm margin, {thickness_mm:g}mm thick)"
+        f"({total_side_mm:g}mm tile: {marker_size_mm:.2f}mm + {margin_mm:.2f}mm margin, "
+        f"{thickness_mm:g}mm thick)"
     )
 
     grooved_file = write_binary_stl(
@@ -435,29 +448,31 @@ def generate_aruco_stl(
 def generate_jaw_tag_stls(
     output_dir: str | Path = "assets/aruco_markers",
     marker_id: int = 10,
-    tag_size_mm: float = 25.0,
-    margin_mm: float = 3.5,
-    thickness_mm: float = 2.0,
+    tag_size_mm: float = JAW_TAG_TOTAL_SIDE_MM,
+    margin_mm: float = JAW_TAG_MARGIN_MM,
+    thickness_mm: float = JAW_TAG_THICKNESS_MM,
     groove_depth_mm: float = 0.6,
     dictionary_name: str = "DICT_4X4_50",
 ) -> dict[str, Path]:
-    """Generate the 3D-printable STL set for the SO-101 gripper jaw ArUco tag (ID 10, 25 mm).
+    """Generate the 3D-printable STL set for the SO-101 gripper jaw ArUco tag (ID 10, 25 mm tile).
 
     Args:
         output_dir: Directory where STL files will be saved.
         marker_id: ArUco ID for the jaw tag (default 10).
-        tag_size_mm: Active black ArUco square side length in mm (default 25.0 mm).
-        margin_mm: White quiet-zone border width on each side in mm (default 3.5 mm -> 32 mm tile).
-        thickness_mm: Total tile thickness in mm (default 2.0 mm).
+        tag_size_mm: Total outer tile side length in mm, white border included (default 25.0 mm).
+        margin_mm: White quiet-zone border width on each side in mm (default 2.734375 mm ->
+            19.53125 mm active black ArUco square inside the 25.0 mm tile).
+        thickness_mm: Total tile thickness in mm (default 1.5 mm).
         groove_depth_mm: Black groove / inlay depth in mm (default 0.6 mm = 3 layers at 0.2 mm).
         dictionary_name: OpenCV ArUco dictionary name (default `DICT_4X4_50`).
 
     Returns:
         Dictionary mapping `"grooved"`, `"white"`, and `"black"` to the generated STL paths.
     """
+    marker_size_mm = tag_size_mm - 2.0 * margin_mm
     return generate_aruco_stl(
         marker_id=marker_id,
-        marker_size_mm=tag_size_mm,
+        marker_size_mm=marker_size_mm,
         margin_mm=margin_mm,
         thickness_mm=thickness_mm,
         groove_depth_mm=groove_depth_mm,
@@ -484,14 +499,20 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--marker-size",
         type=float,
-        default=25.0,
-        help="Active black ArUco square side length in mm (default: 25.0).",
+        default=JAW_TAG_MARKER_SIZE_MM,
+        help=(
+            "Active black ArUco square side length in mm "
+            f"(default: {JAW_TAG_MARKER_SIZE_MM:g} for a 25 mm total tile)."
+        ),
     )
     parser.add_argument(
         "--margin",
         type=float,
-        default=3.5,
-        help="White quiet-zone margin width per side in mm (default: 3.5 -> 32.0 mm total side).",
+        default=JAW_TAG_MARGIN_MM,
+        help=(
+            "White quiet-zone margin width per side in mm "
+            f"(default: {JAW_TAG_MARGIN_MM:g} -> 25.0 mm total side)."
+        ),
     )
     parser.add_argument(
         "--box-side",
@@ -506,8 +527,8 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--thickness",
         type=float,
-        default=2.0,
-        help="Total tile thickness in mm (default: 2.0).",
+        default=JAW_TAG_THICKNESS_MM,
+        help=f"Total tile thickness in mm (default: {JAW_TAG_THICKNESS_MM:g}).",
     )
     parser.add_argument(
         "--groove-depth",

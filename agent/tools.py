@@ -47,10 +47,8 @@ from robot.perception import compute_alignment_mm
 from robot.registry import get_active_robot, set_active_robot
 from robot.settings import (
     get_settings,
-    robot_to_table_xy_mm,
     robot_z_to_table_height_mm,
     table_height_to_robot_z_m,
-    table_to_robot_xy_mm,
 )
 from vision import calibrator as _calibrator_mod
 from vision.calibrator import get_ready_calibrator
@@ -187,9 +185,7 @@ def image_point_to_xyz(
     calib = get_ready_calibrator(active_mode)
     robot_z = table_height_to_robot_z_m(hover_z, active_mode)
 
-    table_xyz = calib.gemini_to_robot_xyz(point, img_shape=img_shape, z_m=robot_z)
-    robot_xy = table_to_robot_xy_mm(table_xyz[0] * 1000.0, table_xyz[1] * 1000.0, mode=active_mode)
-    return np.array([robot_xy[0] / 1000.0, robot_xy[1] / 1000.0, robot_z], dtype=np.float64)
+    return calib.gemini_to_robot_xyz(point, img_shape=img_shape, z_m=robot_z)
 
 
 def validate_and_clamp_joints(qpos_deg: list[float]) -> tuple[list[float], list[str]]:
@@ -771,14 +767,9 @@ def _table_xy_mm(
     calib: Any, point_1000: list[float], mode: str | None = None
 ) -> tuple[float, float]:
     """Map a normalised image point to robot-frame table XY (mm) through the homography."""
-    if mode is None:
-        if getattr(calib, "mode", None) == "sim":
-            mode = "sim"
-        else:
-            mode = resolve_robot_mode(get_active_robot())
     px, py = calib.gemini_to_pixel(point_1000)
     xy = calib.pixel_to_robot_mm(px, py)
-    return table_to_robot_xy_mm(float(xy[0]), float(xy[1]), mode=mode)
+    return (float(xy[0]), float(xy[1]))
 
 
 def _project_site_to_image_str(calib: Any, table_xy_mm: tuple[float, float]) -> str:
@@ -935,12 +926,9 @@ def _detect_footprint(
         raise PerceptionUnavailable(f"Visual refinement failed: {e}", robot_moved=False) from e
     if obj is None or "centre_xy_mm" not in obj:
         return None
-    centre_robot_xy = table_to_robot_xy_mm(
-        float(obj["centre_xy_mm"][0]), float(obj["centre_xy_mm"][1]), mode=mode
-    )
     return {
         "color": obj["color"],
-        "centre_xy_mm": (float(centre_robot_xy[0]), float(centre_robot_xy[1])),
+        "centre_xy_mm": (float(obj["centre_xy_mm"][0]), float(obj["centre_xy_mm"][1])),
         "centre_1000": obj["centre_1000"],
         "bbox_px": obj["bbox_px"],
         "width_mm": obj.get("width_mm"),
@@ -1136,12 +1124,22 @@ def _handle_move_to_spatial_point(
 MAX_CORRECTION_MM = 40.0
 
 
-def _clamp_correction(c_mm: tuple[float, float]) -> tuple[float, float]:
+def _clamp_correction(c_mm: tuple[float, float], source: str = "aruco") -> tuple[float, float]:
     """Clamp a per-lock bias correction to +-MAX_CORRECTION_MM per axis."""
-    return (
+    clamped = (
         max(-MAX_CORRECTION_MM, min(MAX_CORRECTION_MM, c_mm[0])),
         max(-MAX_CORRECTION_MM, min(MAX_CORRECTION_MM, c_mm[1])),
     )
+    if clamped != c_mm:
+        log_with_tag(
+            logger,
+            "WARN",
+            f"Clamped bias correction (source={source}) from "
+            f"[dx={c_mm[0]:+.1f}, dy={c_mm[1]:+.1f}] mm to "
+            f"[dx={clamped[0]:+.1f}, dy={clamped[1]:+.1f}] mm "
+            f"(threshold={MAX_CORRECTION_MM:.1f} mm)",
+        )
+    return clamped
 
 
 def _approach_move(
@@ -1208,7 +1206,7 @@ def _approach_move(
     actual_site_m = _site_xyz(robot)
     actual_site_mm = actual_site_m * 1000.0
     actual_table_z_mm = robot_z_to_table_height_mm(actual_site_mm[2], mode=mode)
-    actual_table_xy_mm = robot_to_table_xy_mm(actual_site_mm[0], actual_site_mm[1], mode=mode)
+    actual_table_xy_mm = (float(actual_site_mm[0]), float(actual_site_mm[1]))
     dx_mm = actual_site_mm[0] - (target_xyz[0] * 1000.0)
     dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
     dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)
@@ -1262,13 +1260,11 @@ def _approach_move(
                     frame_rgb = _decode_frame(raw_jpeg, "jaw verification", robot_moved=True)
                     jaw = _locate_jaw(ctx, active_calib, frame_rgb, mode)
                     if jaw is not None and jaw.source == "aruco" and jaw.xy_mm is not None:
-                        jaw_table_xy = robot_to_table_xy_mm(jaw.xy_mm[0], jaw.xy_mm[1], mode=mode)
                         log_with_tag(
                             logger,
                             "PERCEPTION",
                             f"Jaw tag ID 10 detected: robot XY [{jaw.xy_mm[0]:.1f}, "
-                            f"{jaw.xy_mm[1]:.1f}]mm (table XY [{jaw_table_xy[0]:.1f}, "
-                            f"{jaw_table_xy[1]:.1f}]mm)",
+                            f"{jaw.xy_mm[1]:.1f}]mm",
                         )
                     else:
                         log_with_tag(
@@ -1309,7 +1305,8 @@ def _approach_move(
         elif lock is not None and perception is not None and jaw is not None and not implausible:
             if learn and residual is not None:
                 lock.c_mm = _clamp_correction(
-                    (lock.c_mm[0] + residual[0], lock.c_mm[1] + residual[1])
+                    (lock.c_mm[0] + residual[0], lock.c_mm[1] + residual[1]),
+                    source=jaw.source,
                 )
             s.last_motion = "hover"
             s.last_hover = HoverRecord(
@@ -1331,6 +1328,15 @@ def _approach_move(
     state.commit(epoch, commit_motion)
 
     if implausible and offset is not None:
+        jaw_src = jaw.source if jaw is not None else "none"
+        log_with_tag(
+            logger,
+            "WARN",
+            f"Rejected implausible jaw residual (source={jaw_src}): "
+            f"dx={offset['dx_mm']:+.1f} mm, dy={offset['dy_mm']:+.1f} mm "
+            f"(distance={offset['distance_mm']:.1f} mm > "
+            f"threshold={IMPLAUSIBLE_RESIDUAL_MM:.1f} mm)",
+        )
         text = (
             f"Implausible alignment measurement ({offset['distance_mm']:.0f} mm between the jaw "
             f"tag and the target, more than {IMPLAUSIBLE_RESIDUAL_MM:.0f} mm): not trusted, the "
@@ -1543,7 +1549,7 @@ def _transport_move(
     actual_site_m = _site_xyz(robot)
     actual_site_mm = actual_site_m * 1000.0
     actual_table_z_mm = robot_z_to_table_height_mm(actual_site_mm[2], mode=mode)
-    actual_table_xy_mm = robot_to_table_xy_mm(actual_site_mm[0], actual_site_mm[1], mode=mode)
+    actual_table_xy_mm = (float(actual_site_mm[0]), float(actual_site_mm[1]))
     dx_mm = actual_site_mm[0] - (target_xyz[0] * 1000.0)
     dy_mm = actual_site_mm[1] - (target_xyz[1] * 1000.0)
     dz_mm = actual_site_mm[2] - (target_xyz[2] * 1000.0)

@@ -101,34 +101,32 @@ Gemini interacts with the robot via 6 primitives defined in `agent/tools.py`:
 ## 5. Geometry & Kinematics
 
 ### Coordinate Frame Conventions
-The system coordinates motions across five distinct reference frames:
+The system coordinates motions across four distinct reference frames:
 - **Normalized Model Frame** $[y, x] \in [0, 1000]$: Normalized vision coordinates emitted by Gemini ($y$ down, $x$ right).
 - **Pixel Frame** $(u, v)$: Raw camera sensor pixels ($u = x \cdot W / 1000, v = y \cdot H / 1000$).
-- **Table Workspace Frame** $(X_{\text{table}}, Y_{\text{table}}, Z_{\text{table}})$: Metric plane in mm defined by the 4 ArUco corner tags, with $+Z$ pointing upward normal to the tabletop.
-- **Robot Base Frame** $(X_{\text{base}}, Y_{\text{base}}, Z_{\text{base}})$: Metric Cartesian space in mm centered at the robot base pivot, where $+X$ points forward toward the workspace, $+Y$ points left, and $+Z$ points upward. Related to table coordinates via planar offsets:
-  $$X_{\text{base}} = X_{\text{table}} + \text{TABLE\_X\_MM}, \quad Y_{\text{base}} = Y_{\text{table}} + \text{TABLE\_Y\_MM}, \quad Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$$
-- **Gripper Tool Frame**: Attached to the end-effector grasp center, offset from the fixed-jaw tag by $\mathbf{d}_{\text{tag}} = (-35.4, 11.0, 40.1)$ mm (`GRIPPER_TAG_LOCAL_OFFSET_MM`).
+- **Robot Base & Table Plane Frame** $(X_{\text{base}}, Y_{\text{base}}, Z_{\text{base}})$: Metric Cartesian space in mm centered at the robot base rotation axis, where $+X$ points forward along HOME toward the workspace, $+Y$ points to the robot's left, and $+Z$ points upward. The 4 ArUco corner marker centres in `config/workspace_calibration.json` (`workspace_corners_mm`) are measured directly in this robot base XY frame. Heights above the tabletop $Z_{\text{table}}$ relate to robot base height via:
+  $$Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$$
+- **Gripper Tool Frame**: Attached to the end-effector grasp center, offset from the fixed-jaw tag by $\mathbf{d}_{\text{tag}}$ (`GRIPPER_TAG_LOCAL_OFFSET_MM` in `robot/settings.py`).
 
 ### Workspace Homography Calibration (`robot/calibration.py`)
-Physical workspace grounding maps normalized image coordinates $[y, x] \in [0, 1000]$ to table millimetres via a $3 \times 3$ projective homography matrix $H$:
+Physical workspace grounding maps normalized image coordinates $[y, x] \in [0, 1000]$ directly to robot-base table-plane millimetres via a $3 \times 3$ projective homography matrix $H$:
 
 $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
 
-- **Real Mode**: $H$ is computed from the 4 physical ArUco corner markers (`DICT_4X4_50`, canonical IDs: Top-Left 1, Top-Right 2, Bottom-Right 3, Bottom-Left 0) and saved to `config/workspace_homography.npz`.
-- **Simulation Mode**: Computed analytically from the virtual camera (`workspace_cam`, $fovy=54^\circ$) via `simulation/sim_calibration.py` and saved to `config/workspace_homography_sim.npz`.
+- **Real Mode**: $H$ is computed from the 4 physical ArUco corner markers (`DICT_4X4_50`, canonical IDs: Top-Left 1, Top-Right 2, Bottom-Right 3, Bottom-Left 0) whose centres in `config/workspace_calibration.json` are measured from the robot base rotation axis, and saved to `config/workspace_homography.npz`.
+- **Simulation Mode**: Uses the same `workspace_corners_mm` from `config/workspace_calibration.json`, computed analytically from the virtual camera (`workspace_cam`, $fovy=45^\circ$, $hfov \approx 57.8^\circ$) via `simulation/sim_calibration.py` and saved to `config/workspace_homography_sim.npz`.
 
 ### Camera Model & Parallax-Free Jaw Locator (`robot/camera_model.py`, `vision/gripper_locator.py`)
-The camera's 3D optical centre $C = [C_x, C_y, C_z]$ in table coordinates is reconstructed analytically from the homography and the nominal horizontal field of view `CAMERA_HFOV_DEG` (`PinholeCamera.from_homography`).
+The camera's 3D optical centre $C = [C_x, C_y, C_z]$ in robot-base table coordinates is reconstructed analytically from the homography and the nominal horizontal field of view `CAMERA_HFOV_DEG` (default `62.2°` for the Arducam IMX219 3.04 mm lens at full sensor width; `PinholeCamera.from_homography`). Hardware autofocus is locked (`CAP_PROP_AUTOFOCUS=0`, `CAP_PROP_FOCUS=CAMERA_FOCUS`) on capture open so focal length remains constant.
 When the gripper hovers at height $h$ above the table, perspective parallax shifts the apparent image position of the jaw ArUco tag (ID 10, 25 mm). The locator corrects parallax in the table plane:
 
 $$xy_{\text{table}} = C_{xy} + (H(u, v) - C_{xy}) \frac{C_z - h}{C_z}$$
 
-The tag-to-grasp-site offset (`GRIPPER_TAG_LOCAL_OFFSET_MM`, default `(-35.4, 11.0, 40.1)`) rotated by the forward kinematics orientation is then subtracted to yield the true physical grasp-site position in robot millimetres.
+The tag-to-grasp-site offset (`GRIPPER_TAG_LOCAL_OFFSET_MM`) rotated by the forward kinematics orientation is then subtracted to yield the true physical grasp-site position in robot millimetres.
 
-### Table Offsets (`TABLE_X_MM`, `TABLE_Y_MM`, `TABLE_Z_MM`)
+### Table Height Offset (`TABLE_Z_MM`)
 Configured in `robot/settings.py` for physical hardware:
-- `TABLE_X_MM`, `TABLE_Y_MM`: Planar offset between robot base origin and table mat origin.
-- `TABLE_Z_MM`: Table surface height in robot base coordinates (calibrated as $Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$). In sim, all offsets are 0.0.
+- `TABLE_Z_MM`: Table surface height in robot base coordinates (calibrated as $Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$). In sim, `get_table_z_mm("sim")` is always `0.0`. Planar base-to-mat offsets are owned exclusively by the measured marker centres in `config/workspace_calibration.json`.
 
 ### Inverse Kinematics & Null-Space Posture Regularization (`robot/cartesian_ik.py`)
 The SO-101 has 5 articulated arm joints (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`); the gripper jaw actuator is decoupled from spatial positioning. Numerical IK solves 3D position tracking ($3 \times 5$ Jacobian) using Levenberg-Marquardt Damped Least Squares (DLS):

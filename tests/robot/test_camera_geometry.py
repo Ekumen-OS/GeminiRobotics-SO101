@@ -167,12 +167,42 @@ def test_old_npz_loads_and_derives_camera(old_format_real_npz: Path) -> None:
 def test_camera_centre_is_logged_on_load(
     old_format_real_npz: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Loading a calibration logs the derived camera centre for a tape-measure check."""
+    """Loading a calibration logs the derived camera centre and height for a tape-measure check."""
     calib = ArucoWorkspaceCalibrator(mode="real")
     calib.load_calibration(old_format_real_npz)
     out = capsys.readouterr().out
     assert "[Calibration] [CAMERA] centre_mm=[" in out
-    assert "hfov=70.0" in out
+    assert "height_mm=" in out
+    assert "hfov=62.2" in out
+
+
+def test_synthetic_camera_62_2_deg_at_345mm_recovers_height_within_5mm() -> None:
+    """A synthetic camera built at 62.2 deg hfov and 345 mm height recovers height within 5 mm."""
+    import cv2
+
+    width, height = 640, 480
+    hfov_deg = 62.2
+    focal = (width / 2.0) / np.tan(np.radians(hfov_deg) / 2.0)
+    K = np.array([[focal, 0.0, width / 2.0], [0.0, focal, height / 2.0], [0.0, 0.0, 1.0]])
+    centre = np.array([265.0, 414.0, 345.0])
+    target = np.array([255.5, -69.0, 0.0])
+    forward = target - centre
+    forward /= np.linalg.norm(forward)
+    right = np.cross(forward, [0.0, 0.0, 1.0])
+    right /= np.linalg.norm(right)
+    down = np.cross(forward, right)
+    R = np.vstack([right, down, forward])
+    truth = PinholeCamera(K=K, R=R, t=-R @ centre)
+
+    corners_mm = np.array(
+        [[414.0, -240.0], [97.0, -240.0], [97.0, 102.0], [414.0, 102.0]], dtype=np.float32
+    )
+    pixels = np.array([truth.project([x, y, 0.0]) for x, y in corners_mm], dtype=np.float32)
+    H, _ = cv2.findHomography(pixels, corners_mm)
+    G = np.linalg.inv(H)
+
+    recovered = PinholeCamera.from_homography(G, (width, height), hfov_deg=hfov_deg)
+    assert abs(float(recovered.centre_mm[2]) - 345.0) <= 5.0
 
 
 def test_snapshot_swap_is_atomic(tmp_path: Path) -> None:
@@ -324,23 +354,27 @@ def test_alignment_is_unobservable_for_fk_and_missing_jaw() -> None:
 
 
 def test_new_settings_defaults_and_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CAMERA_HFOV_DEG, ALIGNMENT_TOLERANCE_MM, GRIPPER_TAG_LOCAL_OFFSET_MM."""
+    """CAMERA_HFOV_DEG, CAMERA_FOCUS, ALIGNMENT_TOLERANCE_MM, GRIPPER_TAG_LOCAL_OFFSET_MM."""
     for name in (
         "CAMERA_HFOV_DEG",
+        "CAMERA_FOCUS",
         "ALIGNMENT_TOLERANCE_MM",
         "GRIPPER_TAG_LOCAL_OFFSET_MM",
     ):
         monkeypatch.delenv(name, raising=False)
     defaults = Settings.from_env()
-    assert defaults.camera_hfov_deg == 70.0
+    assert defaults.camera_hfov_deg == 62.2
+    assert defaults.camera_focus == 144
     assert defaults.alignment_tolerance_mm == 4.0
-    assert defaults.gripper_tag_local_offset_mm == (-35.4, 11.0, 40.1)
+    assert defaults.gripper_tag_local_offset_mm == (-13.4, 25.5, 78.6)
 
     monkeypatch.setenv("CAMERA_HFOV_DEG", "62.5")
+    monkeypatch.setenv("CAMERA_FOCUS", "120")
     monkeypatch.setenv("ALIGNMENT_TOLERANCE_MM", "2.5")
     monkeypatch.setenv("GRIPPER_TAG_LOCAL_OFFSET_MM", "1, 2, 3")
     custom = Settings.from_env()
     assert custom.camera_hfov_deg == 62.5
+    assert custom.camera_focus == 120
     assert custom.alignment_tolerance_mm == 2.5
     assert custom.gripper_tag_local_offset_mm == (1.0, 2.0, 3.0)
     assert not hasattr(custom, "gripper_tag_offset_px")
@@ -403,9 +437,12 @@ def test_tag_offset_default_matches_model() -> None:
     tag_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "aruco_jaw_tag")
     site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
     tag_pos_mm = model.geom_pos[tag_id] * 1000.0
+    tag_size_mm = model.geom_size[tag_id] * 1000.0
     site_pos_mm = model.site_pos[site_id] * 1000.0
     derived_offset = tag_pos_mm - site_pos_mm
     default_offset = np.array(Settings().gripper_tag_local_offset_mm)
     diff = np.abs(default_offset - derived_offset)
     print(f"Derived tag offset: {derived_offset}, default: {default_offset}, diff: {diff}")
     assert np.all(diff <= 0.5)
+    assert tag_pos_mm == pytest.approx([0.6, 25.5, -24.4], abs=0.1)
+    assert tag_size_mm == pytest.approx([12.5, 12.5, 0.75], abs=0.05)
