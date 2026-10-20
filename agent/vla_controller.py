@@ -27,7 +27,7 @@ from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.settings import get_settings
 from vision.calibrator import get_ready_calibrator
-from vision.targets import set_model_targets
+from vision.targets import clear_model_targets, set_model_targets
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +471,7 @@ class VLAController:
                 for measurements that must follow a motion.
         """
         if not self._session:
+            clear_model_targets()
             await response_queue.put({"type": "error", "content": "API unavailable"})
             await response_queue.put(None)
             return
@@ -480,6 +481,7 @@ class VLAController:
         except (SessionError, ConnectionError) as e:
             if self.robot is not None:
                 self.robot.interrupt()
+            clear_model_targets()
             await response_queue.put({"type": "error", "content": str(e)})
             await response_queue.put(None)
             return
@@ -516,6 +518,7 @@ class VLAController:
                 except Exception as de:
                     log_with_tag(logger, "DEBUG", f"Error during session disconnect: {de}")
             finally:
+                clear_model_targets()
                 await response_queue.put(None)
 
     def process_instruction_stream(
@@ -598,9 +601,11 @@ class VLAController:
 
         if self._current_async_task and not self._current_async_task.done():
             self._current_async_task.cancel()
+        clear_model_targets()
 
     def clear_history(self) -> None:
         """Reset the active Gemini Live session."""
+        clear_model_targets()
         if self._session:
             try:
                 asyncio.run_coroutine_threadsafe(self._session.disconnect(), self._loop)
