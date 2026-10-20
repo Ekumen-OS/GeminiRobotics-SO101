@@ -1,13 +1,14 @@
 """Controller for managing Vision-Language-Action (VLA) agent interactions."""
 
 import asyncio
+import concurrent.futures
 import logging
 import re
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from google.genai import types
 
@@ -168,7 +169,7 @@ class VLAController:
         self._session: GeminiLiveSession | None = None
         self._active_instruction_lock = threading.Lock()
         self._async_instruction_lock = asyncio.Lock()
-        self._current_async_task: asyncio.Future | None = None
+        self._current_async_task: concurrent.futures.Future[None] | None = None
         self.guardrail_state: GuardrailState = GuardrailState()
 
         # We try to initialize the session to test credentials, but don't connect yet.
@@ -253,7 +254,7 @@ class VLAController:
                     break
                 await asyncio.sleep(0.1)
 
-    async def _handle_model_turn(self, parts: list[Any], ctx: _TurnContext) -> None:
+    async def _handle_model_turn(self, parts: Sequence[Any], ctx: _TurnContext) -> None:
         """Process model turn parts for reasoning thoughts and narration text.
 
         Args:
@@ -390,7 +391,9 @@ class VLAController:
                 {"type": "status", "content": f"✅ `{call.name}` completed."}
             )
 
-        return types.FunctionResponse(name=call.name, id=call.id, response=result_dict)
+        return types.FunctionResponse(
+            name=call.name, id=call.id, response=cast(dict[str, Any], result_dict)
+        )
 
     async def _handle_tool_call(self, tool_call: Any, ctx: _TurnContext) -> None:
         """Handle tool call message by executing each function call and sending responses.
@@ -427,7 +430,11 @@ class VLAController:
             f"tool_call={message.tool_call is not None}",
         )
 
-        if message.server_content and message.server_content.model_turn:
+        if (
+            message.server_content
+            and message.server_content.model_turn
+            and message.server_content.model_turn.parts
+        ):
             await self._handle_model_turn(message.server_content.model_turn.parts, ctx)
 
         if message.tool_call:
@@ -560,7 +567,7 @@ class VLAController:
             self._current_async_task.cancel()
 
         # Queue to pass responses from async loop to this generator
-        response_queue = asyncio.Queue()
+        response_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         # Schedule the async task in the background loop
         self._current_async_task = asyncio.run_coroutine_threadsafe(

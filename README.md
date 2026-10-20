@@ -1,307 +1,150 @@
-# ![GeminiRobotics-SO101 Banner](banner.png)
+# ![GeminiRobotics-SO101 Banner](banner.jpg)
 
-## Welcome to **GeminiRobotics-SO101** 🤖
+## GeminiRobotics-SO101 🤖
 
-This repository combines Google's Gemini Robotics AI models (`gemini-robotics-er`) and capabilities with the **SO-101 Robotic Arm** setup.
-
-At the core of our user experience is a unified **FastAPI + Gradio 6.0 Web VLA Interface** powered by OpenCV and Three.js.
-
-This interactive web application serves as the unified dashboard for physical hardware manipulation, real-time video observation streaming, interactive 3D WebAssembly simulation viewing, degree-tuned actuator adjustments, and live multimodal action execution via the **Gemini Live API**!
+GeminiRobotics-SO101 connects Google's Gemini Robotics multimodal models (`gemini-robotics-er-2-streaming-preview`) to the low-cost 6-DOF SO-101 robotic arm via a unified web interface built with FastAPI, Gradio 6.0, OpenCV, and Three.js. The operator enters natural language instructions, and Gemini orchestrates pick-and-place tasks through continuous video streaming and real-time tool calling in both physical hardware and MuJoCo simulation.
 
 <p align="center">
-  <img src="ui.jpeg" alt="GeminiRobotics-SO101 Gradio Web UI" />
+  <img src="ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
 </p>
 
-We use Python version **3.13.7** and the extremely fast, deterministic package manager `uv` for managing all environments and dependencies.
+## Hardware
 
-> [!IMPORTANT]
-> This repo is actively under development as we integrate intelligent robotics behaviors and VLA trajectory inference driven by Gemini Robotics!
+- **Arm**: Feetech STS3215-based SO-101 6-DOF robotic arm.
+- **Camera**: Standard UVC USB camera mounted ~45–60 cm above the tabletop looking down at the workspace.
+- **Tabletop Mat**: Printable 4-corner ArUco calibration mat (`DICT_4X4_50`, IDs 1, 2, 3, 0).
+- **Jaw Tag**: 25 mm ArUco marker (`DICT_4X4_50`, ID 10) mounted on the gripper fixed jaw for parallax-free visual closed-loop alignment.
 
-## Architecture & Modules
+## Installation
 
-The repository strictly enforces a layered dependency architecture (`robot < simulation < vision < agent < ui`, with operator tooling in `tools/` importing layers below it):
-
-1. **[`/robot`](robot/) (Core Robot Definition, Kinematics & Registry)**
-   - **Constants & Poses**: Definitional parameters, joint names, hardware limits, and standard target postures ([`robot/constants.py`](robot/constants.py)).
-   - **Kinematics & Theory**: Numerical damped least-squares Inverse Kinematics with null-space projection ([`robot/cartesian_ik.py`](robot/cartesian_ik.py)), and mathematical theoretical foundations ([`robot/theory.md`](robot/theory.md)).
-   - **Workspace Calibration**: ArUco fiducial detection, perspective homography mapping, and dual real/sim homography persistence ([`robot/calibration.py`](robot/calibration.py), [`config/workspace_calibration.json`](config/workspace_calibration.json)).
-   - **Programmatic Perception**: OpenCV visual alignment offset engine ([`robot/perception.py`](robot/perception.py)).
-   - **Hardware Driver**: Physical serial bus interface for Feetech servos ([`robot/real_robot.py`](robot/real_robot.py)) adhering to [`RobotInterface`](robot/interface.py).
-   - **Active Robot Registry**: Thread-safe global active-robot registry ([`robot/registry.py`](robot/registry.py)).
-
-2. **[`/simulation`](simulation/) (MuJoCo Physics & Environments)**
-   - **Physics Simulation**: High-level MuJoCo model manipulation ([`simulation/sim_robot.py`](simulation/sim_robot.py)), fixed workspace camera (`workspace_cam`), ArUco corner fiducials, and centered 3D STL meshes.
-   - **Synthetic Workspace Calibration**: Analytical pinhole camera projection and exact geometric homography computation ([`simulation/sim_calibration.py`](simulation/sim_calibration.py), [`config/workspace_homography_sim.npz`](config/workspace_homography_sim.npz)).
-   - **Validation & Diagnostics**: System health checks and environment diagnostics ([`simulation/check_env.py`](simulation/check_env.py)).
-
-3. **[`/vision`](vision/) (Camera Capture, Dual Buffers & Sim Runtime)**
-   - **Camera Driver & Enumeration**: V4L2 device capability querying and camera discovery ([`vision/camera.py`](vision/camera.py)).
-   - **Shared Capture Manager**: Multi-consumer shared capture thread and video stream production ([`vision/capture.py`](vision/capture.py)).
-   - **Dual Frame Buffer Engine**: Separation between untouched raw model observations (`get_latest_raw_jpeg`) and operator annotated display frames ([`vision/frames.py`](vision/frames.py)).
-   - **Object & Footprint Detector**: HSV salient color segmentation, contour detection, and target footprint locator ([`vision/detector.py`](vision/detector.py)).
-   - **Calibrator Registry & Blackboard**: Mode-aware workspace calibrator caching ([`vision/calibrator.py`](vision/calibrator.py)), workspace overlay drawing ([`vision/overlays.py`](vision/overlays.py)), and model-target blackboard with sleek corner-notched bounding box overlays ([`vision/targets.py`](vision/targets.py)).
-   - **Simulation Frame Runtime**: Dedicated background sim rendering worker ([`vision/sim_runtime.py`](vision/sim_runtime.py)).
-
-4. **[`/agent`](agent/) (Gemini Live API & VLA Controller)**
-   - **Live WebSocket Session**: Real-time bidirectional streaming session manager (`GeminiLiveSession` in [`agent/live_session.py`](agent/live_session.py)) supporting Google AI Studio and Vertex AI credentials.
-   - **Robot Tooling & Execution**: Tool declarations (`ROBOT_TOOL_DECLARATIONS`) and execution adapters (`execute_tool_call` in [`agent/tools.py`](agent/tools.py)) supporting smooth pose interpolation, direct joint control, gripper actuation, named preset poses, and calibrated spatial pointing with vertical offset control.
-   - **VLA Controller & Verification Loop**: Asynchronous controller (`VLAController` in [`agent/vla_controller.py`](agent/vla_controller.py)) enforcing a strict **"Move -> Look -> Correct"** visual verification loop, post-action camera frame observation injection with 0.3s vision settling delays, continuous video frame ingestion (~1 FPS), enriched orchestration prompt guidance, spatial grounding for real & sim modes, and emergency stop handling.
-   - **Verbose Diagnostic Terminal Logging**: ISO-8601 millisecond-precision diagnostic logging (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`) routing model decisions, tool call payloads (`call.args`), and execution results (`result_dict`) to stdout/stderr while keeping Chat UI reasoning clean.
-
-5. **[`/tools`](tools/) (Operator Tooling & Wizards)**
-   - **Printable Calibration Sheets**: True-to-scale workspace calibration mat poster and ArUco marker PNG generator ([`tools/calibration_sheet.py`](tools/calibration_sheet.py)).
-   - **Interactive Setup Wizard**: Terminal CLI wizard configuring table dimensions, clearances, and marker reuse ([`tools/setup_wizard.py`](tools/setup_wizard.py)).
-
-6. **[`/ui`](ui/) (Unified Web VLA Interface & 3D Viewer)**
-   - **FastAPI + Gradio Server**: Unified web server mounting static simulation assets (`/sim_assets`), dynamic simulation state endpoint (`/api/sim_state`), `/api/stream` MJPEG endpoint, and Gradio 6.0 Blocks layout with TehnoX dark theme ([`ui/app.py`](ui/app.py)).
-   - **Interactive 3D Simulation Viewer**: Embedded Three.js WebAssembly 3D viewer ([`ui/assets/sim_viewer.html`](ui/assets/sim_viewer.html)) rendering real-time kinematics and centered mesh poses in `sim` mode.
-   - **Lazy Kinematics State Management**: Centralized robot state manager and lazy kinematics transforms ([`ui/state.py`](ui/state.py)).
-   - **Multimodal Chat & Dynamic UI Blocking**: Real-time conversational AI interface with full input blocking during active model turns, dynamic status banner (`🟢 Status: Ready` / `⏳ Status: Working...`) ([`ui/components/chat.py`](ui/components/chat.py)), and degree-tuned servo control sliders ([`ui/components/controls.py`](ui/components/controls.py)).
-
-## Getting Started
-
-### Requirements
-
-- Python 3.13.7
-- `uv` package manager ([Installation Guide](https://docs.astral.sh/uv/getting-started/installation/))
-- Clone this repository:
+The project uses Python 3.13 and [`uv`](https://docs.astral.sh/uv/) for deterministic environment management:
 
 ```bash
 git clone https://github.com/Ekumen-OS/GeminiRobotics-SO101.git
 cd GeminiRobotics-SO101
-```
 
-- Setup the repository environment and install dependencies:
+# Simulation only (MuJoCo + Web UI)
+uv sync --extra ui
 
-```bash
-uv sync --all-extras
+# Real hardware (adds LeRobot and serial drivers)
+uv sync --extra hw --extra ui
+
 source .venv/bin/activate
 ```
 
-### Installation Matrix
+## Configuration
 
-Dependencies are split into modular extras so headless, physical, simulation, and RL workflows only install what they need:
-
-| Profile / Target | Description | Exact Install Command |
-|---|---|---|
-| **Core** | Base libraries (`numpy`, `opencv`, `scipy`, `mujoco`, `google-genai`, `dotenv`) | `uv sync` |
-| **Real Arm** | Physical Feetech arm driver & Web UI | `uv sync --extra hw --extra ui` |
-| **Simulation** | MuJoCo simulation & Web UI (`mujoco` in core) | `uv sync --extra ui` |
-| **Development / Full** | Complete suite with arm driver, UI and dev tools | `uv sync --all-extras` |
-
-### Environment Configuration (`.env`)
-
-To enable Gemini Live API features and multimodal chat, configure your API credentials by copying `.env.example`:
+Copy `.env.example` to `.env`. Only `GOOGLE_API_KEY` (or Vertex AI credentials) is required to run:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your preferred authentication method:
+All runtime settings (serial port, table offsets, camera selection, stream quality, and grasp margins) are documented directly in [`.env.example`](.env.example).
+
+## Workspace Calibration
+
+Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ into physical robot coordinates (mm) using perspective homography:
+
+1. **Print calibration sheets**:
+   ```bash
+   uv run python main.py --task generate_markers
+   ```
+   Generates `assets/aruco_markers/workspace_calibration_sheet.png` (4 corner markers + base alignment guide) and `marker_{0..3}.png`. Use `--reuse` to update dimensions without regenerating images, or `--regenerate` to force overwrite.
+2. **3D-printed tags with `tools/aruco_stl.py`**:
+   Generates watertight binary STL meshes for single-color grooved printing or Bambu Studio / AMS dual-color (`_white.stl` + `_black.stl`) tiles:
+   ```bash
+   uv run python -m tools.aruco_stl --help
+   ```
+   Key CLI options:
+   - `--marker-id`: Marker ID (default: 10 for jaw tag).
+   - `--marker-size`: Active marker square side in mm (default: 25.0).
+   - `--margin`: Quiet-zone border per side in mm (default: 3.5 -> 32.0 mm total).
+   - `--thickness`: Total tile thickness in mm (default: 2.0).
+   - `--groove-depth`: Recess depth in mm (default: 0.6 = 3 layers at 0.2 mm).
+   - `--dictionary`: OpenCV dictionary (default: `DICT_4X4_50`).
+   - `--all-workspace-markers`: Also generates 40 mm table corner tags (IDs 0, 1, 2, 3).
+3. **Mount the jaw tag**:
+   Mount the 25 mm ID 10 tag flush on the camera-facing flat side of the fixed-jaw housing, just below the servo horn. Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-35.4,11.0,40.1` (tag centre minus grasp site in gripper coordinates).
+4. **Real-arm grasp calibration**:
+   - Run `close_gripper` on air: note logged aperture $A_{\text{empty}}$ (e.g. $-74.5^\circ$) and set `GRIPPER_EMPTY_APERTURE_DEG`.
+   - Run `close_gripper` on a 30 mm cube: note stalled aperture $A_{\text{object}}$ and set `GRASP_EMPTY_MARGIN_DEG` to $\approx 0.40 \times (A_{\text{object}} - A_{\text{empty}})$.
+5. **Save calibration**:
+   In the Web UI, open the **ArUco Workspace Calibration** accordion and click **💾 Save Calibration** once 4 corner markers are detected.
+
+## Preflight Diagnostics
+
+Before starting the server, run the non-moving preflight check to verify dependencies, credentials, configs, port availability, and hardware access:
 
 ```bash
-# Option A: Google AI Studio API Key (Recommended)
-GOOGLE_API_KEY=your_google_ai_studio_api_key_here
+# Verify simulation environment (MuJoCo scene, IK solver, headless offscreen render)
+uv run python main.py --mode sim --task check_environment
 
-# Option B: Google Cloud Vertex AI
-# GOOGLE_CLOUD_PROJECT=your_project_id
-# GOOGLE_CLOUD_LOCATION=us-central1
-
-# Physical SO-101 Serial Port (optional, platform default: /dev/ttyACM0 on Linux, /dev/tty.usbmodem5B415332861 on macOS)
-# ROBOT_PORT=/dev/ttyACM0
-
-# Grasp Sensing & Verification (Phase 3a)
-# GRIPPER_EMPTY_APERTURE_DEG=-74.5
-# GRASP_EMPTY_MARGIN_DEG=6.0
-# GRIPPER_SETTLE_S=0.6
-# GRASP_LOAD_MIN=20.0
+# Verify real hardware (serial bus permissions, motor calibration, camera capture)
+uv run python main.py --mode real --task check_environment
 ```
 
-- If using physical hardware, use the LeRobot package to find the serial port of your SO-101 robotic arm and calibrate it ([LeRobot SO-101 Guide](https://huggingface.co/docs/lerobot/so101)).
-- You are now ready to launch the Web UI and control your robot!
+Each check outputs `[OK]`, `[WARN]`, or `[FAIL]` with fix hints. Exits 0 on success, 1 on failure.
 
-### Configuration Settings Reference
+## Running the Web UI
 
-| Environment Variable | Default | Description |
-| :--- | :--- | :--- |
-| `GRIPPER_EMPTY_APERTURE_DEG` | *unset* (anchors to `GRIPPER_CLOSE_DEG`) | Aperture the gripper servo reports when closed on nothing. Set from step 1 of the checklist below; the arm's calibration decides this value, not the model. |
-| `GRASP_EMPTY_MARGIN_DEG` | `6.0` | Margin in degrees above the empty aperture to classify as `closed_on_air` (threshold = empty aperture + margin). |
-| `GRIPPER_SETTLE_S` | `0.6` | Stabilization settling delay in seconds after gripper motion before querying servo registers. |
-| `GRASP_LOAD_MIN` | *unset* | Minimum motor load threshold required to verify grasp (optional secondary guardrail). |
-| `DESCENT_GATE` | `block` (sim) / `warn` (real) | Gate policy for vertical descent: `block` (reject unaligned), `warn` (log warning), or `off`. |
-| `TABLE_Z_MM` | `0.0` | Robot-frame z of table surface in mm on real arm (sim is always 0.0). Measurement: hover at 3 cm, ruler to fingertips, `TABLE_Z_MM = FK z − measured height`. |
-| `ALIGNMENT_TOLERANCE_MM` | `4.0` | Jaw-to-target distance (robot mm, table plane) under which a hover counts as aligned (`is_aligned`) and a descent is allowed. |
-| `GRIPPER_TAG_LOCAL_OFFSET_MM` | `-35.4,11.0,40.1` | Jaw-tag centre relative to the grasp site in the gripper frame, `x,y,z` in mm (see [Jaw tag](#jaw-tag)). The default matches the real and simulated mount at the root of the fixed finger. |
-| `CAMERA_HFOV_DEG` | `70.0` | Nominal horizontal field of view of the workspace camera, used to recover the camera position from the table homography (a ±10 % error costs only a few mm). Check the logged `[Calibration] [CAMERA] centre_mm=[x, y, z]` against a tape measure. |
-| `VISION_SETTLE_S` | `0.3` | Camera stabilization settling delay in seconds before capturing post-action verification frames. |
-| `ROBOT_PORT` | Platform default (`/dev/ttyACM0` on Linux, `/dev/tty.usbmodem...` on macOS) | Serial device path for physical Feetech bus adapter. |
-| `CAMERA_NAME` / `CAMERA_INDEX` | *auto* | Device substring or index for external camera selection. |
-| `WEB_STREAM_FPS` | `15` | Frame rate for operator MJPEG stream. |
-| `WEB_JPEG_QUALITY` | `75` | JPEG encoding quality for operator MJPEG stream. |
-
-### Real-Arm Grasp Calibration Checklist
-
-Follow this procedure when deploying to a physical SO-101 robotic arm. Steps 1–5 tune the grasp classifier; steps 6–9 mount the jaw tag and validate the closed loop. All values are read from the `[Tools] [...]` terminal log lines, not from the chat.
-
-1. **Close on Air**: Execute `close_gripper` with no object between jaws. Inspect terminal log `[Tools] [GRASP] aperture=...` and record the fully closed aperture $A_{\text{empty}}$ (e.g., $-74.5^\circ$).
-2. **Close on Object**: Place your standard target object (e.g., 30 mm calibration cube) between the jaws and execute `close_gripper`. Record the stalled aperture $A_{\text{object}}$ (e.g., $-34.5^\circ$).
-3. **Calculate Gap**: Compute $\Delta A = A_{\text{object}} - A_{\text{empty}}$ (e.g., $-34.5^\circ - (-74.5^\circ) = 40.0^\circ$).
-4. **Set Anchor and Margin**: In your `.env`, set `GRIPPER_EMPTY_APERTURE_DEG` to $A_{\text{empty}}$ and `GRASP_EMPTY_MARGIN_DEG` to approximately 40% of the gap:
-   $$\text{GRASP\_EMPTY\_MARGIN\_DEG} \approx 0.40 \times \Delta A$$
-   *(e.g., $A_{\text{empty}} = -74.5^\circ$, margin $= 0.40 \times 40.0^\circ = 16.0^\circ$, threshold $= -58.5^\circ$). Without the anchor the threshold is measured from $-75^\circ$, which is only correct if your calibration happens to close there.*
-5. **Leave `GRASP_LOAD_MIN` unset** until you have read a few `load=` values from the log: the STS3215 `Present_Load` register is raw sign-magnitude (bit 10 is direction), so a reverse-direction load reads above 1023.
-6. **Mount the Jaw Tag**: Print the jaw-tag page (`uv run python main.py --task generate_markers`): ArUco `DICT_4X4_50`, **ID 10**, **25 mm** (smaller tags are detected in only a fraction of poses at 640×480), matte, and mount it as described in [Jaw tag](#jaw-tag). Hover 5 cm over the mat centre and each corner; the tag must be detected in all five places (watch `/api/stream`).
-7. **Measure Table Height, Tag Offset and Check the Camera**: Hover at 3 cm (`move_to_spatial_point(..., z_height_cm=3.0)`), measure fingertip height above the table with a ruler, and set `TABLE_Z_MM = FK z − measured height` in `.env` (e.g. `29.2 − 53 = -24.0`). Measure the tag-centre-to-grasp-site offset with a ruler in the gripper frame and set `GRIPPER_TAG_LOCAL_OFFSET_MM=<x>,<y>,<z>`. Set `CAMERA_HFOV_DEG` from the camera's datasheet and compare the logged camera centre (`[Calibration] [CAMERA] centre_mm=...`) with a tape measure (height above the mat above all). Until the tag is mounted the locator falls back to forward kinematics (`gripper_source="kinematic"`, `is_aligned=null`).
-8. **Validate with `DESCENT_GATE=warn`** (the real-mode default): run five picks of the cube from different spots. Expect `gripper_source="aruco"`, a measured offset `measured_offset` (`dx_mm`, `dy_mm`) that falls to within `ALIGNMENT_TOLERANCE_MM` after the second hover, a non-zero `applied_correction_mm` on that second hover and the descent, and a `grasp_verification` that matches what you see every time. Search the log for `convergence timeout`: it means the servos did not reach the commanded pose within 2 s, so measurements may be taken too early.
-9. **Switch to `DESCENT_GATE=block`**: a deliberately misaligned descent must now be refused with `error_type="descent_gate"` instead of executed.
-
-### Jaw tag
-
-The closed loop measures where the gripper really is with one ArUco tag on the gripper, compared with the target in robot millimetres (see `vision/gripper_locator.py`).
-
-- **Tag**: `DICT_4X4_50`, **ID 10**, **25 mm** square, matte, flat (`uv run python main.py --task generate_markers` prints it at 1:1; verify the 50 mm scale line on the printout).
-- **Where (real and simulation mount)**: flush on the camera-facing (`+y`) flat side face of the fixed-jaw housing at the root of the fixed finger, just below the gripper servo horn (in the gripper body frame: face at $y \approx 9.0\text{ mm}$, $x \in [-30.4, -12.4]\text{ mm}$, $z \in [-74.6, -51.2]\text{ mm}$, plus $1.5\text{ mm}$ printed tile thickness and $0.5\text{ mm}$ half-tag thickness $\rightarrow (-21.4, +11.0, -62.9)\text{ mm}$). Detected in 12/12 poses at 640×480 and leaves the cube visible at a 3 cm hover. Check the tag in `/api/stream` before trusting it.
-- **Gripper frame for `GRIPPER_TAG_LOCAL_OFFSET_MM`** (measure with the gripper pointing down, jaws open; the offset is *tag centre minus grasp site*):
-  - **origin**: the grasp site: the midpoint between the inner faces of the two finger pads when closed on a 30 mm object, at the level of the pads' lower edge (the fingertip level);
-  - **x**: the jaw closing direction, from the fixed finger towards the moving jaw;
-  - **y**: along the jaw hinge axis, towards the side that carries the moving-jaw pivot horn;
-  - **z**: along the wrist-roll axis from the fingertips towards the wrist (up when the gripper points down).
-- **Defaults**: `GRIPPER_TAG_LOCAL_OFFSET_MM=-35.4,11.0,40.1` (the real and simulated mount at the root of the fixed finger, 0.3 mm mean error against MuJoCo ground truth), `CAMERA_HFOV_DEG=70`, `ALIGNMENT_TOLERANCE_MM=4`.
-- **Grasp site (TCP) note**: in `simulation/assets/so101.xml` the `gripperframe` site was moved from the URDF position (on the inner face of the *fixed finger*, x = −7.9 mm, z = −98.1 mm in the gripper frame) to the grasp site (x = +14 mm, z = −103 mm): with the URDF site an IK target at an object's centre puts the fixed finger inside the object. The IK solver reads the same file in real mode, so a real arm now reaches the object with the *middle of the jaws*, not the fixed finger. Centred on the TCP, a 30 mm cube clears the fixed finger mesh face (−7.9 mm) by 6.9 mm; the simulated collision pad `pad_fixed` now sits directly on the real finger face, and closing slides the cube against it.
-
-## Running the Robot (`main.py`)
-
-[`main.py`](main.py) is the unified entry point for running the SO-101 robotic arm in physical control, MuJoCo simulation, or automated verification. By default, running `main.py` launches the modern **FastAPI + Gradio VLA Web UI Server** on port `7860`:
+Launch the Unified FastAPI + Gradio Web UI at `http://localhost:7860/`:
 
 ```bash
-# Instantly launch the Unified VLA Web UI server (default mode is 'real')
-# Open your browser at http://localhost:7860/
-uv run python main.py
-
-# Launch Web UI specifying an explicit physical serial port (or set ROBOT_PORT in .env)
-uv run python main.py --mode real --port /dev/ttyACM0
-
-# Launch Web UI with interactive 3D simulation viewer
+# Simulation mode (MuJoCo physics + Three.js browser viewer)
 uv run python main.py --mode sim
 
-# Development auto-reload (restarts server when Python files change)
-uv run python main.py --mode sim --reload
+# Real robot mode (physical arm + live UVC camera MJPEG feed)
+uv run python main.py --mode real
+
+# Override serial port explicitly (defaults to ROBOT_PORT from .env)
+uv run python main.py --mode real --port /dev/ttyACM0
 ```
 
-> [!NOTE]
-> The `--port` argument defaults to the value set in `ROBOT_PORT` in your `.env` file, falling back to the platform default (`/dev/ttyACM0` on Linux and `/dev/tty.usbmodem5B415332861` on macOS). If your serial adapter differs, configure `ROBOT_PORT` in `.env` or pass `--port <path>` (e.g., `/dev/ttyACM0` on Linux or `/dev/tty.usbmodem...` on macOS).
->
-> **Linux Serial Permissions**: On Linux, ensure your user has read/write permissions for the serial port device (e.g., `/dev/ttyACM0`). You can grant immediate access with `sudo chmod 666 /dev/ttyACM0` or permanent access with `sudo usermod -a -G dialout $USER` (requires logout or `newgrp dialout`). You can run `uv run python main.py --task check_environment` to verify port access.
+The interface features live MJPEG camera streaming (`/api/stream`), conversational prompt execution with Gemini Live, manual joint and Cartesian jog controls, and an interactive 3D Three.js digital twin synchronized to arm telemetry at 30 Hz.
 
-## Gemini Live API & Robot Tool Capabilities
+## Model Tools
 
-When interacting with the AI in the Web UI chat or via the agent controller, Gemini has access to real-time function calling tools (defined and mirrored from the single-source-of-truth `TOOL_REGISTRY` in [`agent/tools.py`](agent/tools.py)):
+Gemini Live calls these 6 primitives (defined in [`agent/tools.py`](agent/tools.py)):
 
-| Tool Name | Description | Parameters |
-| :--- | :--- | :--- |
-| `move_to_pose` | Smoothly interpolate arm to 6-DOF joint target in degrees. | `qpos` (array of 6 degs), `duration_sec` |
-| `open_gripper` | Fully open the gripper end-effector. | None |
-| `close_gripper` | Close the gripper end-effector. | None |
-| `move_to_preset` | Move arm to named keyframe (`HOME`, `MIDDLE`). | `pose_name` (string) |
-| `move_to_spatial_point` | Ground 2D image coordinates $[y, x] \in [0, 1000]$ into 3D Cartesian coordinates via ArUco calibration and solve IK at target $z$ height. | `point` (array of 2 numbers), `z_height_cm` (optional, default: 3.0) |
-| `get_joint_positions` | Read current joint angles in degrees. | None |
+| Tool | Parameters | Description |
+|---|---|---|
+| `move_to_spatial_point` | `point: [y, x]`, `z_height_cm: float = 3.0` | Move gripper to image coordinate $[0, 1000]$ at table height $z$. |
+| `open_gripper` | *(none)* | Open gripper jaws fully. |
+| `close_gripper` | *(none)* | Close jaws to grasp; returns aperture and grasp classification. |
+| `move_to_preset` | `pose_name: str` | Move arm to named keyframe (`HOME` or `OBSERVE`). |
+| `move_to_pose` | `qpos: [deg, ...]`, `duration_sec: float` | Interpolate arm joints directly to target angles. |
+| `get_joint_positions` | *(none)* | Query current arm joint angles in degrees. |
 
-## Model-Driven Closed-Loop Orchestration & Workspace Calibration
+## Troubleshooting
 
-### 1. ArUco Workspace Calibration & Sheet Generator (`robot/calibration.py`)
-
-- Detects 4-corner ArUco fiducials (`DICT_4X4_50`, canonical IDs: `1: Top-Left`, `2: Top-Right`, `3: Bottom-Right`, `0: Bottom-Left`) defining the physical workspace mat.
-- Computes perspective homography mapping camera pixels directly to physical robot base millimeters with lateral $Y$-axis parity.
-- Configurable workspace offsets: `TABLE_X_MM` and `TABLE_Y_MM` (physical mounting offsets between robot base and table mat origin) and `TABLE_Z_MM` (table surface height in robot frame).
-- Configurable via `config/workspace_calibration.json`. Full architecture details are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
-- **Interactive Setup Wizard & Marker / Sheet Generator**:
-
+- **Serial device permissions (Linux)**: Ensure read/write access to `/dev/ttyACM0`:
   ```bash
-  # Launch interactive calibration wizard (auto-detects existing markers and asks whether to reuse or replace):
-  uv run python main.py --task generate_markers
-
-  # Reuse existing physical markers and update dimensions in JSON without regenerating files:
-  uv run python main.py --task generate_markers --reuse
-
-  # Force regeneration of marker PNGs and calibration mat sheet:
-  uv run python main.py --task generate_markers --regenerate
+  sudo chmod 666 /dev/ttyACM0            # Immediate temporary fix
+  sudo usermod -a -G dialout $USER       # Permanent fix (requires re-login)
   ```
+- **Camera busy / V4L2 device locks**: Ensure no other application (Zoom, OBS, browser) is using the USB camera index configured in `CAMERA_INDEX`. List attached video devices with `v4l2-ctl --list-devices`.
+- **Headless rendering (Linux / SSH)**: MuJoCo uses EGL for offscreen rendering when `DISPLAY` is unset. Ensure NVIDIA/EGL drivers are present.
+- **"Workspace is not calibrated"**: Place the 4-corner calibration mat in camera view, check `/api/stream`, and click **💾 Save Calibration** in the UI accordion.
 
-  Features & Artifacts:
-  - **Auto-Detection**: Automatically detects existing marker files in `assets/aruco_markers/` and prompts whether to reuse them or regenerate.
-  - `assets/aruco_markers/workspace_calibration_sheet.png` — An all-in-one printable tabletop calibration mat with 4 corner markers, robot base alignment guide, workspace boundaries, and coordinate axes.
-  - `assets/aruco_markers/marker_{0..3}.png` — Individual high-resolution marker stickers.
-
-### 2. Model-as-Orchestrator Closed-Loop Architecture (`agent/vla_controller.py`)
-
-- Powered by `gemini-robotics-er-2-streaming-preview` via the Gemini Live API bidirectional WebSocket session with thinking enabled (`include_thoughts=True`).
-- **Continuous Visual Perception**: Ingests video frames at ~1 FPS both during motion execution and continuously in the background while the model reasons between tool calls.
-- **Strict "Move -> Look -> Correct" Visual Verification Loop**:
-  - Enforces a mandatory 3-phase cycle for spatial manipulation:
-    1. **Move**: Move the arm/gripper towards approach hover altitude above the target object using `move_to_spatial_point`.
-    2. **Look**: Model explicitly pauses and inspects the freshly settled post-action camera frame to understand the scene, then reads the *measured* alignment from the tool response (`perception.measured_offset` in mm, `is_aligned`, `applied_correction_mm`). The controller, not the model, measures the gripper (jaw tag, parallax removed) and never lets the model offset a point.
-    3. **Correct**: If `is_aligned` is `false`, the model re-issues the same hover call; the controller applies the learned per-target correction and the next measurement should be within tolerance. Only an aligned hover may descend.
-- **Programmatic Perception Feedback & Anti-Hallucination Guardrails (`robot/perception.py`)**:
-  - Locks the target object once (footprint centre in robot mm), measures the jaw against it in the table plane (`dx_mm`, `dy_mm`, `distance_mm`, `is_aligned` within `ALIGNMENT_TOLERANCE_MM`) and returns the numbers in the tool payload.
-  - Enforces strict controller gates: no descent without a measured, aligned hover at the same target; after the grasp only the lift (straight up) is allowed until the post-lift gripper sensor confirms the grasp (vision can only veto); transport then moves to a raw destination while the aperture is re-read after every move.
-  - Automates a 3-attempt grasp retry loop per object with graceful escalation (also after 3 consecutive refusals or 4 hovers without a descent).
-- **Post-Action Observation Frame Injection**: Injects a fresh settled camera frame (with a 0.3s physical stabilization delay) immediately after every blocking tool execution before returning `FunctionResponse`, providing ground-truth post-action state for immediate inspection and error correction.
-- **UI Input Blocking & Dynamic Status Indication**: Prevents concurrent user input or race conditions during model turns. When an instruction is submitted, the prompt textbox, execution button, homing button, clear button, and randomize target button are disabled, and the banner transitions to `⏳ Status: Working...`. Once the model finishes its execution turn (or on exception), the UI is safely restored to `🟢 Status: Ready` via a robust `try...finally` block.
-- **Verbose Timestamped Terminal Logging vs. Chatbot CoT**:
-  - Maintains a clean separation between user-facing conversational narration and operator diagnostics.
-  - High-level thoughts (`> 💭 *...*`) and responses stream cleanly to the Gradio Chatbot.
-  - Low-level JSON tool call payloads (`call.args`), execution results (`result_dict`), WebSocket frame dispatches, and error traces are printed to `stdout`/`stderr` with ISO-8601 millisecond timestamps (`[YYYY-MM-DD HH:MM:SS.mmm] [MODULE] [TAG] message`).
-- **Minimalist Multi-Target Bounding Box Overlay**: Renders clean, color-coded bounding boxes with corner accents and floating coordinate badges on the video stream showing all detected objects and where Gemini is focusing in real time.
-- **Continuous Live ArUco Calibration**: Dynamically tracks visible fiducials and computes perspective homography continuously on the physical USB camera feed, eliminating camera perspective drift.
-- **Direct Primitive Tool Calling**: Rather than relying on a rigid state machine, the model orchestrates multi-step actions (Hover $\rightarrow$ Look $\rightarrow$ Correct $\rightarrow$ Descend $\rightarrow$ Grasp $\rightarrow$ Retract $\rightarrow$ Transport $\rightarrow$ Release) by invoking tool primitives.
-
-## Testing & Diagnostics
-
-Verify system health, MuJoCo simulation physics, inverse kinematics, and unit test suites:
+## Development
 
 ```bash
-# 0. Install pre-commit hooks for automated code formatting and lint checks
+# Install all development extras and pre-commit hooks
+uv sync --all-extras
 uv run pre-commit install
 
-# 1. Run complete automated unit test suite (Workspace Calibration, Tool Adapters, VLA Controller, UI)
+# Run unit and integration tests
 uv run pytest tests/ -v
 
-# 1b. Run the slow physics scenarios: scripted pick-and-place over 10 seeded cube placements in
-#     MuJoCo (unbiased, and with a hidden 1.5 deg shoulder-pan encoder offset with/without the
-#     corrector), judged against MuJoCo ground truth; prints the metrics table with -s
+# Run physics-heavy slow tests (seeded MuJoCo pick-and-place harness)
 uv run pytest -m slow -s
 
-# 2. Check system diagnostics, dependency imports, and MuJoCo FPS throughput
-uv run python main.py --task check_environment
+# Code formatting, linting, type-checking, and import contracts
+uv run ruff check --fix .
+uv run ruff format .
+uv run mypy
+uv run lint-imports
 ```
 
-### Troubleshooting & Fail-Closed Diagnostics
-
-- **`HardwareError: Could not connect to physical robot on port...`**:
-  - Verify that the physical SO-101 arm is connected via USB and powered.
-  - Check serial device permissions (on Linux, ensure the user belongs to the `dialout` group: `sudo usermod -a -G dialout $USER`).
-  - When running in `--mode real` without hardware, the UI displays `⚠️ Hardware Offline. Arm not connected.` and manual sliders remain disabled. Spatial and joint movement tool calls fail closed with `error_type: "hardware"` rather than assuming target arrival.
-- **`CalibrationUnavailable: Workspace is not calibrated...`**:
-  - Real-world spatial grounding requires active ArUco fiducials. Generate printable markers (`uv run python main.py --task generate_markers`), place the sheet in the camera FOV, and save calibration via the UI.
-- **`PerceptionUnavailable: Camera frame unavailable...`**:
-  - In real mode, the camera stream fails closed if the capture feed stops or frame buffer empties. Check USB camera connection and ensure no other application is holding exclusive lock.
-- **`HardwareError: Motion interrupted`**:
-  - Raised when an in-progress arm trajectory is stopped mid-motion (e.g. operator interrupt,
-    safety trigger, or shutdown). Surfaces as `error_type: "hardware"` with `robot_moved=True`
-    whenever at least one step was written to motors, guaranteeing the model never assumes
-    completed motion on an aborted action.
-- **Spatial Alignment & Table Offsets (`TABLE_X_MM`, `TABLE_Y_MM`, `TABLE_Z_MM`)**:
-  - `move_to_spatial_point` logs both the commanded target and the actual FK site reached (`[EXEC] move_to_spatial_point reached: FK XYZ [...] (table Z=...cm, table XY [...]mm) → image [...] | error: ...`).
-  - If hover altitude differs from ruler measurement, set `TABLE_Z_MM = FK_z - measured_height`.
-  - If using the printable calibration mat (`assets/aruco_markers/workspace_calibration_sheet.png`), set `TABLE_Y_MM=-60.0` in `.env` to compensate for the 60 mm lateral base alignment offset.
-  - If lateral alignment shows an offset from target, adjust `TABLE_Y_MM` and/or `TABLE_X_MM` in `.env` based on the logged delta.
-
-## Kinematics & Mathematics Reference
-
-For a complete explanation of Denavit-Hartenberg (DH) parameters, transformation matrices, spatial Jacobians, and under-actuated 5-DOF damped least-squares Inverse Kinematics, consult our documentation:
-
-- [SO-101 Robot Arm Kinematics Theory (`robot/theory.md`)](robot/theory.md)
-
----
-
-Made with ❤️ in Colombia 🇨🇴
+See [ARCHITECTURE.md](ARCHITECTURE.md) for data flows, subsystem interfaces, and invariants, and [AGENTS.md](AGENTS.md) for coding guidelines.
