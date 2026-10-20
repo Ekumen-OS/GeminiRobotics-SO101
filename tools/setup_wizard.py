@@ -17,6 +17,60 @@ from tools.calibration_sheet import (
 logger = logging.getLogger(__name__)
 
 
+def get_pan_origin_offset_x_mm(xml_path: str | Path | None = None) -> float:
+    """Read forward X offset (mm) between robot base origin and shoulder pan rotation axis.
+
+    The SO-101 base frame origin is 38.8 mm behind the shoulder_pan rotation axis.
+    This function extracts that geometric offset dynamically from the MJCF model.
+
+    Args:
+        xml_path: Optional path to the MJCF scene XML file. Defaults to simulation/assets/scene.xml.
+
+    Returns:
+        Offset in mm along X from base origin to pan rotation axis.
+    """
+    if xml_path is None:
+        xml_path = Path(__file__).resolve().parent.parent / "simulation" / "assets" / "scene.xml"
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
+    return float(model.body("shoulder").pos[0] * 1000.0)
+
+
+def pan_to_base_xy_mm(
+    x_pan_mm: float, y_pan_mm: float, xml_path: str | Path | None = None
+) -> tuple[float, float]:
+    """Convert coordinates measured from shoulder pan rotation axis to robot base frame.
+
+    Args:
+        x_pan_mm: X coordinate measured from pan axis (mm).
+        y_pan_mm: Y coordinate measured from pan axis (mm).
+        xml_path: Optional MJCF scene XML path.
+
+    Returns:
+        Tuple of (x_base_mm, y_base_mm) in robot base frame.
+    """
+    offset_x = get_pan_origin_offset_x_mm(xml_path)
+    return (round(x_pan_mm + offset_x, 1), round(y_pan_mm, 1))
+
+
+def base_to_pan_xy_mm(
+    x_base_mm: float, y_base_mm: float, xml_path: str | Path | None = None
+) -> tuple[float, float]:
+    """Convert coordinates from robot base frame to shoulder-pan-relative coordinates.
+
+    Args:
+        x_base_mm: X coordinate in robot base frame (mm).
+        y_base_mm: Y coordinate in robot base frame (mm).
+        xml_path: Optional MJCF scene XML path.
+
+    Returns:
+        Tuple of (x_pan_mm, y_pan_mm) measured from shoulder pan rotation axis.
+    """
+    offset_x = get_pan_origin_offset_x_mm(xml_path)
+    return (round(x_base_mm - offset_x, 1), round(y_base_mm, 1))
+
+
 def setup_workspace_interactive(
     config_path: str | Path | None = None,
     output_dir: str | Path = "assets/aruco_markers",
@@ -46,11 +100,12 @@ def setup_workspace_interactive(
     cfg = dict(calibrator.config)
     out_path = Path(output_dir)
 
+    pan_offset_x = get_pan_origin_offset_x_mm()
     corners = cfg.get("workspace_corners_mm", {})
-    cur_tl = corners.get("top_left", {"x": 414.0, "y": -240.0})
-    cur_tr = corners.get("top_right", {"x": 97.0, "y": -240.0})
-    cur_br = corners.get("bottom_right", {"x": 97.0, "y": 102.0})
-    cur_bl = corners.get("bottom_left", {"x": 414.0, "y": 102.0})
+    cur_tl = corners.get("top_left", {"x": round(414.0 + pan_offset_x, 1), "y": -240.0})
+    cur_tr = corners.get("top_right", {"x": round(97.0 + pan_offset_x, 1), "y": -240.0})
+    cur_br = corners.get("bottom_right", {"x": round(97.0 + pan_offset_x, 1), "y": 102.0})
+    cur_bl = corners.get("bottom_left", {"x": round(414.0 + pan_offset_x, 1), "y": 102.0})
     cur_marker_size = float(cfg.get("marker_size_mm", 40))
 
     # Check for existing markers in output directory
@@ -119,12 +174,18 @@ def setup_workspace_interactive(
         print("\n📦 NEW MARKER GENERATION — Configuring dimensions and generating files...\n")
 
     print(
-        "Measure the 4 marker centres in the robot base frame (mm): "
-        "origin (0, 0) at the base rotation axis, +X forward along HOME, +Y to the robot's left."
+        "Measure the 4 marker centres from the shoulder pan rotation axis (mm):\n"
+        "  Origin (0, 0) for tape measurements is at the shoulder pan rotation axis,\n"
+        f"  +X forward along HOME, +Y to the robot's left.\n"
+        f"  Note: The robot base frame origin is {pan_offset_x:.1f} mm behind the pan axis.\n"
+        f"  The wizard asks for tape values from the pan axis and automatically adds "
+        f"+{pan_offset_x:.1f} mm\n"
+        "  in X to record corners in the robot base frame."
     )
     print(
-        "  Axis diagram:  [Base (0,0)] ───► +X (Forward along HOME)   |   "
-        "▲ +Y (Robot Left) / ▼ -Y (Robot Right)\n"
+        f"  Axis diagram:  [Base Origin] ───(+{pan_offset_x:.1f} mm)───► [Pan Axis (0,0)] "
+        "───► +X (Forward along HOME)\n"
+        "                 ▲ +Y (Robot Left) / ▼ -Y (Robot Right)\n"
     )
 
     def _parse_xy_pair(raw: str, default_xy: tuple[float, float]) -> tuple[float, float]:
@@ -138,23 +199,37 @@ def setup_workspace_interactive(
             return default_xy
         default_str = f"{default_xy[0]:g}, {default_xy[1]:g}"
         try:
-            val = input(f"  ➜ {label} (x, y mm from base axis) [default: {default_str}]: ").strip()
+            val = input(f"  ➜ {label} (x, y mm from pan axis) [default: {default_str}]: ").strip()
             if not val:
                 return default_xy
             return _parse_xy_pair(val, default_xy)
         except (EOFError, KeyboardInterrupt, ValueError):
             return default_xy
 
-    tl_default = (float(cur_tl.get("x", 414.0)), float(cur_tl.get("y", -240.0)))
-    tr_default = (float(cur_tr.get("x", 97.0)), float(cur_tr.get("y", -240.0)))
-    br_default = (float(cur_br.get("x", 97.0)), float(cur_br.get("y", 102.0)))
-    bl_default = (float(cur_bl.get("x", 414.0)), float(cur_bl.get("y", 102.0)))
+    tl_pan_default = base_to_pan_xy_mm(
+        float(cur_tl.get("x", 414.0 + pan_offset_x)), float(cur_tl.get("y", -240.0))
+    )
+    tr_pan_default = base_to_pan_xy_mm(
+        float(cur_tr.get("x", 97.0 + pan_offset_x)), float(cur_tr.get("y", -240.0))
+    )
+    br_pan_default = base_to_pan_xy_mm(
+        float(cur_br.get("x", 97.0 + pan_offset_x)), float(cur_br.get("y", 102.0))
+    )
+    bl_pan_default = base_to_pan_xy_mm(
+        float(cur_bl.get("x", 414.0 + pan_offset_x)), float(cur_bl.get("y", 102.0))
+    )
 
-    print("1. Marker Centres from Robot Base Axis (x, y in mm):")
-    tl_xy = _prompt_xy("top_left (ID 1)", tl_default)
-    tr_xy = _prompt_xy("top_right (ID 2)", tr_default)
-    br_xy = _prompt_xy("bottom_right (ID 3)", br_default)
-    bl_xy = _prompt_xy("bottom_left (ID 0)", bl_default)
+    print("1. Marker Centres measured from Shoulder Pan Rotation Axis (x, y in mm):")
+    tl_pan = _prompt_xy("top_left (ID 1)", tl_pan_default)
+    tr_pan = _prompt_xy("top_right (ID 2)", tr_pan_default)
+    br_pan = _prompt_xy("bottom_right (ID 3)", br_pan_default)
+    bl_pan = _prompt_xy("bottom_left (ID 0)", bl_pan_default)
+
+    # Convert tape measurements (from pan axis) to robot base frame (+pan_offset_x mm in X)
+    tl_xy = pan_to_base_xy_mm(tl_pan[0], tl_pan[1])
+    tr_xy = pan_to_base_xy_mm(tr_pan[0], tr_pan[1])
+    br_xy = pan_to_base_xy_mm(br_pan[0], br_pan[1])
+    bl_xy = pan_to_base_xy_mm(bl_pan[0], bl_pan[1])
 
     # 2. Marker dimensions
     print("\n2. ArUco Marker Parameters:")
