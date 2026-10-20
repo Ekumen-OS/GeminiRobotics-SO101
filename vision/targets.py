@@ -49,6 +49,7 @@ def set_model_targets(
                             "label": item.get("label"),
                             "box_2d": [float(v) for v in box] if box and len(box) == 4 else None,
                             "color": item.get("color"),
+                            "active": bool(item.get("active", False)),
                         }
                     )
             elif isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -58,6 +59,7 @@ def set_model_targets(
                         "label": None,
                         "box_2d": None,
                         "color": None,
+                        "active": False,
                     }
                 )
         _model_targets = parsed
@@ -79,13 +81,17 @@ def clear_model_targets() -> None:
 
 
 def draw_model_target_overlay(frame: np.ndarray) -> np.ndarray:
-    """Draw clean, minimalist bounding boxes and label badges for all detected model targets.
+    """Draw minimal target pointers for all detected model targets.
+
+    Active targets are drawn at full opacity; stale targets are alpha-blended at ~50%
+    opacity. Destination transport targets render as a small open square marker rather
+    than a circular ring.
 
     Args:
         frame: Input image (RGB or BGR numpy array).
 
     Returns:
-        Frame with minimalist target box overlay drawn for all active targets.
+        Frame with minimal target pointers drawn for active and stale targets.
     """
     if not is_target_overlay_enabled():
         return frame
@@ -97,108 +103,87 @@ def draw_model_target_overlay(frame: np.ndarray) -> np.ndarray:
     h, w = frame.shape[:2]
     out = frame.copy()
 
-    # Base design tokens
-    color_dark_bg = (15, 23, 42)  # Dark slate pill background
-    color_text = (248, 250, 252)  # Crisp white text
+    scale = w / 640.0
+    ring_radius = max(4, int(round(7.0 * scale)))
+    dot_radius = max(1, int(round(2.0 * scale)))
     font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.30, 0.35 * scale)
+    font_thickness = 1
 
-    for idx, tgt in enumerate(targets):
+    # Draw stale targets first so active target renders crisply on top if overlapping
+    indexed_targets = sorted(
+        enumerate(targets),
+        key=lambda pair: bool(pair[1].get("active", False)),
+    )
+
+    for idx, tgt in indexed_targets:
         norm_y, norm_x = tgt["point"]
         px = int(np.clip((norm_x / 1000.0) * w, 0, w - 1))
         py = int(np.clip((norm_y / 1000.0) * h, 0, h - 1))
         color = tgt.get("color") or TARGET_PALETTE_RGB[idx % len(TARGET_PALETTE_RGB)]
+        is_active = bool(tgt.get("active", False))
 
-        # Determine bounding box bounds
-        box_2d = tgt.get("box_2d")
-        if box_2d is not None and len(box_2d) == 4:
-            ymin, xmin, ymax, xmax = box_2d
-            x1 = int(np.clip((xmin / 1000.0) * w, 0, w - 1))
-            y1 = int(np.clip((ymin / 1000.0) * h, 0, h - 1))
-            x2 = int(np.clip((xmax / 1000.0) * w, 0, w - 1))
-            y2 = int(np.clip((ymax / 1000.0) * h, 0, h - 1))
-            # Ensure proper min/max ordering
-            if x1 > x2:
-                x1, x2 = x2, x1
-            if y1 > y2:
-                y1, y2 = y2, y1
+        raw_label = tgt.get("label")
+        label_text = str(raw_label).strip().lower() if raw_label else ""
+        is_destination = "destination" in label_text
+
+        # Inactive targets draw on a layer and get alpha-blended into out
+        target_layer = out if is_active else out.copy()
+
+        # 1. Marker shape
+        if is_destination:
+            sq_half = ring_radius
+            top_left = (max(0, px - sq_half), max(0, py - sq_half))
+            bottom_right = (min(w - 1, px + sq_half), min(h - 1, py + sq_half))
+            cv2.rectangle(target_layer, top_left, bottom_right, color, 1, cv2.LINE_AA)
+            cv2.circle(target_layer, (px, py), dot_radius, color, -1, cv2.LINE_AA)
         else:
-            half_box = 28
-            x1, y1 = max(2, px - half_box), max(2, py - half_box)
-            x2, y2 = min(w - 3, px + half_box), min(h - 3, py + half_box)
+            cv2.circle(target_layer, (px, py), ring_radius, color, 1, cv2.LINE_AA)
+            cv2.circle(target_layer, (px, py), dot_radius, color, -1, cv2.LINE_AA)
 
-        # 1. Subtle translucent fill (alpha 12%)
-        overlay = out.copy()
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-        cv2.addWeighted(overlay, 0.12, out, 0.88, 0, out)
+        # 2. Minimal label: one line lowercase text, offset up and right of marker
+        if label_text:
+            (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
+            offset_x = ring_radius + int(4 * scale)
+            offset_y = -ring_radius + int(2 * scale)
+            text_x = px + offset_x
+            text_y = py + offset_y
 
-        # 2. Crisp thin minimalist outline
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
+            # Clamp text position within frame boundaries
+            if text_x + tw > w - 2:
+                text_x = max(2, w - 2 - tw)
+            if text_y - th < 2:
+                text_y = th + 2
+            if text_y > h - 2:
+                text_y = h - 2
 
-        # 3. Refined corner brackets
-        bw, bh = x2 - x1, y2 - y1
-        corner_len = min(7, max(3, bw // 4), max(3, bh // 4))
-        # Top-Left
-        cv2.line(out, (x1, y1), (x1 + corner_len, y1), (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.line(out, (x1, y1), (x1, y1 + corner_len), (255, 255, 255), 2, cv2.LINE_AA)
-        # Top-Right
-        cv2.line(out, (x2, y1), (x2 - corner_len, y1), (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.line(out, (x2, y1), (x2, y1 + corner_len), (255, 255, 255), 2, cv2.LINE_AA)
-        # Bottom-Left
-        cv2.line(out, (x1, y2), (x1 + corner_len, y2), (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.line(out, (x1, y2), (x1, y2 - corner_len), (255, 255, 255), 2, cv2.LINE_AA)
-        # Bottom-Right
-        cv2.line(out, (x2, y2), (x2 - corner_len, y2), (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.line(out, (x2, y2), (x2, y2 - corner_len), (255, 255, 255), 2, cv2.LINE_AA)
+            # Thin dark outline for legibility
+            outline_color = (0, 0, 0)
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                cv2.putText(
+                    target_layer,
+                    label_text,
+                    (text_x + dx, text_y + dy),
+                    font,
+                    font_scale,
+                    outline_color,
+                    font_thickness,
+                    cv2.LINE_AA,
+                )
+            # Text in accent color
+            cv2.putText(
+                target_layer,
+                label_text,
+                (text_x, text_y),
+                font,
+                font_scale,
+                color,
+                font_thickness,
+                cv2.LINE_AA,
+            )
 
-        # 4. Target centroid dot
-        cv2.circle(out, (px, py), 3, color_dark_bg, -1, cv2.LINE_AA)
-        cv2.circle(out, (px, py), 2, color, -1, cv2.LINE_AA)
-
-        # 5. Floating Label Badge
-        label = tgt.get("label")
-        tag_text = label if label else f"TARGET #{idx + 1} [{int(norm_y)}, {int(norm_x)}]"
-        font_scale = 0.38
-        font_thickness = 1
-        (t_w, t_h), _ = cv2.getTextSize(tag_text, font, font_scale, font_thickness)
-
-        pad_x, pad_y = 6, 4
-        dot_radius = 3
-        dot_space = 8
-        total_badge_w = t_w + dot_space + (pad_x * 2)
-        total_badge_h = t_h + (pad_y * 2)
-
-        bx1 = max(4, min(w - total_badge_w - 4, px - total_badge_w // 2))
-        if y1 - total_badge_h - 6 > 4:
-            by1 = y1 - total_badge_h - 6
-        else:
-            by1 = min(h - total_badge_h - 4, y2 + 6)
-        bx2 = bx1 + total_badge_w
-        by2 = by1 + total_badge_h
-
-        # Semi-transparent dark pill background (alpha 85%)
-        badge_layer = out.copy()
-        cv2.rectangle(badge_layer, (bx1, by1), (bx2, by2), color_dark_bg, -1)
-        cv2.addWeighted(badge_layer, 0.85, out, 0.15, 0, out)
-
-        # Clean 1px border with target accent color
-        cv2.rectangle(out, (bx1, by1), (bx2, by2), color, 1, cv2.LINE_AA)
-
-        # Indicator dot & text
-        dot_cx = bx1 + pad_x + dot_radius
-        dot_cy = by1 + pad_y + (t_h // 2)
-        cv2.circle(out, (dot_cx, dot_cy), dot_radius, color, -1, cv2.LINE_AA)
-
-        text_x = bx1 + pad_x + dot_space
-        text_y = by1 + pad_y + t_h
-        cv2.putText(
-            out,
-            tag_text,
-            (text_x, text_y),
-            font,
-            font_scale,
-            color_text,
-            font_thickness,
-            cv2.LINE_AA,
-        )
+        # Alpha-blend stale target at ~50% opacity
+        if not is_active:
+            cv2.addWeighted(target_layer, 0.5, out, 0.5, 0, out)
 
     return out

@@ -367,9 +367,11 @@ async def test_move_to_spatial_point_custom_label() -> None:
         # Check visual target overlay
         targets = get_model_targets()
         assert len(targets) >= 1
-        active = targets[-1]
-        assert "[RED CUBE PICK]" in active["label"]
-        assert "(z=5.0cm)" in active["label"]
+        active = targets[0] if targets[0].get("active") else targets[-1]
+        assert active["label"] == "red cube pick"
+        assert active.get("active") is True
+        assert "z=" not in active["label"]
+        assert "[" not in active["label"]
         assert "🎯" not in active["label"]
         clear_model_targets()
 
