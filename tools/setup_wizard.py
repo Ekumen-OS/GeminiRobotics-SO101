@@ -1,10 +1,13 @@
 """Interactive wizard for workspace setup and ArUco marker configuration."""
 
+import functools
 import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
+
+import mujoco
 
 from robot.calibration import ArucoWorkspaceCalibrator
 from robot.settings import get_settings
@@ -17,6 +20,7 @@ from tools.calibration_sheet import (
 logger = logging.getLogger(__name__)
 
 
+@functools.lru_cache(maxsize=4)
 def get_pan_origin_offset_x_mm(xml_path: str | Path | None = None) -> float:
     """Read forward X offset (mm) between robot base origin and shoulder pan rotation axis.
 
@@ -31,7 +35,6 @@ def get_pan_origin_offset_x_mm(xml_path: str | Path | None = None) -> float:
     """
     if xml_path is None:
         xml_path = Path(__file__).resolve().parent.parent / "simulation" / "assets" / "scene.xml"
-    import mujoco
 
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     return float(model.body("shoulder").pos[0] * 1000.0)

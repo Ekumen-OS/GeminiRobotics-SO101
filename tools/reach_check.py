@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 # On headless Linux systems without an active display server, default to EGL offscreen rendering
 if (
@@ -25,12 +25,16 @@ from agent.tools import validate_and_clamp_joints
 from robot.calibration import ArucoWorkspaceCalibrator, GeometrySnapshot
 from robot.cartesian_ik import CartesianIK
 from robot.constants import PRESET_POSES
-from robot.errors import HardwareError
+from robot.errors import CalibrationUnavailable, HardwareError
 from robot.interface import RobotInterface
 from robot.logger import log_with_tag
 from robot.real_robot import RealSO101Robot
 from robot.registry import get_active_robot, set_active_robot
-from robot.settings import get_settings, table_height_to_robot_z_m
+from robot.settings import (
+    get_settings,
+    robot_z_to_table_height_mm,
+    table_height_to_robot_z_m,
+)
 from simulation.sim_calibration import init_sim_workspace_calibration
 from simulation.sim_robot import SO101Robot
 from vision.camera import _open_capture, get_default_camera_index
@@ -54,6 +58,8 @@ class ReachPointResult:
     fk_vs_truth_mm: float | None
     loc_vs_truth_mm: float | None
     tag_side_px: float | None
+    unreachable: bool = False
+    ik_err_mm: float = 0.0
 
 
 def build_reach_check_points(
@@ -120,8 +126,9 @@ def _move_to_hover(
 
 def _format_point_line(res: ReachPointResult) -> str:
     """Format single-line telemetry for one reach-check waypoint."""
+    status_str = f" [UNREACHABLE (IK err={res.ik_err_mm:.1f} mm)]" if res.unreachable else ""
     parts = [
-        f"[{res.name}]",
+        f"[{res.name}]{status_str}",
         f"cmd=({res.commanded_xy_mm[0]:+.1f}, {res.commanded_xy_mm[1]:+.1f}) mm",
         f"fk=({res.fk_xy_mm[0]:+.1f}, {res.fk_xy_mm[1]:+.1f}) mm",
     ]
@@ -157,6 +164,7 @@ def run_reach_check(
     calibrator: ArucoWorkspaceCalibrator | None = None,
     frame_fn: Callable[[], np.ndarray | None] | None = None,
     config_path: str | Path | None = None,
+    telemetry_dir: str | Path | None = None,
 ) -> list[ReachPointResult]:
     """Run the 5-point operator reach check and return per-point results.
 
@@ -172,6 +180,8 @@ def run_reach_check(
         calibrator: Optional pre-initialized workspace calibrator.
         frame_fn: Optional frame provider callable returning an RGB numpy array.
         config_path: Optional path to workspace calibration JSON.
+        telemetry_dir: Optional directory to persist raw frames and telemetry JSON.
+            Defaults to ``~/.cache/geminirobotics/reach_check/<timestamp>/``.
 
     Returns:
         List of ReachPointResult for all visited points.
@@ -185,6 +195,14 @@ def run_reach_check(
     settings = get_settings()
     points = build_reach_check_points(config_path=config_path)
     ik = CartesianIK()
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_dir = (
+        Path(telemetry_dir)
+        if telemetry_dir is not None
+        else Path.home() / ".cache" / "geminirobotics" / "reach_check" / timestamp
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     own_robot = robot is None
     cap: cv2.VideoCapture | None = None
@@ -247,7 +265,7 @@ def run_reach_check(
         results: list[ReachPointResult] = []
         try:
             robot.move_to_pose(PRESET_POSES["HOME"], duration_sec=1.0)
-            for name, x_mm, y_mm in points:
+            for idx, (name, x_mm, y_mm) in enumerate(points):
                 if interactive:
                     input(
                         f"Press Enter to move to {name} ({x_mm:+.1f}, {y_mm:+.1f}) mm "
@@ -256,8 +274,11 @@ def run_reach_check(
                 _move_to_hover(robot, ik, x_mm, y_mm, mode=mode)
 
                 qpos = robot.get_joint_positions()
-                fk_m = ik.forward_kinematics(qpos)
-                fk_xy = (float(fk_m[0] * 1000.0), float(fk_m[1] * 1000.0))
+                site_m, rot = ik.gripper_frame_pose(qpos)
+                fk_xy = (float(site_m[0] * 1000.0), float(site_m[1] * 1000.0))
+
+                ik_err_mm = float(np.hypot(fk_xy[0] - x_mm, fk_xy[1] - y_mm))
+                unreachable = ik_err_mm > 5.0
 
                 frame = frame_fn() if frame_fn is not None else None
                 snapshot: GeometrySnapshot | None = None
@@ -275,6 +296,22 @@ def run_reach_check(
                         np.linalg.norm(corners[(i + 1) % 4] - corners[i]) for i in range(4)
                     ]
                     tag_side_px = float(np.mean(edge_lengths))
+
+                tag_offset_world = rot @ np.asarray(
+                    settings.gripper_tag_local_offset_mm, dtype=np.float64
+                )
+                tag_z_robot_mm = float(site_m[2] * 1000.0 + tag_offset_world[2])
+                tag_height_mm = robot_z_to_table_height_mm(tag_z_robot_mm, mode=mode)
+
+                plane_intersection_mm: tuple[float, float] | None = None
+                if snapshot is not None and corners is not None:
+                    centre_px = corners.mean(axis=0)
+                    try:
+                        plane_intersection_mm = snapshot.pixel_to_plane_mm(
+                            float(centre_px[0]), float(centre_px[1]), tag_height_mm
+                        )
+                    except CalibrationUnavailable:
+                        plane_intersection_mm = None
 
                 loc = locate_jaw_xy_mm(
                     frame,
@@ -311,11 +348,63 @@ def run_reach_check(
                     fk_vs_truth_mm=fk_vs_truth,
                     loc_vs_truth_mm=loc_vs_truth,
                     tag_side_px=tag_side_px,
+                    unreachable=unreachable,
+                    ik_err_mm=ik_err_mm,
                 )
                 results.append(res)
                 print(_format_point_line(res))
 
+                # Save raw telemetry and frame outside repo
+                slug = name.lower().replace(" ", "_").replace("(", "").replace(")", "")
+                slug = slug.replace("/", "_")
+                if frame is not None:
+                    bgr_save = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(out_dir / f"point_{idx:02d}_{slug}.png"), bgr_save)
+
+                cam_data: dict[str, Any] = {}
+                if snapshot is not None and snapshot.camera is not None:
+                    cam_data = {
+                        "centre_mm": [float(v) for v in snapshot.camera.centre_mm],
+                        "hfov_deg": float(snapshot.hfov_deg),
+                        "image_size": [int(v) for v in snapshot.image_size],
+                    }
+
+                point_record: dict[str, Any] = {
+                    "name": name,
+                    "commanded_xy_mm": [float(x_mm), float(y_mm)],
+                    "fk_xy_mm": [float(fk_xy[0]), float(fk_xy[1])],
+                    "ik_err_mm": ik_err_mm,
+                    "unreachable": unreachable,
+                    "qpos_rad": [float(v) for v in qpos],
+                    "site_fk_m": [float(v) for v in site_m],
+                    "tag_offset_world_mm": [float(v) for v in tag_offset_world],
+                    "tag_height_mm": float(tag_height_mm),
+                    "tag_corner_pixels": (
+                        [[float(c[0]), float(c[1])] for c in corners]
+                        if corners is not None
+                        else None
+                    ),
+                    "plane_intersection_mm": (
+                        [float(plane_intersection_mm[0]), float(plane_intersection_mm[1])]
+                        if plane_intersection_mm is not None
+                        else None
+                    ),
+                    "locator_xy_mm": (
+                        [float(loc_xy[0]), float(loc_xy[1])] if loc_xy is not None else None
+                    ),
+                    "loc_minus_fk_mm": (
+                        [float(loc_minus_fk[0]), float(loc_minus_fk[1])]
+                        if loc_minus_fk is not None
+                        else None
+                    ),
+                    "camera": cam_data,
+                }
+                (out_dir / f"point_{idx:02d}_{slug}.json").write_text(
+                    json.dumps(point_record, indent=2), encoding="utf-8"
+                )
+
             robot.move_to_pose(PRESET_POSES["HOME"], duration_sec=1.0)
+            print(f"\nSaved reach-check telemetry and frames to: {out_dir}")
         except KeyboardInterrupt:
             print("\nInterrupted by operator (Ctrl-C); returning to HOME...")
             robot.move_to_pose(PRESET_POSES["HOME"], duration_sec=1.0)
@@ -324,8 +413,8 @@ def run_reach_check(
             log_with_tag(logger, "ERROR", f"HardwareError during reach_check: {e}")
             try:
                 robot.interrupt()
-            except HardwareError:
-                pass
+            except HardwareError as interrupt_err:
+                sys.stderr.write(f"Failed to interrupt robot: {interrupt_err}\n")
             raise
 
         return results
@@ -338,3 +427,57 @@ def run_reach_check(
                 robot.close()
             if hasattr(robot, "disconnect"):
                 robot.disconnect()
+
+
+def replay_reach_point(
+    json_path: str | Path,
+    frame_path: str | Path | None = None,
+    ik: CartesianIK | None = None,
+) -> dict[str, Any]:
+    """Recompute jaw locator from a saved reach_check telemetry JSON and frame.
+
+    Args:
+        json_path: Path to saved waypoint JSON.
+        frame_path: Optional path to saved RGB/BGR frame PNG. If None, looks for matching PNG.
+        ik: Optional CartesianIK instance.
+
+    Returns:
+        Dict with recomputed locator values and validation comparison against saved result.
+    """
+    json_file = Path(json_path)
+    data = json.loads(json_file.read_text(encoding="utf-8"))
+
+    qpos = np.asarray(data["qpos_rad"], dtype=np.float64)
+    solver = ik if ik is not None else CartesianIK()
+    site_m, rot = solver.gripper_frame_pose(qpos)
+    fk_xy = (float(site_m[0] * 1000.0), float(site_m[1] * 1000.0))
+
+    tag_offset_world = np.asarray(data["tag_offset_world_mm"], dtype=np.float64)
+    plane_intersection = (
+        tuple(data["plane_intersection_mm"])
+        if data.get("plane_intersection_mm") is not None
+        else None
+    )
+
+    replayed_loc_xy: tuple[float, float] | None = None
+    if plane_intersection is not None:
+        replayed_loc_xy = (
+            float(plane_intersection[0] - tag_offset_world[0]),
+            float(plane_intersection[1] - tag_offset_world[1]),
+        )
+
+    saved_loc_xy = tuple(data["locator_xy_mm"]) if data.get("locator_xy_mm") is not None else None
+    matches = (
+        bool(np.allclose(replayed_loc_xy, saved_loc_xy, atol=1e-3))
+        if replayed_loc_xy and saved_loc_xy
+        else False
+    )
+
+    return {
+        "name": data.get("name"),
+        "commanded_xy_mm": tuple(data["commanded_xy_mm"]),
+        "fk_xy_mm": fk_xy,
+        "replayed_loc_xy_mm": replayed_loc_xy,
+        "saved_loc_xy_mm": saved_loc_xy,
+        "matches": matches,
+    }
