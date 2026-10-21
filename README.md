@@ -2,16 +2,18 @@
 
 ## GeminiRobotics-SO101 🤖
 
-GeminiRobotics-SO101 connects Google's Gemini Robotics multimodal models (`gemini-robotics-er-2-streaming-preview`) to the low-cost 6-DOF SO-101 robotic arm via a unified web interface built with FastAPI, Gradio 6.0, OpenCV, and Three.js. The operator enters natural language instructions, and Gemini orchestrates pick-and-place tasks through continuous video streaming and real-time tool calling in both physical hardware and MuJoCo simulation.
+GeminiRobotics-SO101 connects [Google's Gemini Robotics multimodal models](https://ai.google.dev/gemini-api/docs/robotics-overview) (`gemini-robotics-er-2-streaming-preview`) to the low-cost 6-DOF [SO-101 robotic arm](https://huggingface.co/docs/lerobot/en/so101) via a unified web interface built with FastAPI, Gradio 6.0, OpenCV, and Three.js.
+
+The user enters natural language instructions, and Gemini orchestrates pick-and-place tasks through continuous video streaming and real-time tool calling in both physical hardware and MuJoCo simulation.
 
 <p align="center">
-  <img src="assets/docs/ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
+  <img src="assets/docs/new_ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
 </p>
 
 ## Hardware
 
 - **Arm**: Feetech STS3215-based SO-101 6-DOF robotic arm.
-- **Camera**: Standard UVC USB camera mounted ~45–60 cm above the tabletop looking down at the workspace.
+- **Camera**: 8MP Arducam  mounted ~45–60 cm above the tabletop looking down at the workspace.
 - **Tabletop Mat**: Printable 4-corner ArUco calibration mat (`DICT_4X4_50`, IDs 1, 2, 3, 0).
 - **Jaw Tag**: 25 mm ArUco marker (`DICT_4X4_50`, ID 10) mounted on the gripper fixed jaw for parallax-free visual closed-loop alignment.
 
