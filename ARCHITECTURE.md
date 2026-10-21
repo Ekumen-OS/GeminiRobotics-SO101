@@ -56,7 +56,7 @@ robot  <  simulation  <  vision  <  agent  <  ui
 - **`vision/`**: Camera capture, dual frame buffers, target blackboard, and jaw-tag locator. Imports `robot` and `simulation`. Never imports `agent` or `ui`.
 - **`agent/`**: Gemini Live WebSocket session (`GeminiLiveSession`), tool declarations and execution (`agent/tools.py`), pick loop (`agent/pick_loop.py`), guardrail state machine (`agent/guardrails.py`), and controller (`VLAController`). Imports `vision`, `simulation`, and `robot`. Never imports `ui`.
 - **`ui/`**: FastAPI application and Gradio web interface (`ui/app.py`), Three.js 3D viewer, and UI components. Top-level presentation layer.
-- **`tools/`**: Standalone operator CLI utilities (`check_env.py`, `aruco_stl.py`, `calibration_sheet.py`, `setup_wizard.py`). May import layers below it; no package below imports `tools/`.
+- **`tools/`**: Standalone operator CLI utilities (`check_env.py`, `aruco_stl.py`, `calibration_sheet.py`, `setup_wizard.py`, `reach_check.py`). May import layers below it; no package below imports `tools/`.
 
 Enforced locally via `[tool.importlinter]` in `pyproject.toml` with `uv run lint-imports`. Cycle-dodging local imports are strictly prohibited.
 
@@ -181,7 +181,7 @@ The test suite in `tests/` is organized strictly by subject:
 - `tests/vision/`: Camera selection, dual-buffer integrity, and detector segmentation.
 - `tests/agent/`: Gemini Live session mocking, tool execution, and pick-loop state machine.
 - `tests/ui/`: FastAPI endpoints, Gradio component event wiring, and viewer assets.
-- `tests/tools/`: Preflight diagnostics, STL generation, and workspace setup wizards.
+- `tests/tools/`: Preflight diagnostics, STL generation, reach checks, and workspace setup wizards.
 - `tests/e2e/`: End-to-end spatial grounding and guardrail integration tests.
 - `tests/harness/sim_pick.py`: Headless scripted sim pick-and-place harness (`SimPickHarness`, `run_scenario`) testing multi-placement runs against ground-truth MuJoCo physics.
 

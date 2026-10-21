@@ -76,7 +76,7 @@ Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physica
    # Or in simulation:
    uv run python main.py --task reach_check --mode sim
    ```
-   The arm moves to `HOME`, waits for `Enter` before hovering 50 mm above each marker centre and the mat centre, prints commanded XY, FK grasp-site XY, jaw-tag locator XY, and `loc-fk` residual, and returns `HOME` (or on `Ctrl-C`). At each hover, measure the physical miss from the fingertip midpoint to the marker centre with a ruler.
+   The arm moves to `HOME`, waits for `Enter` before hovering 50 mm above each marker centre and the mat centre, prints commanded XY, FK grasp-site XY, jaw-tag locator XY, and `loc-fk` residual, and returns `HOME` (or on `Ctrl-C`). Markers beyond reach are expected; `reach_check` flags them as `UNREACHABLE`. At each hover, measure the physical miss from the fingertip midpoint to the marker centre with a ruler.
 6. **Real-arm grasp calibration**:
    - Run `close_gripper` on air: note logged aperture $A_{\text{empty}}$ (e.g. $-74.5^\circ$) and set `GRIPPER_EMPTY_APERTURE_DEG`.
    - Run `close_gripper` on a 30 mm cube: note stalled aperture $A_{\text{object}}$ and set `GRASP_EMPTY_MARGIN_DEG` to $\approx 0.40 \times (A_{\text{object}} - A_{\text{empty}})$.

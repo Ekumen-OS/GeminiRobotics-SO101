@@ -9,7 +9,7 @@ import pytest
 from robot.errors import HardwareError
 from robot.settings import get_settings
 from tests.conftest import MockRobot
-from tools.reach_check import build_reach_check_points, run_reach_check
+from tools.reach_check import build_reach_check_points, replay_reach_point, run_reach_check
 
 
 def test_build_reach_check_points(tmp_path: Path) -> None:
@@ -81,3 +81,70 @@ def test_run_reach_check_fails_closed_on_hardware_error() -> None:
             frame_fn=lambda: None,
         )
     assert robot._stop_requested is True
+
+
+def test_run_reach_check_marks_unreachable_and_saves_telemetry(tmp_path: Path) -> None:
+    """Reach check marks points differing by >5 mm as UNREACHABLE and saves telemetry."""
+    # Config with an extreme out-of-reach point
+    out_of_reach_cfg = {
+        "marker_ids": {"top_left": 1, "top_right": 2, "bottom_right": 3, "bottom_left": 0},
+        "workspace_corners_mm": {
+            "top_left": {"x": 1000.0, "y": -200.0},
+            "top_right": {"x": 200.0, "y": -50.0},
+            "bottom_right": {"x": 200.0, "y": 50.0},
+            "bottom_left": {"x": 250.0, "y": 0.0},
+        },
+    }
+    cfg_file = tmp_path / "extreme_cfg.json"
+    cfg_file.write_text(json.dumps(out_of_reach_cfg), encoding="utf-8")
+    telemetry_dir = tmp_path / "telemetry"
+
+    results = run_reach_check(
+        mode="sim",
+        interactive=False,
+        config_path=cfg_file,
+        telemetry_dir=telemetry_dir,
+    )
+
+    # First point was at x=1000.0 mm (clearly unreachable for 350 mm arm)
+    assert results[0].unreachable is True
+    assert results[0].ik_err_mm > 5.0
+
+    # Verify telemetry directory has saved point JSONs and PNGs
+    saved_jsons = list(telemetry_dir.glob("*.json"))
+    assert len(saved_jsons) == len(results)
+
+    # Test offline replay
+    for json_file in saved_jsons:
+        replay_res = replay_reach_point(json_file)
+        assert replay_res["name"] is not None
+        assert len(replay_res["fk_xy_mm"]) == 2
+        if replay_res["saved_loc_xy_mm"] is not None:
+            assert replay_res["matches"] is True
+
+
+def test_run_reach_check_hardware_error_logs_interrupt_failure_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If robot.interrupt() raises HardwareError, reach_check logs to stderr and re-raises."""
+    robot = MockRobot()
+
+    def broken_move(*args: object, **kwargs: object) -> None:
+        raise HardwareError("Servo failure", robot_moved=True)
+
+    def broken_interrupt() -> None:
+        raise HardwareError("Interrupt bus failed")
+
+    robot.move_to_pose = broken_move  # type: ignore[method-assign]
+    robot.interrupt = broken_interrupt  # type: ignore[method-assign]
+
+    with pytest.raises(HardwareError, match="Servo failure"):
+        run_reach_check(
+            mode="real",
+            interactive=False,
+            robot=robot,
+            frame_fn=lambda: None,
+        )
+
+    err = capsys.readouterr().err
+    assert "Failed to interrupt robot: Interrupt bus failed" in err
