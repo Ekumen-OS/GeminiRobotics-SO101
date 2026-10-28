@@ -5,8 +5,7 @@ GeminiRobotics-SO101 connects [Google's Gemini Robotics multimodal models](https
 The user enters natural language instructions, and Gemini orchestrates pick-and-place tasks through continuous video streaming and real-time tool calling in both physical hardware and MuJoCo simulation.
 
 <p align="center">
-  <img src="assets/docs/new_ui.jpeg" alt="GeminiRobotics-SO101 Web UI" width="49%" />
-  <img src="assets/docs/demo-compact.gif" alt="GeminiRobotics-SO101 autonomous pick-and-place demo in Web UI" width="49%" />
+  <img src="assets/docs/demo-compact.gif" alt="GeminiRobotics-SO101 autonomous pick-and-place demo in Web UI" />
 </p>
 
 ## Quick start
