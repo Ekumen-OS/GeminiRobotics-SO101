@@ -1,0 +1,15 @@
+GeminiRobotics-SO101
+Copyright 2026 Ekumen
+
+This product includes software developed at Ekumen (https://www.ekumenlabs.com/).
+
+-------------------------------------------------------------------------------
+Third-Party Attributions
+-------------------------------------------------------------------------------
+
+SO-101 Robot Description and Meshes (`simulation/assets/so101.xml`,
+`simulation/assets/scene.xml`, `simulation/assets/meshes/*.stl`)
+  Source: https://github.com/TheRobotStudio/SO-ARM100 (`Simulation/SO101/`)
+  Copyright TheRobotStudio and contributors
+  Licensed under the Apache License, Version 2.0.
+  See `simulation/assets/README.md` for local modifications.
