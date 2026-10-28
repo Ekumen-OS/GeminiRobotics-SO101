@@ -192,7 +192,6 @@ async def test_t4_scenario_pre_grasp_hover_alignment_and_self_correction() -> No
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -310,7 +309,6 @@ async def test_t4_scenario_missed_grasp_automated_retry_and_recovery() -> None:
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -443,7 +441,6 @@ async def test_t4_scenario_consecutive_failures_retry_exhaustion_escalation() ->
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True
@@ -556,7 +553,6 @@ async def test_t4_scenario_complete_pick_and_place_pipeline() -> None:
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
 
     mock_calib = MagicMock()
     mock_calib.is_calibrated = True

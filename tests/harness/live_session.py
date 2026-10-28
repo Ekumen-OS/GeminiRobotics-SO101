@@ -89,7 +89,6 @@ def fake_live_session(messages: list[Any] | None = None) -> MagicMock:
     mock_session.connect = AsyncMock()
     mock_session.send_instruction = AsyncMock()
     mock_session.send_tool_response = AsyncMock()
-    mock_session.send_frame = AsyncMock()
     mock_session.disconnect = AsyncMock()
 
     msg_list = list(messages) if messages is not None else []

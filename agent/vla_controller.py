@@ -140,7 +140,6 @@ class _TurnContext:
     get_latest_jpeg_fn: Callable[[], bytes | None] | None
     get_fresh_jpeg_fn: Callable[[float, float], bytes | None] | None
     response_queue: asyncio.Queue
-    tool_executing_event: asyncio.Event
 
 
 class VLAController:
@@ -233,27 +232,6 @@ class VLAController:
 
         raise SessionError("Failed to connect to Gemini Live API after 3 attempts.")
 
-    async def _stream_frames_during_execution(
-        self, get_latest_jpeg_fn, tool_executing_event: asyncio.Event
-    ) -> None:
-        """Stream pristine raw frames at ~1 FPS while a BLOCKING tool is executing."""
-        if not self._session or not get_latest_jpeg_fn:
-            return
-
-        while tool_executing_event.is_set():
-            jpeg = get_latest_jpeg_fn()
-            if jpeg:
-                try:
-                    await self._session.send_frame(jpeg)
-                except (SessionError, OSError) as e:
-                    log_with_tag(logger, "ERROR", f"Frame stream error: {e}")
-                    break
-            # Wait up to 1.0 s in <= 0.1 s slices while tool_executing_event is set
-            for _ in range(10):
-                if not tool_executing_event.is_set():
-                    break
-                await asyncio.sleep(0.1)
-
     async def _handle_model_turn(self, parts: Sequence[Any], ctx: _TurnContext) -> None:
         """Process model turn parts for reasoning thoughts and narration text.
 
@@ -298,15 +276,6 @@ class VLAController:
         spec = TOOL_REGISTRY.get(call.name)
         is_blocking = spec.blocking if spec is not None else False
 
-        frame_task = None
-        if is_blocking:
-            ctx.tool_executing_event.set()
-            frame_task = asyncio.create_task(
-                self._stream_frames_during_execution(
-                    ctx.get_latest_jpeg_fn, ctx.tool_executing_event
-                )
-            )
-
         result_dict = await execute_tool_call(
             call=call,
             robot=self.robot,
@@ -316,37 +285,29 @@ class VLAController:
             get_fresh_jpeg_fn=ctx.get_fresh_jpeg_fn,
         )
 
+        post_frame: bytes | None = None
         post_frame_missing = False
         if is_blocking:
-            ctx.tool_executing_event.clear()
-            if frame_task:
-                await frame_task
-
             # Post-action observation frame for the model (measurement waits are in the tools)
             settle_s = get_settings().vision_settle_s
             if settle_s > 0:
                 await asyncio.sleep(settle_s)
 
             if ctx.get_latest_jpeg_fn:
-                post_frame = ctx.get_latest_jpeg_fn()
+                try:
+                    post_frame = ctx.get_latest_jpeg_fn()
+                except (OSError, RuntimeError) as e:
+                    log_with_tag(logger, "ERROR", f"Post-action frame capture error: {e}")
+                    post_frame = None
             else:
                 post_frame = None
 
             if post_frame:
-                try:
-                    log_with_tag(
-                        logger,
-                        "STREAM",
-                        f"📸 Injected post-action observation frame ({len(post_frame)} bytes)",
-                    )
-                    if self._session:
-                        await self._session.send_frame(post_frame)
-                except (SessionError, OSError) as e:
-                    log_with_tag(logger, "ERROR", f"Post-action frame error: {e}")
-                    post_frame_missing = True
-                    await ctx.response_queue.put(
-                        {"type": "status", "content": f"⚠️ Failed to deliver post-action frame: {e}"}
-                    )
+                log_with_tag(
+                    logger,
+                    "STREAM",
+                    f"📸 Injected post-action observation frame ({len(post_frame)} bytes)",
+                )
             elif ctx.get_latest_jpeg_fn is not None:
                 post_frame_missing = True
                 await ctx.response_queue.put(
@@ -391,8 +352,22 @@ class VLAController:
                 {"type": "status", "content": f"✅ `{call.name}` completed."}
             )
 
+        parts = None
+        if post_frame is not None:
+            parts = [
+                types.FunctionResponsePart(
+                    inline_data=types.FunctionResponseBlob(
+                        mime_type="image/jpeg",
+                        data=post_frame,
+                    )
+                )
+            ]
+
         return types.FunctionResponse(
-            name=call.name, id=call.id, response=cast(dict[str, Any], result_dict)
+            name=call.name,
+            id=call.id,
+            response=cast(dict[str, Any], result_dict),
+            parts=parts,
         )
 
     async def _handle_tool_call(self, tool_call: Any, ctx: _TurnContext) -> None:
@@ -495,7 +470,6 @@ class VLAController:
                 get_latest_jpeg_fn=get_latest_jpeg_fn,
                 get_fresh_jpeg_fn=get_fresh_jpeg_fn,
                 response_queue=response_queue,
-                tool_executing_event=asyncio.Event(),
             )
 
             try:
