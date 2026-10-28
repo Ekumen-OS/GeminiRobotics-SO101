@@ -1,6 +1,8 @@
 """Live API WebSocket session manager for Gemini."""
 
 import asyncio
+import base64
+import json
 import logging
 from typing import Any, AsyncIterator
 
@@ -51,6 +53,79 @@ def build_live_config(tool_declarations: list[dict], system_instruction: str) ->
         "tools": [{"function_declarations": tool_declarations}],
         "system_instruction": {"parts": [{"text": system_instruction}]},
     }
+
+
+def _serialize_function_responses(
+    function_responses: list[types.FunctionResponse],
+) -> dict[str, Any]:
+    """Serialize function responses with multimodal parts to Live API WebSocket wire format.
+
+    Emits camelCase keys matching the Live API protocol: functionResponses, inlineData, mimeType.
+    Rejects unsupported part fields to prevent silent payload loss.
+
+    Args:
+        function_responses: List of FunctionResponse objects.
+
+    Returns:
+        JSON-serializable dictionary with tool_response structure.
+
+    Raises:
+        ValueError: If a part contains unsupported fields.
+    """
+    responses: list[dict[str, Any]] = []
+    for resp in function_responses:
+        d = resp.model_dump(exclude_none=True)
+        item: dict[str, Any] = {
+            "id": d["id"],
+            "name": d["name"],
+            "response": d.get("response", {}),
+        }
+        if "parts" in d:
+            parts_list = []
+            for p in d["parts"]:
+                part_dict: dict[str, Any] = {}
+                if "inline_data" in p:
+                    data_val = p["inline_data"]["data"]
+                    if isinstance(data_val, (bytes, bytearray)):
+                        data_val = base64.b64encode(data_val).decode("utf-8")
+                    part_dict["inlineData"] = {
+                        "mimeType": p["inline_data"]["mime_type"],
+                        "data": data_val,
+                    }
+                elif "file_data" in p:
+                    raise ValueError("file_data parts in tool responses are not supported")
+                else:
+                    raise ValueError(f"Unsupported FunctionResponsePart: {p}")
+                parts_list.append(part_dict)
+            item["parts"] = parts_list
+        responses.append(item)
+    return {"tool_response": {"functionResponses": responses}}
+
+
+async def _send_tool_response_wire(
+    session: Any, function_responses: list[types.FunctionResponse]
+) -> None:
+    """Send tool responses carrying multimodal parts directly over the WebSocket.
+
+    Workaround for google-genai <= 2.32.0 bug: AsyncSession.send_tool_response calls
+    _common.convert_to_dict which leaves FunctionResponseBlob.data as raw bytes, causing
+    json.dumps to raise TypeError ('Object of type bytes is not JSON serializable').
+    Delete this function once the SDK natively serializes FunctionResponseBlob.data.
+
+    Args:
+        session: Underlying live session object from client.aio.live.connect().
+        function_responses: List of FunctionResponse objects containing parts.
+
+    Raises:
+        SessionError: If session._ws is not available.
+    """
+    ws = getattr(session, "_ws", None)
+    if ws is None:
+        raise SessionError(
+            "Cannot send multimodal tool response with parts: session._ws is not available."
+        )
+    payload = _serialize_function_responses(function_responses)
+    await ws.send(json.dumps(payload))
 
 
 class GeminiLiveSession:
@@ -118,33 +193,41 @@ class GeminiLiveSession:
 
         try:
             async with self._ws_lock:
+                parts: list[types.Part] = []
                 if frame_jpeg:
                     log_with_tag(
                         logger,
                         "STREAM",
                         f"📸 Sent initial observation frame ({len(frame_jpeg)} bytes)",
                     )
-                    await self._session.send_realtime_input(
-                        video=types.Blob(mime_type="image/jpeg", data=frame_jpeg)
+                    parts.append(
+                        types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=frame_jpeg))
                     )
 
-                log_with_tag(logger, "INFO", f"Sending text: {text!r}")
-                await self._session.send_realtime_input(text=text)
+                parts.append(types.Part(text=text))
+                log_with_tag(logger, "INFO", f"Sending instruction turn: {text!r}")
+                await self._session.send_client_content(
+                    turns=types.Content(role="user", parts=parts),
+                    turn_complete=True,
+                )
         except Exception as e:
             raise SessionError(f"Failed to send instruction: {e}") from e
 
-    async def send_frame(self, jpeg_bytes: bytes) -> None:
-        """Send a JPEG frame to the model without instruction (proactive)."""
-        if not self._session:
-            return
-        try:
-            async with self._ws_lock:
-                log_with_tag(logger, "STREAM", f"📸 Sent video frame ({len(jpeg_bytes)} bytes)")
-                await self._session.send_realtime_input(
-                    video=types.Blob(mime_type="image/jpeg", data=jpeg_bytes)
+    @staticmethod
+    def _summarize_tool_responses(function_responses: list[types.FunctionResponse]) -> str:
+        """Summarize tool responses without logging raw image bytes."""
+        summaries = []
+        for resp in function_responses:
+            parts_info = ""
+            if resp.parts:
+                jpeg_bytes = sum(
+                    len(p.inline_data.data)
+                    for p in resp.parts
+                    if p.inline_data and isinstance(p.inline_data.data, (bytes, bytearray))
                 )
-        except Exception as e:
-            raise SessionError(f"Failed to send frame: {e}") from e
+                parts_info = f" (parts={len(resp.parts)} jpeg={jpeg_bytes} bytes)"
+            summaries.append(f"{resp.name}[{resp.id}]: {resp.response}{parts_info}")
+        return "[" + ", ".join(summaries) + "]"
 
     async def send_tool_response(self, function_responses: list[types.FunctionResponse]) -> None:
         """Send tool execution results back to the model."""
@@ -153,8 +236,16 @@ class GeminiLiveSession:
 
         try:
             async with self._ws_lock:
-                log_with_tag(logger, "INFO", f"Sending tool responses: {function_responses}")
-                await self._session.send_tool_response(function_responses=function_responses)
+                log_with_tag(
+                    logger,
+                    "INFO",
+                    f"Sending tool responses: {self._summarize_tool_responses(function_responses)}",
+                )
+                has_parts = any(getattr(r, "parts", None) for r in function_responses)
+                if has_parts:
+                    await _send_tool_response_wire(self._session, function_responses)
+                else:
+                    await self._session.send_tool_response(function_responses=function_responses)
         except Exception as e:
             raise SessionError(f"Failed to send tool response: {e}") from e
 
