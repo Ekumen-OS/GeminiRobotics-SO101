@@ -41,6 +41,11 @@ To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements 
 2. **Operator Display Channel (`/api/stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and minimal model target pointers for operator inspection. Served as a single long-lived `multipart/x-mixed-replace` MJPEG stream rendered by an `<img>` tag. Browser quality and frame rate are configured via `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
 3. **Capture Lifecycle**: In real mode, a single background capture thread (`vision/capture.py:ensure_camera_capture`) produces frames for all consumers. In sim mode, a dedicated worker thread (`vision/sim_runtime.py:ensure_sim_runtime_started`) renders offscreen frames from MuJoCo.
 
+### Model Frame Delivery & Session Protocol
+Frames reach the Gemini Live session via two explicit, ordered delivery paths:
+1. **Initial Instruction Turn (`send_instruction`)**: User instructions are sent as an ordered turn via `send_client_content(turns=Content(role="user", parts=[image_part, text_part]), turn_complete=True)`. The initial camera frame is placed first as an inline JPEG Blob before the user instruction text, guaranteeing the image is in model context before turn execution begins.
+2. **Post-Action Observation Frame (`FunctionResponse.parts`)**: After executing any blocking tool (such as spatial moves or gripper commands), a fresh settled observation frame is delivered directly inside the tool's `FunctionResponse.parts` as an inline JPEG blob. This guarantees that visual feedback from the executed action is immediately available to the model within the active turn, without requiring out-of-band streaming. Because `google-genai` (versions $\le$ 2.32.0) fails with a serialization `TypeError` on raw binary bytes in `send_tool_response`, `agent/live_session.py` serializes multimodal tool responses with base64-encoded `inlineData` directly to the active WebSocket wire. Live probe validation confirmed within-turn observation efficacy: Mechanism A 3/3, Mechanism B 0/3, ordered instruction turn 3/3.
+
 ---
 
 ## 2. Layered Dependency Architecture
@@ -201,6 +206,5 @@ uv run pytest tests/ -q --cov=robot --cov=vision --cov=agent --cov-fail-under=78
 
 ## 8. Known Limitations
 
-- **Sim Pick Lock Churn**: The end-to-end live simulation pick currently exhibits a `no_lock` $\rightarrow$ `retry_exhausted` failure mode under active investigation.
 - **GLFW Desktop Rendering**: Desktop rendering with native GLFW windowing is untested; headless EGL offscreen rendering is the primary validated path.
 - **Hardware Convergence Bounds**: Real-arm servo settling tolerances and contact thresholds are empirically calibrated for standard STS3215 servos and have not been validated across varied mechanical wear states.
