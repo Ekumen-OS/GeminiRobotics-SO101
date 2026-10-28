@@ -10,6 +10,10 @@ The user enters natural language instructions, and Gemini orchestrates pick-and-
   <img src="assets/docs/new_ui.jpeg" alt="GeminiRobotics-SO101 Web UI" />
 </p>
 
+<p align="center">
+  <img src="assets/docs/demo-compact.gif" alt="GeminiRobotics-SO101 autonomous pick-and-place demo in Web UI" />
+</p>
+
 ## Hardware
 
 - **Arm**: Feetech STS3215-based SO-101 6-DOF robotic arm.
@@ -102,6 +106,12 @@ uv run python main.py --mode real --task check_environment
 
 Each check outputs `[OK]`, `[WARN]`, or `[FAIL]` with fix hints. Exits 0 on success, 1 on failure.
 
+## Safety
+
+- Keep a hand near the power switch, and run the first runs at low speed with a clear workspace.
+- The model chooses targets autonomously.
+- This project is a research demo, not a safety-rated controller.
+
 ## Running the Web UI
 
 Launch the Unified FastAPI + Gradio Web UI at `http://localhost:7860/`:
@@ -164,3 +174,11 @@ uv run lint-imports
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for data flows, subsystem interfaces, and invariants, and [AGENTS.md](AGENTS.md) for coding guidelines.
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and pull request workflow.
+
+## Credits
+
+- **SO-101 Hardware & Simulation Model**: [TheRobotStudio / SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (Apache-2.0) and [Hugging Face LeRobot](https://huggingface.co/docs/lerobot/en/so101) — see [`simulation/assets/README.md`](simulation/assets/README.md) and [`NOTICE`](NOTICE).
+- **Physics Simulation**: [MuJoCo](https://github.com/google-deepmind/mujoco) by Google DeepMind.
+- **Embodied Reasoning**: [Google Gemini Robotics](https://ai.google.dev/gemini-api/docs/robotics-overview) (`gemini-robotics-er-2-streaming-preview`).

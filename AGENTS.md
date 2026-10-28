@@ -63,13 +63,11 @@
   - **Guaranteed Cleanup**: Wrap execution in `try...finally` blocks to guarantee all controls are restored to `gr.update(interactive=True)` and banner to `🟢 Status: Ready` upon completion or error.
   - **Component Event Parity**: Ensure event generator return tuples match exact component counts across modes (12 updates in `real` mode, 13 updates in `sim` mode with `rand_btn`).
   - **Thread Safety**: Access and modify global robot instances exclusively through thread-safe helpers in `robot/registry.py` (`get_active_robot()`, `set_active_robot()`) or delegated via `ui/state.py`.
-  - To test Web changes with Gradio, use Chrome DevTools if available.
 
-## 4. Git Restrictions
+## 4. Git Workflow
 
-> [!IMPORTANT]
-> **NEVER execute `git add` or `git commit`.** The user assumes full responsibility for staging and committing changes. Read-only exploratory commands (`git status`, `git diff`, `git log`) are allowed.
+- Agents do not stage, commit, or push changes (`git add`, `git commit`, `git push`); a human reviews and commits. Read-only exploratory commands (`git status`, `git diff`, `git log`) are allowed.
 
 ## 5. External Repo Info (`gh`)
 
-- You are authorized and encouraged to use the GitHub CLI (`gh`) to query external repositories, docs, issues, and PRs (e.g., `gh repo view google-deepmind/mujoco`).
+- Use the GitHub CLI (`gh`) to query external repositories, documentation, issues, and PRs when needed (e.g., `gh repo view google-deepmind/mujoco`).

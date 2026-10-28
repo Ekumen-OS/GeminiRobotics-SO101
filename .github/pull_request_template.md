@@ -15,7 +15,7 @@
 - [ ] `uv run ruff check . && uv run ruff format --check .`
 - [ ] `uv run mypy` and `uv run lint-imports`
 - [ ] `uv run pytest -q -m "" --cov=robot --cov=vision --cov=agent --cov-fail-under=78` (slow tests included)
-- [ ] Sim run (`--mode sim`, harness or reach check):
+- [ ] Sim run (`--mode sim`, harness or a scripted pick):
 - [ ] Real-arm run (`--mode real`): what was done and what was measured, in mm
 - [ ] Screenshots / logs for UI or behaviour changes
 
