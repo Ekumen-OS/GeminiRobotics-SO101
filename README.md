@@ -52,6 +52,7 @@ For the physical SO-101, see [Hardware](#hardware), [Workspace Calibration](#wor
 - [Running the Server](#running-the-server)
 - [Model Tools](#model-tools)
 - [Troubleshooting](#troubleshooting)
+- [Agent Skills](#agent-skills)
 - [Development](#development)
 - [Credits](#credits)
 
@@ -124,14 +125,16 @@ You only need to do this for the real arm. Simulation comes pre-calibrated. The 
   
    Re-run it with `--reuse` to change dimensions without regenerating the files, `--regenerate` to overwrite them, or `--non-interactive` to accept the defaults.
 
-   ![Workspace Placement Guide](assets/docs/placement_guide.png)
+   Here is an example guide, generated for our own table (near X 97 mm, depth 317 mm, width 342 mm, lateral offset −69 mm). Yours will show your own measurements, so print the one the wizard writes, not this one. Click the image to open it full size.
+
+   [![Example workspace placement guide for a 342 × 317 mm rectangle](assets/docs/placement_guide.png)](assets/docs/placement_guide.png)
 
    Once the markers are in place, check your work: start the Web UI (`uv run python main.py`) and turn on "📐 Show Calibration Overlay" (`ui/components/vision.py`).
 
    The overlay should line up with the table in the live camera stream.
    You can also compare the `height_mm` value in the `[Calibration] [CAMERA]` log with how high your camera actually is.
 
-1. **(Optional) 3D-print the tags with `tools/aruco_stl.py`**:
+2. **(Optional) 3D-print the tags with `tools/aruco_stl.py`**:
    If you'd rather print rigid tags than paper, this tool generates watertight binary STL meshes for single-color grooved printing, or for dual-color printing in Bambu Studio / AMS (`_white.stl` + `_black.stl`):
 
    ```bash
@@ -147,11 +150,13 @@ You only need to do this for the real arm. Simulation comes pre-calibrated. The 
    - `--dictionary`: OpenCV dictionary (default: `DICT_4X4_50`).
    - `--all-workspace-markers`: Also generates 40 mm table corner tags (IDs 0, 1, 2, 3).
 
-2. **Attach the jaw tag**:
+3. **Attach the jaw tag**:
    The jaw tag lets the camera see exactly where the gripper is. Stick the 25 × 25 × 1.5 mm ID 10 tile (white border included) flat on the camera-facing side of the fixed-jaw housing. Place it `80 mm` from the fixed fingertip line along the jaw toward the wrist, and `9.5 mm` from the fixed fingertip across the jaw toward the moving jaw. The default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-25.4,25.5,78.6` (tag centre minus grasp site, in gripper coordinates). We tuned this value on a real gripper, where a caliper estimate turned out to be 12 mm off along the jaw axis, so adjust it if your tag sits elsewhere.
-3. **Save the calibration**:
+
+4. **Save the calibration**:
    In the Web UI, open the **ArUco Workspace Calibration** accordion. When all 4 corner markers are detected, click **💾 Save Calibration**.
-4. **Calibrate the grasp on the real arm**:
+
+5. **Calibrate the grasp on the real arm**:
    This teaches the system what "closed on nothing" and "closed on an object" look like.
    - Run `close_gripper` with nothing in the jaws. Note the logged aperture $A_{\text{empty}}$ (e.g. $-74.5^\circ$) and set `GRIPPER_EMPTY_APERTURE_DEG` to it.
    - Run `close_gripper` on a 30 mm cube. Note the aperture where the jaws stall, $A_{\text{object}}$, and set `GRASP_EMPTY_MARGIN_DEG` to about $0.40 \times (A_{\text{object}} - A_{\text{empty}})$.
@@ -218,6 +223,34 @@ Gemini Live calls these 6 primitives (defined in [`agent/tools.py`](agent/tools.
 - **Camera busy / V4L2 device locks**: Ensure no other application (Zoom, OBS, browser) is using the USB camera index configured in `CAMERA_INDEX`. List attached video devices with `v4l2-ctl --list-devices`.
 - **Headless rendering (Linux / SSH)**: MuJoCo uses EGL for offscreen rendering when `DISPLAY` is unset. Ensure NVIDIA/EGL drivers are present.
 - **"Workspace is not calibrated"**: Place the 4-corner calibration mat in camera view, check `/api/stream`, and click **💾 Save Calibration** in the UI accordion.
+
+## Agent Skills
+
+We packaged what we learned building this project as three [Agent Skills](https://agentskills.io) in [GeminiRobotics-Skills](https://github.com/johannstark/GeminiRobotics-Skills). They teach coding agents (Claude Code, Antigravity, and others) to work with the same stack:
+
+| Skill | Use it for |
+|---|---|
+| `gemini-robotics-er` | Gemini Robotics-ER 2 via the Interactions and Live APIs: pointing, bounding boxes, trajectories, task orchestration with tool calling, and real-camera grounding. |
+| `mujoco-physics` | MuJoCo in Python or WASM: loading robot models, IK, gripper control, and pick-and-place. |
+| `threejs-rendering` | Three.js viewers for MuJoCo scenes: pose sync, perception snapshots, and streaming from Python. |
+
+To install them, clone the skills repo and run its installer:
+
+```bash
+git clone https://github.com/johannstark/GeminiRobotics-Skills.git ~/code/GeminiRobotics-Skills
+cd ~/code/GeminiRobotics-Skills
+```
+
+And now, pick one of the following:
+
+```bash
+./install.sh ~/code/GeminiRobotics-SO101   # this project only (symlinks into .claude/skills and .agents/skills)
+./install.sh --global                      # every project (~/.claude/skills and ~/.gemini/config/skills)
+./install.sh --copy <project>              # copy instead of symlink (Windows, containers)
+```
+
+Restart your agent session afterwards. Symlinks point back to your clone, so `git pull` updates the skills.
+See the [skills README](https://github.com/johannstark/GeminiRobotics-Skills#install) for Antigravity CLI paths and how to invoke each skill.
 
 ## Development
 
