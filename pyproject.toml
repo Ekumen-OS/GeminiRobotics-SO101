@@ -3,6 +3,19 @@ name = "geminirobotics-so101"
 version = "0.1.0"
 description = "Gemini Robotics models integration with the SO-101 Robotic Arm"
 readme = "README.md"
+license = "Apache-2.0"
+authors = [
+  { name = "Ekumen" },
+]
+keywords = ["robotics", "gemini", "so-101", "lerobot", "mujoco", "vla"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.13.7"
 dependencies = [
   "numpy>=2.4.6",
@@ -13,6 +26,10 @@ dependencies = [
   "mujoco>=3.2.0",
   "pyobjc-framework-avfoundation>=12.2.1; sys_platform == 'darwin'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ekumen-OS/GeminiRobotics-SO101"
+Issues = "https://github.com/Ekumen-OS/GeminiRobotics-SO101/issues"
 
 [project.optional-dependencies]
 hw = [
