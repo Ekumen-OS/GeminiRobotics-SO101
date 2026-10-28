@@ -169,6 +169,8 @@ def test_vla_controller_conversational_dialogue() -> None:
 
     assert "Hello! I see a calibrated tabletop" in full_output
     assert mock_session.send_instruction.called
+    call_kwargs = mock_session.send_instruction.call_args.kwargs
+    assert call_kwargs.get("text") == "Hello! What do you see?"
 
 
 def test_vla_controller_move_look_correct_system_prompt() -> None:
