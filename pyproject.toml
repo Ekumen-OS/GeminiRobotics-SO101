@@ -6,8 +6,9 @@ readme = "README.md"
 license = "Apache-2.0"
 authors = [
   { name = "Ekumen" },
+  { name = "Juan Esteban Camacho", email = "juanes.camacho@ekumenlabs.com"}
 ]
-keywords = ["robotics", "gemini", "so-101", "lerobot", "mujoco", "vla"]
+keywords = ["robotics", "gemini", "so-101", "lerobot", "mujoco", "vla", "physical-ai"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
