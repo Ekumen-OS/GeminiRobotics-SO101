@@ -83,13 +83,13 @@ def test_main_real_mode_hardware_error_enters_degraded_mode(
     mock_robot.disconnect.assert_called_once()
 
 
-def test_main_task_generate_markers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Running --task generate_markers should dispatch to setup_workspace_interactive."""
+def test_main_setup_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Running --setup should dispatch to setup_workspace_interactive."""
     mock_wizard = MagicMock()
     monkeypatch.setattr("tools.setup_wizard.setup_workspace_interactive", mock_wizard)
     monkeypatch.setattr(
         "sys.argv",
-        ["main.py", "--task", "generate_markers", "--non-interactive", "--reuse"],
+        ["main.py", "--setup", "--non-interactive", "--reuse"],
     )
 
     main.main()
@@ -99,6 +99,34 @@ def test_main_task_generate_markers(monkeypatch: pytest.MonkeyPatch) -> None:
         interactive=False,
         reuse=True,
     )
+
+
+def test_main_setup_sim_mode_exits_nonzero(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running --setup with --mode sim should exit non-zero with fixed calibration warning."""
+    monkeypatch.setattr("sys.argv", ["main.py", "--setup", "--mode", "sim"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "Simulation workspace has a fixed calibration" in (captured.out + captured.err)
+
+
+def test_main_task_generate_markers_hint(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running --task generate_markers should print a migration hint and exit non-zero."""
+    monkeypatch.setattr("sys.argv", ["main.py", "--task", "generate_markers"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "replaced by '--setup'" in (captured.out + captured.err)
 
 
 def test_main_task_check_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,15 +142,32 @@ def test_main_task_check_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_check.assert_called_once_with(mode="sim")
 
 
-def test_main_task_reach_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Running --task reach_check should dispatch to tools.reach_check.run_reach_check."""
-    mock_reach = MagicMock(return_value=[])
-    monkeypatch.setattr("tools.reach_check.run_reach_check", mock_reach)
+def test_main_task_unsupported_choice_rejected_by_argparse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running --task with a removed choice is rejected by argparse."""
+    removed_choice = "".join(["reach", "_", "check"])
     monkeypatch.setattr(
         "sys.argv",
-        ["main.py", "--task", "reach_check", "--mode", "sim", "--non-interactive"],
+        ["main.py", "--task", removed_choice, "--mode", "sim"],
     )
 
-    main.main()
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
 
-    mock_reach.assert_called_once_with(mode="sim", interactive=False)
+    assert exc_info.value.code == 2
+
+
+def test_main_setup_and_task_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing both --setup and --task together is rejected by argparse."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--setup", "--task", "check_environment"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 2

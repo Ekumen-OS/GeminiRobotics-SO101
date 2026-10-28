@@ -56,7 +56,7 @@ robot  <  simulation  <  vision  <  agent  <  ui
 - **`vision/`**: Camera capture, dual frame buffers, target blackboard, and jaw-tag locator. Imports `robot` and `simulation`. Never imports `agent` or `ui`.
 - **`agent/`**: Gemini Live WebSocket session (`GeminiLiveSession`), tool declarations and execution (`agent/tools.py`), pick loop (`agent/pick_loop.py`), guardrail state machine (`agent/guardrails.py`), and controller (`VLAController`). Imports `vision`, `simulation`, and `robot`. Never imports `ui`.
 - **`ui/`**: FastAPI application and Gradio web interface (`ui/app.py`), Three.js 3D viewer, and UI components. Top-level presentation layer.
-- **`tools/`**: Standalone operator CLI utilities (`check_env.py`, `aruco_stl.py`, `calibration_sheet.py`, `setup_wizard.py`, `reach_check.py`). May import layers below it; no package below imports `tools/`.
+- **`tools/`**: Standalone operator CLI utilities (`check_env.py`, `aruco_stl.py`, `calibration_sheet.py`, `setup_wizard.py`). May import layers below it; no package below imports `tools/`.
 
 Enforced locally via `[tool.importlinter]` in `pyproject.toml` with `uv run lint-imports`. Cycle-dodging local imports are strictly prohibited.
 

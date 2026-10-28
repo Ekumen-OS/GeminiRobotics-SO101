@@ -71,8 +71,7 @@ def check_calibration_config() -> tuple[str, str]:
     if not cfg_path.is_file():
         return (
             "FAIL",
-            f"Calibration config '{cfg_path}' not found. "
-            "Fix: Run `uv run python main.py --task generate_markers`.",
+            f"Calibration config '{cfg_path}' not found. Fix: Run `uv run python main.py --setup`.",
         )
     try:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -80,7 +79,7 @@ def check_calibration_config() -> tuple[str, str]:
         return (
             "FAIL",
             f"Calibration config '{cfg_path}' is not valid JSON ({e}). "
-            "Fix: Re-run `uv run python main.py --task generate_markers`.",
+            "Fix: Re-run `uv run python main.py --setup`.",
         )
     if not isinstance(data, dict):
         return (
@@ -91,7 +90,7 @@ def check_calibration_config() -> tuple[str, str]:
         return (
             "FAIL",
             f"Calibration config '{cfg_path}' missing 'marker_ids' or 'workspace_corners_mm'. "
-            "Fix: Re-run `uv run python main.py --task generate_markers`.",
+            "Fix: Re-run `uv run python main.py --setup`.",
         )
     return "OK", f"Workspace calibration config valid ('{cfg_path}')."
 
