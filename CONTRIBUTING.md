@@ -1,6 +1,6 @@
 # Contributing to GeminiRobotics-SO101
 
-Thank you for contributing! Use real hardware only if you have it — `--mode sim` and the entire test suite run with no physical robot attached.
+Thank you for contributing! You don't need an SO-101 arm to help: simulation mode (`--mode sim`) and the full test suite both run without any physical robot. Hardware is only needed if you want to test changes on the real arm.
 
 ## Setup
 

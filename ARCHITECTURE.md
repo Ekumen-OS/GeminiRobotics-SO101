@@ -4,7 +4,7 @@
 
 GeminiRobotics-SO101 integrates a 6-DOF robotic arm with Google Gemini Robotics Vision-Language-Action (VLA) models (`gemini-robotics-er-2-streaming-preview`), MuJoCo physical simulation, OpenCV ArUco homography calibration, and a FastAPI + Gradio 6.0 Web UI.
 
-```
+```plaintext
 ┌────────────────────────────────────────────────────────┐
 │             USB Camera / MuJoCo Simulation             │
 └───────────────────────────┬────────────────────────────┘
@@ -36,13 +36,17 @@ GeminiRobotics-SO101 integrates a 6-DOF robotic arm with Google Gemini Robotics 
 ```
 
 ### Vision Pipeline Decoupling
+
 To eliminate UI-to-model visual feedback leakage, `vision/frames.py` implements a **dual-buffer stream engine**:
+
 1. **Model Vision Channel (`get_latest_raw_jpeg`)**: Supplies pristine, untouched RGB camera frames directly to the Gemini Live session and OpenCV detectors. It is guaranteed to be free of bounding boxes, text overlays, crosshairs, or UI annotations.
 2. **Operator Display Channel (`/api/stream`)**: Overlays dynamic ArUco calibration outlines, detected object bounding boxes, and minimal model target pointers for operator inspection. Served as a single long-lived `multipart/x-mixed-replace` MJPEG stream rendered by an `<img>` tag. Browser quality and frame rate are configured via `WEB_JPEG_QUALITY` (default 75) and `WEB_STREAM_FPS` (default 15); the model path is unaffected.
 3. **Capture Lifecycle**: In real mode, a single background capture thread (`vision/capture.py:ensure_camera_capture`) produces frames for all consumers. In sim mode, a dedicated worker thread (`vision/sim_runtime.py:ensure_sim_runtime_started`) renders offscreen frames from MuJoCo.
 
 ### Model Frame Delivery & Session Protocol
+
 Frames reach the Gemini Live session via two explicit, ordered delivery paths:
+
 1. **Initial Instruction Turn (`send_instruction`)**: User instructions are sent as an ordered turn via `send_client_content(turns=Content(role="user", parts=[image_part, text_part]), turn_complete=True)`. The initial camera frame is placed first as an inline JPEG Blob before the user instruction text, guaranteeing the image is in model context before turn execution begins.
 2. **Post-Action Observation Frame (`FunctionResponse.parts`)**: After executing any blocking tool (such as spatial moves or gripper commands), a fresh settled observation frame is delivered directly inside the tool's `FunctionResponse.parts` as an inline JPEG blob. This guarantees that visual feedback from the executed action is immediately available to the model within the active turn, without requiring out-of-band streaming. Because `google-genai` (versions $\le$ 2.32.0) fails with a serialization `TypeError` on raw binary bytes in `send_tool_response`, `agent/live_session.py` serializes multimodal tool responses with base64-encoded `inlineData` directly to the active WebSocket wire. Live probe validation confirmed within-turn observation efficacy: Mechanism A 3/3, Mechanism B 0/3, ordered instruction turn 3/3.
 
@@ -52,7 +56,7 @@ Frames reach the Gemini Live session via two explicit, ordered delivery paths:
 
 The codebase strictly enforces a bottom-to-top layered dependency direction:
 
-```
+```plaintext
 robot  <  simulation  <  vision  <  agent  <  ui
 ```
 
@@ -80,6 +84,7 @@ Enforced locally via `[tool.importlinter]` in `pyproject.toml` with `uv run lint
 ## 4. Tool Execution Contract
 
 Gemini interacts with the robot via 6 primitives defined in `agent/tools.py`:
+
 - `move_to_spatial_point(point=[y, x], z_height_cm=3.0)`
 - `open_gripper()`
 - `close_gripper()`
@@ -88,6 +93,7 @@ Gemini interacts with the robot via 6 primitives defined in `agent/tools.py`:
 - `get_joint_positions()`
 
 ### Typed Payloads & Telemetry (`agent/contracts.py`)
+
 - **`MoveToSpatialPointResponse`**: Returns execution status, executed joint positions, reached FK coordinates, optional alignment measurements (`perception: AlignmentMeasurement`), applied bias correction (`applied_correction_mm`), and grasp verification.
 - **`GripperToolResponse`**: Returns gripper aperture in degrees (`gripper_deg`), state (`"open"`, `"closed"`, `"closed_empty"`, `"closed_unverified"`), and grasp classification telemetry (`grasp: GraspClassification`).
 - **`ToolErrorResponse`**: Returns human-readable `error`, classified `error_type`, and honest `robot_moved: bool` telemetry.
@@ -106,7 +112,9 @@ Gemini interacts with the robot via 6 primitives defined in `agent/tools.py`:
 ## 5. Geometry & Kinematics
 
 ### Coordinate Frame Conventions
+
 The system coordinates motions across four distinct reference frames:
+
 - **Normalized Model Frame** $[y, x] \in [0, 1000]$: Normalized vision coordinates emitted by Gemini ($y$ down, $x$ right).
 - **Pixel Frame** $(u, v)$: Raw camera sensor pixels ($u = x \cdot W / 1000, v = y \cdot H / 1000$).
 - **Robot Base & Table Plane Frame** $(X_{\text{base}}, Y_{\text{base}}, Z_{\text{base}})$: Metric Cartesian space in mm. The robot base frame origin is located 38.8 mm behind the shoulder pan rotation axis (matching the `shoulder` body pos in `simulation/assets/so101.xml`), where $+X$ points forward along HOME toward the workspace, $+Y$ points to the robot's left, and $+Z$ points upward. The 4 ArUco corner marker centres in `config/workspace_calibration.json` (`workspace_corners_mm`) are defined in this robot base XY frame (tape measurements taken from the pan rotation axis have $+38.8\text{ mm}$ added to $X$). Heights above the tabletop $Z_{\text{table}}$ relate to robot base height via:
@@ -114,6 +122,7 @@ The system coordinates motions across four distinct reference frames:
 - **Gripper Tool Frame**: Attached to the end-effector grasp center, offset from the fixed-jaw tag by $\mathbf{d}_{\text{tag}}$ (`GRIPPER_TAG_LOCAL_OFFSET_MM` in `robot/settings.py`).
 
 ### Workspace Homography Calibration (`robot/calibration.py`)
+
 Physical workspace grounding maps normalized image coordinates $[y, x] \in [0, 1000]$ directly to robot-base table-plane millimetres via a $3 \times 3$ projective homography matrix $H$:
 
 $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begin{bmatrix} u \\ v \\ 1 \end{bmatrix}$$
@@ -122,6 +131,7 @@ $$\begin{bmatrix} X_{\text{mm}} \\ Y_{\text{mm}} \\ 1 \end{bmatrix} \sim H \begi
 - **Simulation Mode**: Uses the same `workspace_corners_mm` from `config/workspace_calibration.json`, computed analytically from the virtual camera (`workspace_cam`, $fovy=45^\circ$, $hfov \approx 57.8^\circ$) via `simulation/sim_calibration.py` and saved to `config/workspace_homography_sim.npz`.
 
 ### Camera Model & Parallax-Free Jaw Locator (`robot/camera_model.py`, `vision/gripper_locator.py`)
+
 The camera's 3D optical centre $C = [C_x, C_y, C_z]$ in robot-base table coordinates is reconstructed analytically from the homography and the nominal horizontal field of view `CAMERA_HFOV_DEG` (default `62.2°` for the Arducam IMX219 3.04 mm lens at full sensor width; `PinholeCamera.from_homography`). Hardware autofocus is locked (`CAP_PROP_AUTOFOCUS=0`, `CAP_PROP_FOCUS=CAMERA_FOCUS`) on capture open so focal length remains constant.
 When the gripper hovers at height $h$ above the table, perspective parallax shifts the apparent image position of the jaw ArUco tag (ID 10, 25 mm). The locator corrects parallax in the table plane:
 
@@ -130,10 +140,12 @@ $$xy_{\text{table}} = C_{xy} + (H(u, v) - C_{xy}) \frac{C_z - h}{C_z}$$
 The tag-to-grasp-site offset (`GRIPPER_TAG_LOCAL_OFFSET_MM`) rotated by the forward kinematics orientation is then subtracted to yield the true physical grasp-site position in robot millimetres.
 
 ### Table Height Offset (`TABLE_Z_MM`)
+
 Configured in `robot/settings.py` for physical hardware:
 - `TABLE_Z_MM`: Table surface height in robot base coordinates (calibrated as $Z_{\text{base}} = Z_{\text{table}} + \text{TABLE\_Z\_MM}$). In sim, `get_table_z_mm("sim")` is always `0.0`. Planar base-to-mat offsets are owned exclusively by the measured marker centres in `config/workspace_calibration.json`.
 
 ### Inverse Kinematics & Null-Space Posture Regularization (`robot/cartesian_ik.py`)
+
 The SO-101 has 5 articulated arm joints (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`); the gripper jaw actuator is decoupled from spatial positioning. Numerical IK solves 3D position tracking ($3 \times 5$ Jacobian) using Levenberg-Marquardt Damped Least Squares (DLS):
 
 $$\Delta \mathbf{q} = J^T (J J^T + \lambda^2 I)^{-1} \mathbf{e}$$
@@ -143,6 +155,7 @@ The remaining degrees of freedom are resolved through null-space projection to b
 $$\Delta \mathbf{q}_{\text{null}} = (I - J^\dagger J) (\mathbf{q}_{\text{nominal}} - \mathbf{q})$$
 
 ### S-Curve Trajectory Interpolation
+
 Joint motions smoothly interpolate between poses using a cosine S-curve profile over duration $T$ with time step $dt$ (`simulation/sim_robot.py`, `robot/real_robot.py`):
 
 $$\alpha(t) = \frac{1}{2} (1 - \cos(\pi t)), \quad t = \frac{\text{step}}{\text{total\_steps}} \in [0, 1]$$
@@ -156,7 +169,7 @@ This guarantees zero velocity and jerk at trajectory boundaries ($\dot{\alpha}(0
 
 The manipulation loop enforces a structured guardrail state machine (`agent/guardrails.py`, `agent/pick_loop.py`, `agent/tools.py`):
 
-```
+```plaintext
        [APPROACH] ──(Aligned Descent)──► [DESCENT] ──(close_gripper)──► [HELD_UNVERIFIED]
            ▲                                                                   │
            │                                                            (Straight Lift)
@@ -181,6 +194,7 @@ The manipulation loop enforces a structured guardrail state machine (`agent/guar
 ## 7. Verification & Test Suite
 
 The test suite in `tests/` is organized strictly by subject:
+
 - `tests/robot/`: Kinematics, calibration, settings, and hardware driver contracts.
 - `tests/simulation/`: MuJoCo scene loading, synthetic calibration, and headless EGL rendering.
 - `tests/vision/`: Camera selection, dual-buffer integrity, and detector segmentation.
@@ -191,6 +205,7 @@ The test suite in `tests/` is organized strictly by subject:
 - `tests/harness/sim_pick.py`: Headless scripted sim pick-and-place harness (`SimPickHarness`, `run_scenario`) testing multi-placement runs against ground-truth MuJoCo physics.
 
 ### Testing Commands
+
 ```bash
 # Standard test suite (fast unit and integration tests)
 uv run pytest tests/ -v
