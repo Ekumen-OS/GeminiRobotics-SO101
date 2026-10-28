@@ -48,12 +48,25 @@ All runtime settings (serial port, table surface height, camera selection, strea
 
 Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physical robot base coordinates (mm) using perspective homography:
 
-1. **Measure marker centres & lens height**:
-   Measure the 4 ArUco corner marker centres (`top_left` ID 1, `top_right` ID 2, `bottom_right` ID 3, `bottom_left` ID 0). Corners in `config/workspace_calibration.json` are defined in the robot base frame (origin 38.8 mm behind the shoulder pan rotation axis, $+X$ forward along `HOME`, $+Y$ to the robot's left). The interactive wizard (`--task generate_markers`) asks for tape values measured **from the pan axis** and automatically adds the model-derived +38.8 mm offset to save them in the robot base frame:
+1. **Interactive Workspace Setup (`--setup`)**:
+   Describe the workspace rectangle layout (**rectangle only**, axis-aligned with the robot: $+X$ forward along `HOME`, $+Y$ to robot's left; free-form or rotated layouts are not supported).
    ```bash
-   uv run python main.py --task generate_markers
+   uv run python main.py --setup
    ```
-   Generates `assets/aruco_markers/workspace_calibration_sheet.png` and `marker_{0..3}.png`. Use `--reuse` to update the measured marker centres in JSON without regenerating images, or `--regenerate` to force overwrite. Also tape-measure the camera lens height above the tabletop as a cross-check: on startup and calibration save/load, `[Calibration] [CAMERA]` logs `centre_mm=[x, y, z] height_mm=z hfov=...` so you can verify `height_mm` against your tape measurement.
+   The interactive wizard asks for measurements in mm to marker centres from the **shoulder-pan rotation axis**:
+   - **near X**: distance forward from pan axis to the near marker pair;
+   - **depth**: distance from the near pair to the far pair;
+   - **width**: distance from the right pair to the left pair;
+   - **lateral offset**: Y of the rectangle centre line ($0$ = centred on the robot, negative = to robot's right);
+   - **marker size**.
+
+   The model-derived $+38.8$ mm offset in X is added automatically to record corner coordinates in the robot base frame (`config/workspace_calibration.json`).
+   The wizard evaluates Cartesian hover reachability across the rectangle: **markers outside reach are expected and fine**, because only the camera needs to see them.
+   It generates an A4 printable placement guide diagram (`assets/aruco_markers/workspace_placement_guide.png`), marker PNG tiles (`marker_{0..3,10}.png`), and `jaw_tag_sheet.png`. Use `--reuse` to update dimensions without regenerating files, `--regenerate` to overwrite, or `--non-interactive` to use defaults.
+
+   ![Workspace Placement Guide](assets/docs/placement_guide.png)
+
+   To verify calibration, start the Web UI (`uv run python main.py`) and enable "📐 Show Calibration Overlay" (`ui/components/vision.py`) to verify the registration on the live camera stream. Also check the `[Calibration] [CAMERA]` `height_mm` log against your physical lens height measurement.
 2. **3D-printed tags with `tools/aruco_stl.py`**:
    Generates watertight binary STL meshes for single-color grooved printing or Bambu Studio / AMS dual-color (`_white.stl` + `_black.stl`) tiles:
    ```bash
@@ -71,15 +84,7 @@ Spatial grounding maps image pixels $[y, x] \in [0, 1000]$ directly into physica
    Mount the 25 × 25 × 1.5 mm ID 10 tile (white border included) flush on the camera-facing flat face of the fixed-jaw housing (`80 mm` from the fixed fingertip line along the jaw toward the wrist, `9.5 mm` from the fixed fingertip across the jaw toward the moving jaw). Default offset is `GRIPPER_TAG_LOCAL_OFFSET_MM=-25.4,25.5,78.6` (tag centre minus grasp site in gripper coordinates). This value was tuned on the real gripper: the caliper estimate was 12 mm off along the jaw axis.
 4. **Save calibration**:
    In the Web UI, open the **ArUco Workspace Calibration** accordion and click **💾 Save Calibration** once all 4 corner markers are detected.
-5. **Operator 5-point reach check (`--task reach_check`)**:
-   Before running VLA instructions in real mode, verify physical reach and jaw-locator alignment across the 4 marker centres and the mat centre (no model in the loop):
-   ```bash
-   uv run python main.py --task reach_check --mode real
-   # Or in simulation:
-   uv run python main.py --task reach_check --mode sim
-   ```
-   The arm moves to `HOME`, waits for `Enter` before hovering 50 mm above each marker centre and the mat centre, prints commanded XY, FK grasp-site XY, jaw-tag locator XY, and `loc-fk` residual, and returns `HOME` (or on `Ctrl-C`). Markers beyond reach are expected; `reach_check` flags them as `UNREACHABLE`. At each hover, measure the physical miss from the fingertip midpoint to the marker centre with a ruler.
-6. **Real-arm grasp calibration**:
+5. **Real-arm grasp calibration**:
    - Run `close_gripper` on air: note logged aperture $A_{\text{empty}}$ (e.g. $-74.5^\circ$) and set `GRIPPER_EMPTY_APERTURE_DEG`.
    - Run `close_gripper` on a 30 mm cube: note stalled aperture $A_{\text{object}}$ and set `GRASP_EMPTY_MARGIN_DEG` to $\approx 0.40 \times (A_{\text{object}} - A_{\text{empty}})$.
 
