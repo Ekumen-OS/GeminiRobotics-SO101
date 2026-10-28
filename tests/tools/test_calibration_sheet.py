@@ -4,8 +4,11 @@ import tempfile
 from pathlib import Path
 
 import cv2
+import pytest
 
 from tools.calibration_sheet import (
+    _FONT,
+    _font,
     generate_aruco_markers,
     generate_jaw_tag_sheet,
     generate_placement_guide,
@@ -84,3 +87,12 @@ def test_generate_jaw_tag_sheet() -> None:
         img = cv2.imread(str(sheet_path))
         assert img is not None
         assert img.shape[0] > 500
+
+
+@pytest.mark.parametrize("size_pt", [10.0, 13.0, 20.0])
+def test_font_prints_at_requested_point_size(size_pt: float) -> None:
+    """Text cap height on the 300 dpi page is 0.7 em of the requested point size, within 10 %."""
+    scale, thickness = _font(size_pt)
+    cap_px = cv2.getTextSize("H", _FONT, scale, thickness)[0][1]
+    expected_px = 0.7 * size_pt * 300 / 72
+    assert abs(cap_px - expected_px) / expected_px < 0.10
