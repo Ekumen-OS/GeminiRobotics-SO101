@@ -186,7 +186,7 @@ The test suite in `tests/` is organized strictly by subject:
 - `tests/vision/`: Camera selection, dual-buffer integrity, and detector segmentation.
 - `tests/agent/`: Gemini Live session mocking, tool execution, and pick-loop state machine.
 - `tests/ui/`: FastAPI endpoints, Gradio component event wiring, and viewer assets.
-- `tests/tools/`: Preflight diagnostics, STL generation, reach checks, and workspace setup wizards.
+- `tests/tools/`: Preflight diagnostics, STL generation, and workspace setup wizards.
 - `tests/e2e/`: End-to-end spatial grounding and guardrail integration tests.
 - `tests/harness/sim_pick.py`: Headless scripted sim pick-and-place harness (`SimPickHarness`, `run_scenario`) testing multi-placement runs against ground-truth MuJoCo physics.
 
